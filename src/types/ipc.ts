@@ -125,6 +125,16 @@ export interface OpError {
   message: string;
 }
 
+/**
+ * Non-fatal warning attached to a successful item. "critical" warnings are
+ * never auto-dismissed (reserved for degraded crash-safety states).
+ */
+export interface OpWarning {
+  path: string;
+  message: string;
+  severity: "warning" | "critical";
+}
+
 export type OpStatus = "success" | "partial" | "cancelled" | "failed";
 
 /** Streamed over the Channel passed to `run_op`. */
@@ -149,11 +159,14 @@ export type OpEvent =
       remaining: number;
     }
   | { event: "itemError"; path: string; message: string }
+  | { event: "warning"; path: string; message: string; severity: "warning" | "critical" }
   | { event: "skippedIcloud"; paths: string[] }
   | {
       event: "done";
       status: OpStatus;
       errors: OpError[];
+      /** Complete, authoritative list — overwrites live-collected warnings. */
+      warnings: OpWarning[];
       skippedIcloud: string[];
       /** Destination paths of top-level items that were produced (for selection/ghost rows). */
       produced: string[];

@@ -91,9 +91,11 @@ function CardView({ card }: { card: OpCard }) {
         </>
       )}
 
-      {card.status === "success" && card.skippedIcloud.length === 0 && (
-        <div className="mt-1 text-[11px] text-secondary">Done</div>
-      )}
+      {card.status === "success" &&
+        card.skippedIcloud.length === 0 &&
+        card.warnings.length === 0 && (
+          <div className="mt-1 text-[11px] text-secondary">Done</div>
+        )}
 
       {card.status === "cancelled" && (
         <div className="mt-1 text-[11px] text-secondary">Cancelled</div>
@@ -134,6 +136,21 @@ function CardView({ card }: { card: OpCard }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {card.warnings.length > 0 && card.status !== "running" && (
+        <div className="mt-2 rounded bg-pane p-2">
+          {card.warnings.map((w, i) => (
+            <div key={i} className="mb-1 text-[11px]">
+              <div className="truncate text-secondary">
+                {w.path ? basename(w.path) : "Operation"}
+              </div>
+              <div className={w.severity === "critical" ? "text-danger" : "text-accent"}>
+                {w.message}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

@@ -61,7 +61,13 @@ impl Journal {
         self.dir.join(format!("{}.json", safe))
     }
 
-    /// Durable write: temp file + fsync + atomic rename.
+    /// Durable write: temp file + fsync + atomic rename + directory fsync.
+    ///
+    /// The directory fsync after the rename matters: without it, a crash can
+    /// lose the rename itself, so a fail-fast caller's "write succeeded before
+    /// mutation" would be a false promise. (macOS `fsync` doesn't force the
+    /// drive's write cache; full power-loss durability would additionally need
+    /// `fcntl(F_FULLFSYNC)` — out of scope, the threat model is app/OS crashes.)
     pub fn write(&self, entry: &OpJournalEntry) -> std::io::Result<()> {
         let final_path = self.path_for(&entry.op_id);
         let tmp = final_path.with_extension("json.tmp");
@@ -71,7 +77,8 @@ impl Journal {
             f.write_all(&data)?;
             f.sync_all()?;
         }
-        fs::rename(&tmp, &final_path)
+        fs::rename(&tmp, &final_path)?;
+        fs::File::open(&self.dir)?.sync_all()
     }
 
     pub fn remove(&self, op_id: &str) {

@@ -14,6 +14,7 @@ import type {
   OpError,
   OpEvent,
   OpStatus,
+  OpWarning,
 } from "../types/ipc";
 import * as ipc from "../lib/ipc";
 import { safeIpc } from "../lib/safeIpc";
@@ -43,6 +44,7 @@ export interface OpCard {
   rate: number;
   status: CardStatus;
   errors: OpError[];
+  warnings: OpWarning[];
   skippedIcloud: string[];
   produced: string[];
   expanded: boolean;
@@ -128,6 +130,7 @@ export const useOps = create<OpsState>()(
         rate: 0,
         status: "running",
         errors: [],
+        warnings: [],
         skippedIcloud: [],
         produced: [],
         expanded: false,
@@ -163,10 +166,17 @@ export const useOps = create<OpsState>()(
         if (!card) return;
         card.status = event.status;
         card.errors = event.errors;
+        // Done's list is authoritative and complete — assign, never append
+        // (each warning already arrived once as a live "warning" event).
+        card.warnings = event.warnings;
         card.skippedIcloud = event.skippedIcloud;
         card.produced = event.produced;
         const wasVisible = card.visible;
-        if (event.status === "success" && event.skippedIcloud.length === 0) {
+        if (
+          event.status === "success" &&
+          event.skippedIcloud.length === 0 &&
+          event.warnings.length === 0
+        ) {
           if (!wasVisible) {
             // never earned UI → remove silently
             s.cards = s.cards.filter((c) => c.opId !== opId);
@@ -179,7 +189,8 @@ export const useOps = create<OpsState>()(
         } else if (event.status === "cancelled") {
           s.cards = s.cards.filter((c) => c.opId !== opId);
         } else {
-          // partial/failed (or success with iCloud skips) persists, visibly
+          // partial/failed (or success with iCloud skips/warnings) persists,
+          // visibly and without auto-dismiss
           card.visible = true;
         }
       });
@@ -243,6 +254,17 @@ export const useOps = create<OpsState>()(
           set((s) => {
             const card = s.cards.find((c) => c.opId === opId);
             if (card) card.errors.push({ path: event.path, message: event.message });
+          });
+          break;
+        case "warning":
+          set((s) => {
+            const card = s.cards.find((c) => c.opId === opId);
+            if (card)
+              card.warnings.push({
+                path: event.path,
+                message: event.message,
+                severity: event.severity,
+              });
           });
           break;
         case "skippedIcloud":

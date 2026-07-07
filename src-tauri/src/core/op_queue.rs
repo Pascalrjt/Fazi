@@ -22,8 +22,8 @@ use crate::core::entry::is_dataless;
 use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, Resolution, Trasher,
-    WalkSink,
+    self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, ReplaceOutcome,
+    Resolution, Trasher, WalkSink, WarnSeverity,
 };
 
 // ---------------------------------------------------------------------------
@@ -45,6 +45,16 @@ pub struct ConflictSide {
 pub struct OpError {
     pub path: String,
     pub message: String,
+}
+
+/// Non-fatal warning attached to a successful item (wire struct — severity
+/// serializes lowercase via `walker::WarnSeverity`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpWarning {
+    pub path: String,
+    pub message: String,
+    pub severity: WarnSeverity,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,11 +82,18 @@ pub enum OpEvent {
     #[serde(rename_all = "camelCase")]
     ItemError { path: String, message: String },
     #[serde(rename_all = "camelCase")]
+    Warning {
+        path: String,
+        message: String,
+        severity: WarnSeverity,
+    },
+    #[serde(rename_all = "camelCase")]
     SkippedIcloud { paths: Vec<String> },
     #[serde(rename_all = "camelCase")]
     Done {
         status: &'static str,
         errors: Vec<OpError>,
+        warnings: Vec<OpWarning>,
         skipped_icloud: Vec<String>,
         produced: Vec<String>,
         undoable: bool,
@@ -208,6 +225,7 @@ struct OpSink {
     last_emit: Instant,
     any_clone: bool,
     errors: Vec<OpError>,
+    warnings: Vec<OpWarning>,
     skipped: Vec<PathBuf>,
     op_policy: Policy,
     file_policy: Option<Resolution>,
@@ -235,6 +253,7 @@ impl OpSink {
             last_emit: Instant::now(),
             any_clone: false,
             errors: Vec::new(),
+            warnings: Vec::new(),
             skipped: Vec::new(),
             op_policy,
             file_policy: None,
@@ -320,6 +339,20 @@ impl WalkSink for OpSink {
             message: e.message.clone(),
         });
         self.errors.push(e);
+    }
+
+    fn item_warning(&mut self, path: &Path, message: &str, severity: WarnSeverity) {
+        let w = OpWarning {
+            path: path.to_string_lossy().into_owned(),
+            message: message.to_string(),
+            severity,
+        };
+        self.emitter.emit(OpEvent::Warning {
+            path: w.path.clone(),
+            message: w.message.clone(),
+            severity: w.severity,
+        });
+        self.warnings.push(w);
     }
 
     fn skipped_dataless(&mut self, path: &Path) {
@@ -440,20 +473,8 @@ fn run_op_thread(
         .clone();
     let _volume_guard = lock.lock().unwrap();
 
-    // Concurrent enumeration: the progress bar acquires a denominator later.
-    {
-        let sources = args.sources.clone();
-        let cancel_handle = handle.clone();
-        let em = emitter.clone();
-        std::thread::spawn(move || {
-            let (b, e) = enumerate(&sources, &cancel_handle.cancel);
-            if !cancel_handle.cancel.load(Ordering::SeqCst) {
-                em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
-            }
-        });
-    }
-
-    // Journal intent before any bytes move.
+    // Journal intent before any bytes move. Fail-fast: without a durable
+    // journal there is no crash protection, so the op must not proceed.
     let mut journal_entry = OpJournalEntry {
         op_id: args.op_id.clone(),
         kind: match args.kind {
@@ -468,7 +489,36 @@ fn run_op_thread(
         total: args.sources.len(),
         started_at_ms: now_ms(),
     };
-    let _ = engine.journal.write(&journal_entry);
+    if let Err(e) = engine.journal.write(&journal_entry) {
+        engine.ops.remove(&args.op_id);
+        emitter.emit(OpEvent::Done {
+            status: "failed",
+            errors: vec![OpError {
+                path: String::new(),
+                message: format!("couldn't write the crash-safety journal: {}", e),
+            }],
+            warnings: Vec::new(),
+            skipped_icloud: Vec::new(),
+            produced: Vec::new(),
+            undoable: false,
+        });
+        return;
+    }
+
+    // Concurrent enumeration: the progress bar acquires a denominator later.
+    // Spawned only after the intent write succeeded, so a fail-fast return
+    // above can never be followed by a stray Enumerated event.
+    {
+        let sources = args.sources.clone();
+        let cancel_handle = handle.clone();
+        let em = emitter.clone();
+        std::thread::spawn(move || {
+            let (b, e) = enumerate(&sources, &cancel_handle.cancel);
+            if !cancel_handle.cancel.load(Ordering::SeqCst) {
+                em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
+            }
+        });
+    }
 
     let mut sink = OpSink::new(
         emitter.clone(),
@@ -566,8 +616,20 @@ fn run_op_thread(
         let item_result: Result<Option<PathBuf>, ()> = match resolution {
             Some(Resolution::Merge) => {
                 // Per-entry staging tier; journal records the merge root.
+                // Fail-fast: an unrecorded merge root would leave per-entry
+                // staging invisible to recovery.
                 journal_entry.merge_roots.push(dest.to_string_lossy().into_owned());
-                let _ = engine.journal.write(&journal_entry);
+                if let Err(e) = engine.journal.write(&journal_entry) {
+                    journal_entry.merge_roots.pop();
+                    sink.item_error(
+                        source,
+                        &io::Error::new(
+                            e.kind(),
+                            format!("couldn't write the crash-safety journal: {}", e),
+                        ),
+                    );
+                    continue;
+                }
                 let ctx = MergeCtx {
                     op_id: &args.op_id,
                     trasher: engine.trasher.as_ref(),
@@ -668,6 +730,7 @@ fn run_op_thread(
     emitter.emit(OpEvent::Done {
         status,
         errors: sink.errors.clone(),
+        warnings: sink.warnings.clone(),
         skipped_icloud: skipped,
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         undoable,
@@ -705,8 +768,15 @@ fn transfer_toplevel(
         .dest_dir
         .join(staging_name(&dest.file_name().unwrap_or_default().to_string_lossy(), &args.op_id));
     walker::remove_tree_best_effort(&stage);
+    // Fail-fast: an unrecorded staging path would be invisible to recovery.
     journal_entry.staging.push(stage.to_string_lossy().into_owned());
-    let _ = engine.journal.write(&journal_entry);
+    if let Err(e) = engine.journal.write(journal_entry) {
+        pop_staging(journal_entry, &stage);
+        return Err(io::Error::new(
+            e.kind(),
+            format!("couldn't write the crash-safety journal: {}", e),
+        ));
+    }
 
     let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
@@ -749,8 +819,15 @@ fn transfer_toplevel(
     Ok(true)
 }
 
-/// Replace transaction: stage fully next to the destination, swap atomically
-/// (or trash-promote-restore on non-swap filesystems), old original → Trash.
+/// Replace transaction.
+///
+/// Move-kind, same volume: direct swap of source and dest — the source is
+/// never staged, so a staging path never holds the only copy of data and
+/// recovery's "delete all staging" stays universally correct.
+///
+/// Copy-kind (and cross-volume move): stage fully next to the destination,
+/// swap atomically (or trash-promote-restore on non-swap filesystems), old
+/// original → Trash. The stage only ever holds a throwaway copy.
 fn replace_item(
     engine: &Engine,
     args: &OpArgs,
@@ -760,64 +837,117 @@ fn replace_item(
     tol_ms: i64,
     sink: &mut OpSink,
 ) -> io::Result<bool> {
+    if args.kind == OpKind::Move {
+        // Direct swap — no staging, no journal write needed.
+        match walker::replace_with_staged(source, dest, engine.trasher.as_ref()) {
+            Ok(ReplaceOutcome::Replaced { .. }) => return Ok(true),
+            Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
+                // Leftover old original sits at the SOURCE path — never a
+                // staging name, safe from recovery. Warn, never delete it.
+                sink.item_warning(
+                    &leftover,
+                    &format!(
+                        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
+                        dest.display(),
+                        error,
+                        leftover.display()
+                    ),
+                    WarnSeverity::Warning,
+                );
+                return Ok(true);
+            }
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                // Cross-volume: fall through to the staged copy path.
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
     let stage = args
         .dest_dir
         .join(staging_name(&dest.file_name().unwrap_or_default().to_string_lossy(), &args.op_id));
     walker::remove_tree_best_effort(&stage);
+    // Fail-fast: an unrecorded staging path would be invisible to recovery.
     journal_entry.staging.push(stage.to_string_lossy().into_owned());
-    let _ = engine.journal.write(&journal_entry);
-
-    let mut source_consumed = false;
-    if args.kind == OpKind::Move {
-        match copier::rename(source, &stage) {
-            Ok(()) => source_consumed = true,
-            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {}
-            Err(e) => {
-                pop_staging(journal_entry, &stage);
-                let _ = engine.journal.write(journal_entry);
-                return Err(e);
-            }
-        }
+    if let Err(e) = engine.journal.write(journal_entry) {
+        pop_staging(journal_entry, &stage);
+        return Err(io::Error::new(
+            e.kind(),
+            format!("couldn't write the crash-safety journal: {}", e),
+        ));
     }
-    if !source_consumed {
-        let outcome = walker::copy_fresh(source, &stage, sink)?;
-        if outcome == Outcome::Cancelled {
+
+    let outcome = walker::copy_fresh(source, &stage, sink)?;
+    if outcome == Outcome::Cancelled {
+        walker::remove_tree_best_effort(&stage);
+        pop_staging(journal_entry, &stage);
+        let _ = engine.journal.write(journal_entry);
+        return Ok(false);
+    }
+    if args.kind == OpKind::Move {
+        let skipped: HashSet<PathBuf> = sink.skipped.iter().cloned().collect();
+        let report = walker::verify_tree(source, &stage, &skipped, tol_ms)?;
+        if !report.mismatches.is_empty() {
             walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
-            return Ok(false);
-        }
-        if args.kind == OpKind::Move {
-            let skipped: HashSet<PathBuf> = sink.skipped.iter().cloned().collect();
-            let report = walker::verify_tree(source, &stage, &skipped, tol_ms)?;
-            if !report.mismatches.is_empty() {
-                walker::remove_tree_best_effort(&stage);
-                pop_staging(journal_entry, &stage);
-                let _ = engine.journal.write(journal_entry);
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("verification failed: {}", report.mismatches.join("; ")),
-                ));
-            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("verification failed: {}", report.mismatches.join("; ")),
+            ));
         }
     }
 
     match walker::replace_with_staged(&stage, dest, engine.trasher.as_ref()) {
-        Ok(_trashed_original) => {
+        Ok(ReplaceOutcome::Replaced { .. }) => {
             pop_staging(journal_entry, &stage);
-            if args.kind == OpKind::Move && !source_consumed {
+            if args.kind == OpKind::Move {
                 walker::remove_tree_best_effort(source);
             }
             Ok(true)
         }
-        Err(e) => {
-            if !source_consumed {
-                walker::remove_tree_best_effort(&stage);
-            } else {
-                // Move-replace where the source already renamed into staging:
-                // put it back rather than leaving it hidden.
-                let _ = copier::rename(&stage, source);
+        Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
+            // The leftover old original sits at the stage path, which is
+            // recorded in `journal_entry.staging` — a crash before the pop
+            // lands would make recovery delete it. Required order:
+            // (1) rename out of staging, (2) pop + best-effort journal write,
+            // (3) remove source if move, (4) warn.
+            let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let rescue = walker::rescue_leftover(&leftover, &args.op_id, &name);
+            pop_staging(journal_entry, &stage);
+            let _ = engine.journal.write(journal_entry);
+            if args.kind == OpKind::Move {
+                walker::remove_tree_best_effort(source);
             }
+            match rescue {
+                Ok(final_path) => sink.item_warning(
+                    &final_path,
+                    &format!(
+                        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
+                        dest.display(),
+                        error,
+                        final_path.display()
+                    ),
+                    WarnSeverity::Warning,
+                ),
+                Err(rename_err) => sink.item_warning(
+                    &leftover,
+                    &format!(
+                        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}) or renamed to a safe name ({}). It remains at \"{}\" and may be removed if the app crashes before this operation's record clears — rescue it manually.",
+                        dest.display(),
+                        error,
+                        rename_err,
+                        leftover.display()
+                    ),
+                    WarnSeverity::Critical,
+                ),
+            }
+            Ok(true)
+        }
+        Err(e) => {
+            // Only ever a throwaway copy now — the source was never renamed
+            // into staging.
+            walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             Err(e)
@@ -838,18 +968,9 @@ fn run_duplicate_thread(
     handle: Arc<OpHandle>,
 ) {
     emitter.emit(OpEvent::Started { op_id: op_id.clone() });
-    {
-        let sources = paths.clone();
-        let cancel_handle = handle.clone();
-        let em = emitter.clone();
-        std::thread::spawn(move || {
-            let (b, e) = enumerate(&sources, &cancel_handle.cancel);
-            if !cancel_handle.cancel.load(Ordering::SeqCst) {
-                em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
-            }
-        });
-    }
 
+    // Journal intent before any bytes move. Fail-fast: without a durable
+    // journal there is no crash protection, so the op must not proceed.
     let mut journal_entry = OpJournalEntry {
         op_id: op_id.clone(),
         kind: "duplicate".into(),
@@ -861,7 +982,34 @@ fn run_duplicate_thread(
         total: paths.len(),
         started_at_ms: now_ms(),
     };
-    let _ = engine.journal.write(&journal_entry);
+    if let Err(e) = engine.journal.write(&journal_entry) {
+        engine.ops.remove(&op_id);
+        emitter.emit(OpEvent::Done {
+            status: "failed",
+            errors: vec![OpError {
+                path: String::new(),
+                message: format!("couldn't write the crash-safety journal: {}", e),
+            }],
+            warnings: Vec::new(),
+            skipped_icloud: Vec::new(),
+            produced: Vec::new(),
+            undoable: false,
+        });
+        return;
+    }
+
+    // Spawned only after the intent write succeeded (see run_op_thread).
+    {
+        let sources = paths.clone();
+        let cancel_handle = handle.clone();
+        let em = emitter.clone();
+        std::thread::spawn(move || {
+            let (b, e) = enumerate(&sources, &cancel_handle.cancel);
+            if !cancel_handle.cancel.load(Ordering::SeqCst) {
+                em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
+            }
+        });
+    }
 
     let mut sink = OpSink::new(
         emitter.clone(),
@@ -889,8 +1037,19 @@ fn run_duplicate_thread(
         let dest = parent.join(&dup);
         let stage = parent.join(staging_name(&dup, &op_id));
         walker::remove_tree_best_effort(&stage);
+        // Fail-fast: an unrecorded staging path would be invisible to recovery.
         journal_entry.staging.push(stage.to_string_lossy().into_owned());
-        let _ = engine.journal.write(&journal_entry);
+        if let Err(e) = engine.journal.write(&journal_entry) {
+            pop_staging(&mut journal_entry, &stage);
+            sink.item_error(
+                source,
+                &io::Error::new(
+                    e.kind(),
+                    format!("couldn't write the crash-safety journal: {}", e),
+                ),
+            );
+            continue;
+        }
 
         match walker::copy_fresh(source, &stage, &mut sink) {
             Ok(Outcome::Done) => match copier::rename_excl(&stage, &dest) {
@@ -938,6 +1097,7 @@ fn run_duplicate_thread(
     emitter.emit(OpEvent::Done {
         status,
         errors: sink.errors.clone(),
+        warnings: sink.warnings.clone(),
         skipped_icloud: Vec::new(),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         undoable: !produced.is_empty(),

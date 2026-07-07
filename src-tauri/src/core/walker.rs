@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::core::copier::{self, CopyEnd};
 use crate::core::entry::is_dataless;
 use crate::core::tags::TAGS_XATTR;
@@ -75,10 +77,26 @@ impl Trasher for DirTrasher {
     }
 }
 
+/// Severity of a non-fatal warning surfaced to the user.
+///
+/// The serde attribute is load-bearing: it pins the TS contract
+/// "warning" | "critical" (default serde would emit "Warning"/"Critical").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WarnSeverity {
+    Warning,
+    /// Never auto-dismissed by the UI — reserved for degraded states where
+    /// data could still be lost (e.g. a leftover stuck at a staging name).
+    Critical,
+}
+
 pub trait WalkSink {
     fn cancelled(&self) -> bool;
     fn progress(&mut self, bytes_delta: u64, entries_delta: u64, current: &Path, cloned: bool);
     fn item_error(&mut self, path: &Path, err: &io::Error);
+    /// Non-fatal warning: the item succeeded but something needs the user's
+    /// attention (e.g. the old original couldn't be trashed). Default no-op.
+    fn item_warning(&mut self, _path: &Path, _message: &str, _severity: WarnSeverity) {}
     fn skipped_dataless(&mut self, path: &Path);
     /// Resolve a conflict. May block on the user (op engine) or return a
     /// canned policy (tests). `dst` is the existing destination item.
@@ -408,36 +426,105 @@ fn verify_metadata(src: &Path, dst: &Path, mismatches: &mut Vec<String>) {
 // Replace transaction (file vs file / whole-dir replace)
 // ---------------------------------------------------------------------------
 
+/// Outcome of a successful replace: the destination holds the new content
+/// either way — the variants differ only in where the old original went.
+#[derive(Debug)]
+pub enum ReplaceOutcome {
+    Replaced {
+        #[allow(dead_code)]
+        trashed: PathBuf,
+    },
+    /// Swap succeeded (dst holds new content) but trashing the old original
+    /// failed; it remains at `leftover` and must NOT be deleted. If `leftover`
+    /// is a journal-visible staging path, callers MUST rename it to a
+    /// non-staging name (see `rescue_leftover`) before updating the journal —
+    /// otherwise crash recovery would delete the old original.
+    TrashFailed {
+        leftover: PathBuf,
+        error: io::Error,
+    },
+}
+
 /// Replace `dst` with fully-staged `staged`: swap atomically on APFS
 /// (`renamex_np(RENAME_SWAP)`), then trash the swapped-out original.
 /// On filesystems without swap: trash original → promote → on promote
 /// failure restore the original from the Trash.
-/// Returns the trashed location of the old destination.
+///
+/// Error invariants:
+/// - Swap path: `Err` means the destination is untouched.
+/// - Non-swap fallback: a pre-promote trash failure leaves the destination
+///   untouched. If the promote fails *after* the trash succeeded, the restore
+///   from the Trash is best-effort — if that rename also fails, `Err` is
+///   returned with the destination path EMPTY and the old original safe in
+///   the Trash (no data lost; the error message names the trashed location).
 pub fn replace_with_staged(
     staged: &Path,
     dst: &Path,
     trasher: &dyn Trasher,
-) -> io::Result<PathBuf> {
+) -> io::Result<ReplaceOutcome> {
     match copier::rename_swap(staged, dst) {
         Ok(()) => {
             // staged path now holds the old original.
-            let trashed = trasher.trash(staged)?;
-            Ok(trashed)
+            match trasher.trash(staged) {
+                Ok(trashed) => Ok(ReplaceOutcome::Replaced { trashed }),
+                Err(error) => Ok(ReplaceOutcome::TrashFailed {
+                    leftover: staged.to_path_buf(),
+                    error,
+                }),
+            }
         }
         Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::ENOSYS) | Some(libc::EINVAL)) => {
             let trashed = trasher.trash(dst)?;
             match copier::rename_excl(staged, dst) {
-                Ok(()) => Ok(trashed),
+                Ok(()) => Ok(ReplaceOutcome::Replaced { trashed }),
                 Err(promote_err) => {
                     // Restore the original from the Trash — never leave the
                     // destination path empty.
-                    let _ = std::fs::rename(&trashed, dst);
-                    Err(promote_err)
+                    if std::fs::rename(&trashed, dst).is_ok() {
+                        Err(promote_err)
+                    } else {
+                        Err(io::Error::new(
+                            promote_err.kind(),
+                            format!(
+                                "{} (the original was moved to the Trash at \"{}\" and couldn't be restored)",
+                                promote_err,
+                                trashed.display()
+                            ),
+                        ))
+                    }
                 }
             }
         }
         Err(e) => Err(e),
     }
+}
+
+/// Rename a post-swap leftover (the old original stranded at a journal-visible
+/// staging path) to a name crash recovery will never delete. Tries the plain
+/// leftover name first, then counter suffixes, then a UUID-only name (which
+/// also routes around ENAMETOOLONG for long base names). Returns the final
+/// path; on `Err` the leftover is STILL at the staging path — a hard degraded
+/// state the caller must surface as a critical warning.
+pub fn rescue_leftover(leftover: &Path, op_id: &str, name: &str) -> io::Result<PathBuf> {
+    let dir = leftover.parent().unwrap_or_else(|| Path::new("/"));
+    let base = format!(".fazi-leftover-{}-{}", op_id, name);
+    let mut candidates = vec![base.clone()];
+    for n in 2..5 {
+        candidates.push(format!("{}-{}", base, n));
+    }
+    candidates.push(format!(".fazi-leftover-{}-{}", op_id, uuid::Uuid::new_v4().simple()));
+
+    let mut last_err = io::Error::new(io::ErrorKind::Other, "no rescue candidate");
+    for cand in candidates {
+        if is_staging_name(&cand, op_id) {
+            continue; // paranoia: never rescue INTO a name recovery deletes
+        }
+        match copier::rename_excl(leftover, &dir.join(&cand)) {
+            Ok(()) => return Ok(dir.join(cand)),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -552,17 +639,51 @@ pub fn merge_into(
                         }
                     }
                     Resolution::Replace | Resolution::Merge => {
-                        // Stage the replacement fully, then swap+trash.
+                        if ctx.moving {
+                            // Direct swap — never stage the source. A staging
+                            // path must never hold the only copy of data,
+                            // because recovery deletes all staging on startup.
+                            match replace_with_staged(&spath, &dpath, ctx.trasher) {
+                                Ok(ReplaceOutcome::Replaced { .. }) => {
+                                    // The swap consumed the source: dpath holds
+                                    // the new content, the old original is in
+                                    // the Trash. Nothing left to remove.
+                                    continue;
+                                }
+                                Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
+                                    // Leftover sits at the SOURCE path — not a
+                                    // staging name, safe from recovery. Never
+                                    // delete it.
+                                    sink.item_warning(
+                                        &leftover,
+                                        &format!(
+                                            "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
+                                            dpath.display(),
+                                            error,
+                                            leftover.display()
+                                        ),
+                                        WarnSeverity::Warning,
+                                    );
+                                    continue;
+                                }
+                                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                                    // Cross-volume: fall through to the staged
+                                    // copy path below.
+                                }
+                                Err(e) => {
+                                    sink.item_error(&spath, &e);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Staged path (copy, or cross-volume move): the stage
+                        // only ever holds a throwaway copy — safe for recovery
+                        // to delete.
                         let stage = dst.join(staging_name(&name, ctx.op_id));
                         remove_tree_best_effort(&stage);
                         let staged = if ctx.moving {
-                            match copier::rename(&spath, &stage) {
-                                Ok(()) => Ok(Outcome::Done),
-                                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-                                    stage_cross_volume(&spath, &stage, ctx, sink)
-                                }
-                                Err(e) => Err(e),
-                            }
+                            stage_cross_volume(&spath, &stage, ctx, sink)
                         } else {
                             copy_fresh(&spath, &stage, sink)
                         };
@@ -572,12 +693,47 @@ pub fn merge_into(
                                 return Ok(Outcome::Cancelled);
                             }
                             Ok(Outcome::Done) => match replace_with_staged(&stage, &dpath, ctx.trasher) {
-                                Ok(_trashed) => {
+                                Ok(ReplaceOutcome::Replaced { .. }) => {
+                                    if ctx.moving && spath.symlink_metadata().is_ok() {
+                                        remove_tree_best_effort(&spath);
+                                    }
+                                }
+                                Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
+                                    // The leftover old original sits at the
+                                    // stage path, whose name matches
+                                    // is_staging_name — recovery's merge-root
+                                    // scan would delete it after a crash.
+                                    // Rename it to a safe name FIRST.
+                                    match rescue_leftover(&leftover, ctx.op_id, &name) {
+                                        Ok(final_path) => sink.item_warning(
+                                            &final_path,
+                                            &format!(
+                                                "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
+                                                dpath.display(),
+                                                error,
+                                                final_path.display()
+                                            ),
+                                            WarnSeverity::Warning,
+                                        ),
+                                        Err(rename_err) => sink.item_warning(
+                                            &leftover,
+                                            &format!(
+                                                "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}) or renamed to a safe name ({}). It remains at \"{}\" and may be removed if the app crashes before this operation's record clears — rescue it manually.",
+                                                dpath.display(),
+                                                error,
+                                                rename_err,
+                                                leftover.display()
+                                            ),
+                                            WarnSeverity::Critical,
+                                        ),
+                                    }
                                     if ctx.moving && spath.symlink_metadata().is_ok() {
                                         remove_tree_best_effort(&spath);
                                     }
                                 }
                                 Err(e) => {
+                                    // Only ever a throwaway copy now — the
+                                    // source was never renamed into staging.
                                     remove_tree_best_effort(&stage);
                                     sink.item_error(&spath, &e);
                                 }
@@ -701,6 +857,7 @@ mod tests {
         entries: u64,
         bytes: u64,
         errors: Vec<String>,
+        warnings: Vec<(PathBuf, String, WarnSeverity)>,
         skipped: Vec<PathBuf>,
         canned: Resolution,
         conflicts_seen: Vec<ConflictKind>,
@@ -714,6 +871,7 @@ mod tests {
                 entries: 0,
                 bytes: 0,
                 errors: Vec::new(),
+                warnings: Vec::new(),
                 skipped: Vec::new(),
                 canned,
                 conflicts_seen: Vec::new(),
@@ -737,6 +895,9 @@ mod tests {
         fn item_error(&mut self, p: &Path, e: &io::Error) {
             self.errors.push(format!("{}: {}", p.display(), e));
         }
+        fn item_warning(&mut self, p: &Path, message: &str, severity: WarnSeverity) {
+            self.warnings.push((p.to_path_buf(), message.to_string(), severity));
+        }
         fn skipped_dataless(&mut self, p: &Path) {
             self.skipped.push(p.to_path_buf());
         }
@@ -744,6 +905,27 @@ mod tests {
             self.conflicts_seen.push(kind);
             self.canned
         }
+    }
+
+    /// Trasher that always fails — simulates an unavailable Trash.
+    struct FailTrasher;
+    impl Trasher for FailTrasher {
+        fn trash(&self, _: &Path) -> io::Result<PathBuf> {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "trash unavailable"))
+        }
+    }
+
+    /// True when the temp filesystem supports renamex_np(RENAME_SWAP) —
+    /// tests asserting post-swap behavior are skipped without it.
+    fn swap_supported(dir: &Path) -> bool {
+        let a = dir.join(".swapprobe-a");
+        let b = dir.join(".swapprobe-b");
+        fs::write(&a, b"a").unwrap();
+        fs::write(&b, b"b").unwrap();
+        let ok = copier::rename_swap(&a, &b).is_ok();
+        let _ = fs::remove_file(&a);
+        let _ = fs::remove_file(&b);
+        ok
     }
 
     fn tmp(name: &str) -> PathBuf {
@@ -930,9 +1112,90 @@ mod tests {
         fs::write(&staged, b"new").unwrap();
         fs::write(&dst, b"old").unwrap();
         let trash = DirTrasher(d.join("trash"));
-        let trashed = replace_with_staged(&staged, &dst, &trash).unwrap();
+        let outcome = replace_with_staged(&staged, &dst, &trash).unwrap();
+        let ReplaceOutcome::Replaced { trashed } = outcome else {
+            panic!("expected Replaced, got {:?}", outcome);
+        };
         assert_eq!(fs::read(&dst).unwrap(), b"new");
         assert_eq!(fs::read(&trashed).unwrap(), b"old");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn replace_trash_failure_reports_leftover_and_keeps_both() {
+        let d = tmp("replacetrashfail");
+        if !swap_supported(&d) {
+            fs::remove_dir_all(&d).ok();
+            return; // non-APFS temp: post-swap behavior can't be exercised
+        }
+        let staged = d.join("staged.txt");
+        let dst = d.join("target.txt");
+        fs::write(&staged, b"new").unwrap();
+        fs::write(&dst, b"old").unwrap();
+        let outcome = replace_with_staged(&staged, &dst, &FailTrasher).unwrap();
+        let ReplaceOutcome::TrashFailed { leftover, .. } = outcome else {
+            panic!("expected TrashFailed, got {:?}", outcome);
+        };
+        // Destination holds the new bytes; the old original survives at the
+        // leftover (post-swap staged) path.
+        assert_eq!(fs::read(&dst).unwrap(), b"new");
+        assert_eq!(leftover, staged);
+        assert_eq!(fs::read(&leftover).unwrap(), b"old");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn merge_move_replace_swaps_directly_no_staging_of_source() {
+        let d = tmp("mergemovereplace");
+        let src = d.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"new-a").unwrap();
+        let dst = d.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(dst.join("a.txt"), b"old-a").unwrap();
+
+        let trash = DirTrasher(d.join("trash"));
+        let ctx = MergeCtx { op_id: "opswap", trasher: &trash, moving: true, tol_ms: 2_000 };
+        let mut sink = TestSink::new(Resolution::Replace);
+        assert_eq!(merge_into(&src, &dst, &ctx, &mut sink).unwrap(), Outcome::Done);
+        assert!(sink.errors.is_empty(), "{:?}", sink.errors);
+
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"new-a");
+        // Old original recoverable from the trash; source consumed.
+        let trashed: Vec<_> = fs::read_dir(d.join("trash")).unwrap().flatten().collect();
+        assert_eq!(trashed.len(), 1);
+        assert_eq!(fs::read(trashed[0].path()).unwrap(), b"old-a");
+        assert!(!src.exists(), "moving merge prunes the emptied source");
+        assert_staging_free(&dst, "opswap");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn merge_move_replace_trash_failure_keeps_old_original() {
+        let d = tmp("mergemovetrashfail");
+        if !swap_supported(&d) {
+            fs::remove_dir_all(&d).ok();
+            return;
+        }
+        let src = d.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"new-a").unwrap();
+        let dst = d.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(dst.join("a.txt"), b"old-a").unwrap();
+
+        let ctx = MergeCtx { op_id: "opwarn", trasher: &FailTrasher, moving: true, tol_ms: 2_000 };
+        let mut sink = TestSink::new(Resolution::Replace);
+        assert_eq!(merge_into(&src, &dst, &ctx, &mut sink).unwrap(), Outcome::Done);
+
+        // Destination has the new content; the old original is NOT deleted —
+        // it sits at the source path (leftover of the direct swap).
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"new-a");
+        assert_eq!(fs::read(src.join("a.txt")).unwrap(), b"old-a");
+        assert!(sink.errors.is_empty(), "{:?}", sink.errors);
+        assert_eq!(sink.warnings.len(), 1, "{:?}", sink.warnings);
+        assert_eq!(sink.warnings[0].2, WarnSeverity::Warning);
+        assert_staging_free(&dst, "opwarn");
         fs::remove_dir_all(&d).ok();
     }
 

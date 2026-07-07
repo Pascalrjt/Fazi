@@ -2,9 +2,10 @@
 //! exists. These drive `spawn_op` exactly as the IPC layer does and assert
 //! the transactional guarantees from the plan.
 
+use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -13,7 +14,7 @@ use fazi_lib::core::op_queue::{
     spawn_duplicate, spawn_op, Engine, OpArgs, OpEmitter, OpEvent, OpKind, Policy,
 };
 use fazi_lib::core::undo::UndoStack;
-use fazi_lib::core::walker::{DirTrasher, Resolution};
+use fazi_lib::core::walker::{is_staging_name, DirTrasher, Resolution, Trasher};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -66,12 +67,17 @@ struct Env {
 }
 
 fn env(name: &str) -> Env {
+    env_with(name, None)
+}
+
+/// Like `env`, but with a custom trasher (defaults to `DirTrasher`).
+fn env_with(name: &str, trasher: Option<Arc<dyn Trasher>>) -> Env {
     let root = std::env::temp_dir().join(format!("fazi-engine-{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let trash_dir = root.join(".test-trash");
     let engine = Arc::new(Engine {
-        trasher: Arc::new(DirTrasher(trash_dir.clone())),
+        trasher: trasher.unwrap_or_else(|| Arc::new(DirTrasher(trash_dir.clone()))),
         journal: Arc::new(Journal::new(root.join(".journal")).unwrap()),
         undo: Arc::new(Mutex::new(UndoStack::default())),
         ops: DashMap::new(),
@@ -79,6 +85,81 @@ fn env(name: &str) -> Env {
         icon_token: Arc::new(|_, _| String::new()),
     });
     Env { root, engine, trash_dir }
+}
+
+/// Trasher that always fails — simulates an unavailable Trash.
+struct FailTrasher;
+impl Trasher for FailTrasher {
+    fn trash(&self, _: &Path) -> io::Result<PathBuf> {
+        Err(io::Error::new(io::ErrorKind::PermissionDenied, "trash unavailable"))
+    }
+}
+
+/// Trasher that parks in `trash()` until released — freezes an op at the
+/// post-swap crash point so the on-disk journal can be inspected.
+struct BlockingTrasher {
+    inner: DirTrasher,
+    entered: Arc<(Mutex<bool>, Condvar)>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl BlockingTrasher {
+    fn new(trash_dir: PathBuf) -> Self {
+        BlockingTrasher {
+            inner: DirTrasher(trash_dir),
+            entered: Arc::new((Mutex::new(false), Condvar::new())),
+            release: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    fn wait_entered(&self, timeout: Duration) {
+        let (m, cv) = &*self.entered;
+        let mut entered = m.lock().unwrap();
+        let deadline = Instant::now() + timeout;
+        while !*entered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "trasher was never entered");
+            let (guard, _) = cv.wait_timeout(entered, remaining).unwrap();
+            entered = guard;
+        }
+    }
+
+    fn release(&self) {
+        let (m, cv) = &*self.release;
+        *m.lock().unwrap() = true;
+        cv.notify_all();
+    }
+}
+
+impl Trasher for BlockingTrasher {
+    fn trash(&self, path: &Path) -> io::Result<PathBuf> {
+        {
+            let (m, cv) = &*self.entered;
+            *m.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        {
+            let (m, cv) = &*self.release;
+            let mut released = m.lock().unwrap();
+            while !*released {
+                released = cv.wait(released).unwrap();
+            }
+        }
+        self.inner.trash(path)
+    }
+}
+
+/// True when the filesystem under `dir` supports renamex_np(RENAME_SWAP).
+/// Post-swap tests are skipped without it (macOS temp dirs are APFS).
+fn swap_supported(dir: &Path) -> bool {
+    let a = dir.join(".swapprobe-a");
+    let b = dir.join(".swapprobe-b");
+    std::fs::write(&a, b"a").unwrap();
+    std::fs::write(&b, b"b").unwrap();
+    let ok = fazi_lib::core::copier::rename_swap(&a, &b).is_ok();
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    ok
 }
 
 fn make_tree(root: &Path, files: usize) {
@@ -611,6 +692,362 @@ fn duplicate_uses_copy_naming() {
     assert_eq!(produced, vec![env.root.join("report copy.pdf").to_string_lossy().into_owned()]);
     assert_eq!(std::fs::read(env.root.join("report copy.pdf")).unwrap(), b"pdf-bytes");
     std::fs::remove_dir_all(&env.root).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Replace crash safety (direct swap, trash failure, journal fail-fast)
+// ---------------------------------------------------------------------------
+
+/// Pins the property that recovery can never delete the source of a
+/// same-volume move-replace: at the post-swap crash point (parked inside the
+/// trasher) the on-disk journal must have an empty `staging` array and the
+/// destination must already hold the new content.
+#[test]
+fn move_replace_same_volume_never_registers_source_in_staging() {
+    let trasher = Arc::new(BlockingTrasher::new(
+        std::env::temp_dir()
+            .join(format!("fazi-engine-swapstage-{}", std::process::id()))
+            .join(".test-trash"),
+    ));
+    let env = env_with("swapstage", Some(trasher.clone()));
+    if !swap_supported(&env.root) {
+        std::fs::remove_dir_all(&env.root).ok();
+        return;
+    }
+    let srcdir = env.root.join("from");
+    std::fs::create_dir_all(&srcdir).unwrap();
+    std::fs::write(srcdir.join("doc.txt"), b"new").unwrap();
+    let dst = env.root.join("to");
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(dst.join("doc.txt"), b"old").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-swapstage".into(),
+            kind: OpKind::Move,
+            sources: vec![srcdir.join("doc.txt")],
+            dest_dir: dst.clone(),
+            policy: Policy::Replace,
+        },
+        Arc::new(emitter.clone()),
+    );
+
+    // Parked inside trash() — the post-swap crash point.
+    trasher.wait_entered(Duration::from_secs(10));
+    let journal_json =
+        std::fs::read_to_string(env.root.join(".journal/op-swapstage.json")).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&journal_json).unwrap();
+    assert_eq!(
+        parsed["staging"].as_array().unwrap().len(),
+        0,
+        "the source must never be registered in staging: {}",
+        journal_json
+    );
+    // The swap already happened: dest holds the new content.
+    assert_eq!(std::fs::read(dst.join("doc.txt")).unwrap(), b"new");
+
+    trasher.release();
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, _, _) = done_status(&events);
+    assert_eq!(status, "success");
+    // Old original trashed; no staging anywhere.
+    let trashed: Vec<_> = std::fs::read_dir(&trasher.inner.0).unwrap().flatten().collect();
+    assert_eq!(trashed.len(), 1);
+    assert_eq!(std::fs::read(trashed[0].path()).unwrap(), b"old");
+    assert_eq!(count_staging(&env.root), 0);
+    std::fs::remove_dir_all(&env.root).ok();
+    std::fs::remove_dir_all(trasher.inner.0.parent().unwrap()).ok();
+}
+
+/// A fabricated post-crash journal for a move op: recovery must delete the
+/// throwaway partial but never touch the intact source.
+#[test]
+fn crash_recovery_of_move_op_keeps_source() {
+    let env = env("crashmove");
+    let src = env.root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("doc.txt"), b"precious").unwrap();
+    let dst = env.root.join("dst");
+    std::fs::create_dir_all(&dst).unwrap();
+    let partial = dst.join(".doc.txt.fazi-partial-op-crashmove");
+    std::fs::write(&partial, b"half").unwrap();
+
+    env.engine
+        .journal
+        .write(&fazi_lib::core::journal::OpJournalEntry {
+            op_id: "op-crashmove".into(),
+            kind: "move".into(),
+            sources: vec![src.join("doc.txt").to_string_lossy().into_owned()],
+            dest_dir: dst.to_string_lossy().into_owned(),
+            staging: vec![partial.to_string_lossy().into_owned()],
+            merge_roots: vec![],
+            completed: vec![],
+            total: 1,
+            started_at_ms: 0,
+        })
+        .unwrap();
+
+    let report = env.engine.journal.recover();
+    assert_eq!(report.len(), 1);
+    assert!(!partial.exists(), "throwaway partial must be cleaned up");
+    assert_eq!(
+        std::fs::read(src.join("doc.txt")).unwrap(),
+        b"precious",
+        "recovery must never touch the source"
+    );
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+/// Post-swap trash failure: the replacement is done and reported as success
+/// with a warning; the old original is stranded but never destroyed.
+#[test]
+fn post_swap_trash_failure_replaces_and_strands_old_original() {
+    // Copy-kind (staged path): leftover is rescued out of the staging name.
+    {
+        let env = env_with("trashfailcopy", Some(Arc::new(FailTrasher)));
+        if !swap_supported(&env.root) {
+            std::fs::remove_dir_all(&env.root).ok();
+            return;
+        }
+        let srcdir = env.root.join("from");
+        std::fs::create_dir_all(&srcdir).unwrap();
+        std::fs::write(srcdir.join("doc.txt"), b"new").unwrap();
+        let dst = env.root.join("to");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(dst.join("doc.txt"), b"old").unwrap();
+
+        let emitter = TestEmitter::new();
+        spawn_op(
+            env.engine.clone(),
+            OpArgs {
+                op_id: "op-tfc".into(),
+                kind: OpKind::Copy,
+                sources: vec![srcdir.join("doc.txt")],
+                dest_dir: dst.clone(),
+                policy: Policy::Replace,
+            },
+            Arc::new(emitter.clone()),
+        );
+        let events = emitter.wait_done(Duration::from_secs(10));
+        let (status, _, _) = done_status(&events);
+        assert_eq!(status, "success");
+        let warning_path = events
+            .iter()
+            .find_map(|e| match e {
+                OpEvent::Warning { path, .. } => Some(PathBuf::from(path)),
+                _ => None,
+            })
+            .expect("a Warning event must carry the leftover path");
+        assert_eq!(std::fs::read(dst.join("doc.txt")).unwrap(), b"new");
+        assert_eq!(
+            std::fs::read(&warning_path).unwrap(),
+            b"old",
+            "the old original must survive at the leftover path"
+        );
+        std::fs::remove_dir_all(&env.root).ok();
+    }
+
+    // Move-kind (direct swap): the old original sits at the SOURCE path —
+    // regression for the old mis-restore that renamed old-dest content over
+    // the source.
+    {
+        let env = env_with("trashfailmove", Some(Arc::new(FailTrasher)));
+        if !swap_supported(&env.root) {
+            std::fs::remove_dir_all(&env.root).ok();
+            return;
+        }
+        let srcdir = env.root.join("from");
+        std::fs::create_dir_all(&srcdir).unwrap();
+        std::fs::write(srcdir.join("doc.txt"), b"new").unwrap();
+        let dst = env.root.join("to");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(dst.join("doc.txt"), b"old").unwrap();
+
+        let emitter = TestEmitter::new();
+        spawn_op(
+            env.engine.clone(),
+            OpArgs {
+                op_id: "op-tfm".into(),
+                kind: OpKind::Move,
+                sources: vec![srcdir.join("doc.txt")],
+                dest_dir: dst.clone(),
+                policy: Policy::Replace,
+            },
+            Arc::new(emitter.clone()),
+        );
+        let events = emitter.wait_done(Duration::from_secs(10));
+        let (status, _, _) = done_status(&events);
+        assert_eq!(status, "success");
+        assert!(events.iter().any(|e| matches!(e, OpEvent::Warning { .. })));
+        // Source content landed at dest; old original sits at the source path.
+        assert_eq!(std::fs::read(dst.join("doc.txt")).unwrap(), b"new");
+        assert_eq!(std::fs::read(srcdir.join("doc.txt")).unwrap(), b"old");
+        assert_eq!(count_staging(&env.root), 0);
+        std::fs::remove_dir_all(&env.root).ok();
+    }
+}
+
+/// The rescued leftover must be immune to crash recovery: not a staging name,
+/// and it must survive a `recover()` run over the pre-crash journal state.
+#[test]
+fn staged_trash_failure_moves_leftover_out_of_staging() {
+    let env = env_with("leftoverrescue", Some(Arc::new(FailTrasher)));
+    if !swap_supported(&env.root) {
+        std::fs::remove_dir_all(&env.root).ok();
+        return;
+    }
+    let srcdir = env.root.join("from");
+    std::fs::create_dir_all(&srcdir).unwrap();
+    std::fs::write(srcdir.join("doc.txt"), b"new").unwrap();
+    let dst = env.root.join("to");
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(dst.join("doc.txt"), b"old").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-rescue".into(),
+            kind: OpKind::Copy,
+            sources: vec![srcdir.join("doc.txt")],
+            dest_dir: dst.clone(),
+            policy: Policy::Replace,
+        },
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, _, _) = done_status(&events);
+    assert_eq!(status, "success");
+    let leftover = events
+        .iter()
+        .find_map(|e| match e {
+            OpEvent::Warning { path, .. } => Some(PathBuf::from(path)),
+            _ => None,
+        })
+        .expect("warning with leftover path");
+    let leftover_name = leftover.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        !is_staging_name(&leftover_name, "op-rescue"),
+        "leftover must not carry a staging name: {}",
+        leftover_name
+    );
+
+    // Replay the pre-crash journal state (stage still registered, dest dir a
+    // merge root) and run recovery: the rescued leftover must survive both
+    // deletion mechanisms.
+    let stage = dst.join(".doc.txt.fazi-partial-op-rescue");
+    env.engine
+        .journal
+        .write(&fazi_lib::core::journal::OpJournalEntry {
+            op_id: "op-rescue".into(),
+            kind: "copy".into(),
+            sources: vec![srcdir.join("doc.txt").to_string_lossy().into_owned()],
+            dest_dir: dst.to_string_lossy().into_owned(),
+            staging: vec![stage.to_string_lossy().into_owned()],
+            merge_roots: vec![dst.to_string_lossy().into_owned()],
+            completed: vec![],
+            total: 1,
+            started_at_ms: 0,
+        })
+        .unwrap();
+    let report = env.engine.journal.recover();
+    assert_eq!(report.len(), 1);
+    assert_eq!(
+        std::fs::read(&leftover).unwrap(),
+        b"old",
+        "recovery must never delete the rescued leftover"
+    );
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+/// Journal write failure aborts before any fs mutation — and the enumeration
+/// thread (spawned only after a successful intent write) never emits a stray
+/// Enumerated event after the failed Done. Covers both entry points.
+#[test]
+fn journal_write_failure_aborts_before_any_fs_mutation() {
+    // Copy/move entry point.
+    {
+        let env = env("journalfail");
+        // Sabotage: replace the journal dir with a plain file.
+        let jdir = env.root.join(".journal");
+        std::fs::remove_dir_all(&jdir).unwrap();
+        std::fs::write(&jdir, b"not a dir").unwrap();
+
+        let src = env.root.join("src");
+        make_tree(&src, 3);
+        let dst = env.root.join("dst");
+        std::fs::create_dir_all(&dst).unwrap();
+
+        let emitter = TestEmitter::new();
+        spawn_op(
+            env.engine.clone(),
+            OpArgs {
+                op_id: "op-jfail".into(),
+                kind: OpKind::Copy,
+                sources: vec![src.clone()],
+                dest_dir: dst.clone(),
+                policy: Policy::Ask,
+            },
+            Arc::new(emitter.clone()),
+        );
+        let events = emitter.wait_done(Duration::from_secs(10));
+        let (status, produced, _) = done_status(&events);
+        assert_eq!(status, "failed");
+        assert!(produced.is_empty());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            OpEvent::Done { errors, .. } if errors.iter().any(|err| err.message.contains("journal"))
+        )));
+        // No fs mutation: source intact, destination empty, no staging.
+        assert!(src.join("file000.txt").exists());
+        assert_eq!(std::fs::read_dir(&dst).unwrap().count(), 0);
+        assert_eq!(count_staging(&env.root), 0);
+        // The enumeration thread was never spawned — give a straggler every
+        // chance to appear, then assert it didn't.
+        std::thread::sleep(Duration::from_millis(300));
+        let events = emitter.0.events.lock().unwrap();
+        assert!(
+            !events.iter().any(|e| matches!(e, OpEvent::Enumerated { .. })),
+            "no Enumerated event may follow a failed intent write"
+        );
+        drop(events);
+        std::fs::remove_dir_all(&env.root).ok();
+    }
+
+    // Duplicate entry point (has its own pre-write enumeration spawn).
+    {
+        let env = env("journalfaildup");
+        let jdir = env.root.join(".journal");
+        std::fs::remove_dir_all(&jdir).unwrap();
+        std::fs::write(&jdir, b"not a dir").unwrap();
+
+        let f = env.root.join("report.pdf");
+        std::fs::write(&f, b"pdf-bytes").unwrap();
+
+        let emitter = TestEmitter::new();
+        spawn_duplicate(
+            env.engine.clone(),
+            "op-jfaildup".into(),
+            vec![f.clone()],
+            Arc::new(emitter.clone()),
+        );
+        let events = emitter.wait_done(Duration::from_secs(10));
+        let (status, produced, _) = done_status(&events);
+        assert_eq!(status, "failed");
+        assert!(produced.is_empty());
+        assert!(!env.root.join("report copy.pdf").exists());
+        assert_eq!(count_staging(&env.root), 0);
+        std::thread::sleep(Duration::from_millis(300));
+        let events = emitter.0.events.lock().unwrap();
+        assert!(
+            !events.iter().any(|e| matches!(e, OpEvent::Enumerated { .. })),
+            "no Enumerated event may follow a failed intent write"
+        );
+        drop(events);
+        std::fs::remove_dir_all(&env.root).ok();
+    }
 }
 
 #[test]
