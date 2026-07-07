@@ -1,0 +1,486 @@
+/**
+ * All Fazi commands, registered once at boot. Single source of truth for
+ * keyboard shortcuts AND the command palette.
+ */
+import { registerCommands } from "./registry";
+import {
+  arrowMove,
+  shiftArrowExtend,
+} from "../selection";
+import * as actions from "../actions";
+import { useApp } from "../../stores/app";
+import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../../stores/panes";
+import { useOps } from "../../stores/ops";
+import { useSettings } from "../../stores/settings";
+
+let registered = false;
+
+/** GridView reports its column count so arrow keys can move by row. */
+export let gridColumns = 1;
+export function setGridColumns(n: number): void {
+  gridColumns = Math.max(1, n);
+}
+
+function moveLead(delta: 1 | -1, extend: boolean, stride = 1): void {
+  const at = activePaneTab();
+  if (!at) return;
+  const { pane, tab } = at;
+  const order = visibleEntries(tab).map((e) => e.id);
+  let next = tab.selection;
+  for (let i = 0; i < stride; i++) {
+    next = extend ? shiftArrowExtend(next, order, delta) : arrowMove(next, order, delta);
+  }
+  usePanes.getState().setSelection(pane.id, tab.id, next);
+}
+
+function isGrid(): boolean {
+  return useSettings.getState().viewMode === "grid";
+}
+
+function hasSelection(): boolean {
+  return selectedEntries().length > 0;
+}
+
+export function registerAllCommands(): void {
+  if (registered) return;
+  registered = true;
+
+  registerCommands([
+    // -----------------------------------------------------------------------
+    // Open / navigate
+    // -----------------------------------------------------------------------
+    {
+      id: "open",
+      title: "Open",
+      keywords: "launch enter",
+      shortcut: "cmd+down",
+      extraShortcuts: ["cmd+o"],
+      enabled: hasSelection,
+      run: () => actions.openSelection(),
+    },
+    {
+      id: "openWith",
+      title: "Open With…",
+      keywords: "application app choose",
+      enabled: hasSelection,
+      run: () => actions.showOpenWithMenuAtCenter(),
+    },
+    {
+      id: "up",
+      title: "Enclosing Folder",
+      keywords: "parent up folder",
+      shortcut: "cmd+up",
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().up(at.pane.id, at.tab.id);
+      },
+    },
+    {
+      id: "back",
+      title: "Back",
+      shortcut: "cmd+[",
+      extraShortcuts: ["cmd+left"],
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().back(at.pane.id, at.tab.id);
+      },
+    },
+    {
+      id: "forward",
+      title: "Forward",
+      shortcut: "cmd+]",
+      extraShortcuts: ["cmd+right"],
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().forward(at.pane.id, at.tab.id);
+      },
+    },
+    {
+      id: "goHome",
+      title: "Go to Home",
+      keywords: "go home folder ~",
+      shortcut: "cmd+shift+h",
+      run: () => actions.goToFolder("home"),
+    },
+    {
+      id: "goDesktop",
+      title: "Go to Desktop",
+      keywords: "go desktop",
+      run: () => actions.goToFolder("desktop"),
+    },
+    {
+      id: "goDownloads",
+      title: "Go to Downloads",
+      keywords: "go downloads",
+      shortcut: "cmd+opt+l",
+      run: () => actions.goToFolder("downloads"),
+    },
+    {
+      id: "goApplications",
+      title: "Go to Applications",
+      keywords: "go applications apps",
+      shortcut: "cmd+shift+a",
+      run: () => actions.goToFolder("applications"),
+    },
+    {
+      id: "goDocuments",
+      title: "Go to Documents",
+      keywords: "go documents",
+      run: () => actions.goToFolder("documents"),
+    },
+    {
+      id: "openLocation",
+      title: "Go to Folder…",
+      keywords: "path location edit go",
+      shortcut: "cmd+shift+g",
+      context: ["browse", "search"],
+      run: () => useApp.getState().setPathBarEditing(true),
+    },
+    {
+      id: "revealInFinder",
+      title: "Reveal in Finder",
+      keywords: "show finder",
+      run: () => {
+        const entries = selectedEntries();
+        const at = activePaneTab();
+        actions.revealPaths(
+          entries.length > 0 ? entries.map((e) => e.path) : at ? [at.tab.path] : [],
+        );
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // File ops
+    // -----------------------------------------------------------------------
+    {
+      id: "newFolder",
+      title: "New Folder",
+      keywords: "create directory mkdir",
+      shortcut: "cmd+shift+n",
+      run: () => actions.newFolderInActive(),
+    },
+    {
+      id: "rename",
+      title: "Rename",
+      shortcut: "enter",
+      enabled: hasSelection,
+      run: () => actions.startRenameSelected(),
+    },
+    {
+      id: "trash",
+      title: "Move to Trash",
+      keywords: "delete remove",
+      shortcut: "cmd+delete",
+      enabled: hasSelection,
+      run: () => actions.trashSelection(),
+    },
+    {
+      id: "deletePermanent",
+      title: "Delete Immediately…",
+      keywords: "delete permanent remove force",
+      shortcut: "cmd+opt+delete",
+      enabled: hasSelection,
+      run: () => actions.deleteSelectionPermanently(),
+    },
+    {
+      id: "copy",
+      title: "Copy",
+      shortcut: "cmd+c",
+      enabled: hasSelection,
+      run: () => actions.copySelection(),
+    },
+    {
+      id: "cut",
+      title: "Cut",
+      shortcut: "cmd+x",
+      enabled: hasSelection,
+      run: () => actions.cutSelection(),
+    },
+    {
+      id: "paste",
+      title: "Paste",
+      shortcut: "cmd+v",
+      run: () => actions.pasteIntoActive(false),
+    },
+    {
+      id: "movePaste",
+      title: "Move Items Here",
+      keywords: "paste move",
+      shortcut: "cmd+opt+v",
+      run: () => actions.pasteIntoActive(true),
+    },
+    {
+      id: "copyPathname",
+      title: "Copy as Pathname",
+      keywords: "path clipboard",
+      shortcut: "cmd+opt+c",
+      run: () => actions.copyPathnames(),
+    },
+    {
+      id: "duplicate",
+      title: "Duplicate",
+      shortcut: "cmd+d",
+      enabled: hasSelection,
+      run: () => actions.duplicateSelection(),
+    },
+    {
+      id: "undo",
+      title: "Undo",
+      shortcut: "cmd+z",
+      run: () => void useOps.getState().undo(),
+    },
+    {
+      id: "redo",
+      title: "Redo",
+      shortcut: "cmd+shift+z",
+      run: () => void useOps.getState().redo(),
+    },
+
+    // -----------------------------------------------------------------------
+    // Selection
+    // -----------------------------------------------------------------------
+    {
+      id: "selectAll",
+      title: "Select All",
+      shortcut: "cmd+a",
+      run: () => actions.selectAllVisible(),
+    },
+    {
+      id: "arrowDown",
+      title: "Next Item",
+      hidden: true,
+      shortcut: "down",
+      run: () => moveLead(1, false, isGrid() ? gridColumns : 1),
+    },
+    {
+      id: "arrowUp",
+      title: "Previous Item",
+      hidden: true,
+      shortcut: "up",
+      run: () => moveLead(-1, false, isGrid() ? gridColumns : 1),
+    },
+    {
+      id: "arrowDownExtend",
+      title: "Extend Selection Down",
+      hidden: true,
+      shortcut: "shift+down",
+      run: () => moveLead(1, true, isGrid() ? gridColumns : 1),
+    },
+    {
+      id: "arrowUpExtend",
+      title: "Extend Selection Up",
+      hidden: true,
+      shortcut: "shift+up",
+      run: () => moveLead(-1, true, isGrid() ? gridColumns : 1),
+    },
+    {
+      id: "arrowRight",
+      title: "Next Item (grid)",
+      hidden: true,
+      shortcut: "right",
+      enabled: isGrid,
+      run: () => moveLead(1, false, 1),
+    },
+    {
+      id: "arrowLeft",
+      title: "Previous Item (grid)",
+      hidden: true,
+      shortcut: "left",
+      enabled: isGrid,
+      run: () => moveLead(-1, false, 1),
+    },
+    {
+      id: "escapeBrowse",
+      title: "Deselect All",
+      hidden: true,
+      shortcut: "escape",
+      run: () => {
+        const at = activePaneTab();
+        if (!at) return;
+        const app = useApp.getState();
+        if (app.globalSearch.active) {
+          app.closeGlobalSearch();
+          return;
+        }
+        const panes = usePanes.getState();
+        if (at.tab.filter !== "") {
+          panes.setFilter(at.pane.id, at.tab.id, "");
+          return;
+        }
+        panes.setSelection(at.pane.id, at.tab.id, {
+          selected: new Set(),
+          anchor: null,
+          lead: null,
+        });
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // View & window
+    // -----------------------------------------------------------------------
+    {
+      id: "preview",
+      title: "Quick Look",
+      keywords: "preview space peek",
+      shortcut: "space",
+      enabled: hasSelection,
+      run: () => useApp.getState().setPreviewOpen(true),
+    },
+    {
+      id: "quicklookPanel",
+      title: "Quick Look (System Panel)",
+      keywords: "qlmanage native preview",
+      shortcut: "cmd+y",
+      context: ["browse", "preview"],
+      enabled: hasSelection,
+      run: () => actions.quickLookSelection(),
+    },
+    {
+      id: "toggleHidden",
+      title: "Toggle Hidden Files",
+      keywords: "show hide dotfiles invisible",
+      shortcut: "cmd+shift+.",
+      context: ["browse", "search"],
+      run: () => {
+        const at = activePaneTab();
+        if (!at) return;
+        const next = !at.tab.showHidden;
+        usePanes.getState().setTabShowHidden(at.pane.id, at.tab.id, next);
+        useSettings.getState().setShowHidden(next);
+      },
+    },
+    {
+      id: "palette",
+      title: "Command Palette",
+      hidden: true,
+      shortcut: "cmd+k",
+      context: ["browse", "search", "preview", "palette"],
+      run: () => {
+        const app = useApp.getState();
+        app.setPaletteOpen(!app.paletteOpen);
+      },
+    },
+    {
+      id: "dualPane",
+      title: "Toggle Dual Pane",
+      keywords: "split second pane",
+      shortcut: "cmd+shift+d",
+      run: () => {
+        const s = usePanes.getState();
+        s.setSplit(!s.split);
+      },
+    },
+    {
+      id: "swapPane",
+      title: "Focus Other Pane",
+      keywords: "switch pane",
+      shortcut: "tab",
+      enabled: () => usePanes.getState().split,
+      run: () => {
+        const app = useApp.getState();
+        app.setActivePane(app.activePaneId === "left" ? "right" : "left");
+      },
+    },
+    {
+      id: "newTab",
+      title: "New Tab",
+      shortcut: "cmd+t",
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().openTab(at.pane.id, at.tab.path);
+      },
+    },
+    {
+      id: "closeTab",
+      title: "Close Tab",
+      shortcut: "cmd+w",
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().closeTab(at.pane.id, at.tab.id);
+      },
+    },
+    {
+      id: "nextTab",
+      title: "Next Tab",
+      shortcut: "ctrl+tab",
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().cycleTab(at.pane.id, 1);
+      },
+    },
+    {
+      id: "prevTab",
+      title: "Previous Tab",
+      shortcut: "ctrl+shift+tab",
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().cycleTab(at.pane.id, -1);
+      },
+    },
+    {
+      id: "focusSearch",
+      title: "Search This Folder",
+      keywords: "filter find",
+      shortcut: "cmd+f",
+      context: ["browse", "search"],
+      run: () => useApp.getState().requestSearchFocus(),
+    },
+    {
+      id: "globalSearch",
+      title: "Search Everywhere",
+      keywords: "find global spotlight mdfind",
+      shortcut: "cmd+shift+f",
+      context: ["browse", "search"],
+      run: () => {
+        const app = useApp.getState();
+        app.openGlobalSearch(app.globalSearch.query, "mac");
+        app.requestSearchFocus();
+      },
+    },
+    {
+      id: "getInfo",
+      title: "Get Info",
+      keywords: "properties details inspector",
+      shortcut: "cmd+i",
+      run: () => {
+        const app = useApp.getState();
+        app.setGetInfoOpen(!app.getInfoOpen);
+      },
+    },
+    {
+      id: "toggleSidebar",
+      title: "Toggle Sidebar",
+      shortcut: "cmd+opt+s",
+      run: () => useSettings.getState().toggleSidebar(),
+    },
+    {
+      id: "viewList",
+      title: "View as List",
+      shortcut: "cmd+1",
+      run: () => useSettings.getState().setViewMode("list"),
+    },
+    {
+      id: "viewGrid",
+      title: "View as Icons",
+      keywords: "grid icons",
+      shortcut: "cmd+2",
+      run: () => useSettings.getState().setViewMode("grid"),
+    },
+    {
+      id: "eject",
+      title: "Eject Volume",
+      keywords: "unmount disk",
+      run: () => actions.ejectActiveVolume(),
+    },
+    {
+      id: "refresh",
+      title: "Refresh",
+      keywords: "reload",
+      shortcut: "cmd+r",
+      run: () => {
+        const at = activePaneTab();
+        if (at) usePanes.getState().refresh(at.pane.id, at.tab.id);
+      },
+    },
+  ]);
+}

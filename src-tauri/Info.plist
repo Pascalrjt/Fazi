@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Fazi is a file manager and needs access to your Desktop to browse and manage files there.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Fazi is a file manager and needs access to your Documents to browse and manage files there.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Fazi is a file manager and needs access to your Downloads to browse and manage files there.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Fazi needs access to removable volumes to browse and manage files on external disks.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Fazi needs access to network volumes to browse and manage files on network shares.</string>
+  <key>NSFileProviderDomainUsageDescription</key>
+  <string>Fazi shows iCloud Drive and other cloud files alongside local files.</string>
+</dict>
+</plist>

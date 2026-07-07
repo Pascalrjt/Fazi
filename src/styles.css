@@ -1,0 +1,292 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+ * Design tokens — dark-first, light theme via prefers-color-scheme.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* backgrounds, layered */
+  --bg-window: #1a1c20;
+  --bg-pane: #202329;
+  --bg-raised: #2a2e36;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+
+  /* text */
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0aa;
+  --text-tertiary: #61666e;
+
+  /* the one accent — selection, focus rings, progress. Nothing else. */
+  --accent: #4f8ef7;
+  --accent-dim: rgba(79, 142, 247, 0.28);
+  --accent-faint: rgba(79, 142, 247, 0.14);
+
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --danger: #e5534b;
+  --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-window: #f2f3f5;
+    --bg-pane: #ffffff;
+    --bg-raised: #eceef1;
+    --bg-hover: rgba(0, 0, 0, 0.045);
+
+    --text-primary: #1c1e22;
+    --text-secondary: #5c626c;
+    --text-tertiary: #9aa0aa;
+
+    --accent: #3478f6;
+    --accent-dim: rgba(52, 120, 246, 0.24);
+    --accent-faint: rgba(52, 120, 246, 0.1);
+
+    --border: rgba(0, 0, 0, 0.1);
+    --border-strong: rgba(0, 0, 0, 0.18);
+    --danger: #d0342c;
+    --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
+
+    color-scheme: light;
+  }
+}
+
+@theme inline {
+  --color-window: var(--bg-window);
+  --color-pane: var(--bg-pane);
+  --color-raised: var(--bg-raised);
+  --color-hov: var(--bg-hover);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-faint: var(--accent-faint);
+  --color-edge: var(--border);
+  --color-edge-strong: var(--border-strong);
+  --color-danger: var(--danger);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --spacing: 0.25rem; /* 4px — components stick to the 8px grid via even multiples */
+}
+
+/* ---------------------------------------------------------------------------
+ * Base
+ * ------------------------------------------------------------------------- */
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  background: transparent; /* window may be transparent; app root paints */
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+#root {
+  background: var(--bg-window);
+  border-radius: 10px; /* macOS rounds the window; keep our paint inside it */
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-tertiary);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+/* numeric columns must not jitter */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+ * Traffic lights / drag region
+ * ------------------------------------------------------------------------- */
+
+.traffic-pad {
+  padding-left: 80px; /* room for macOS traffic lights under titleBarStyle: Overlay */
+}
+
+/* ---------------------------------------------------------------------------
+ * Overlay / panel transitions (subtle, ease-out; NEVER on list rows)
+ * ------------------------------------------------------------------------- */
+
+@keyframes tz-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes tz-pop-in {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes tz-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes tz-slide-left {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.anim-fade { animation: tz-fade-in 150ms ease-out; }
+.anim-pop { animation: tz-pop-in 130ms ease-out; }
+.anim-slide-up { animation: tz-slide-up 140ms ease-out; }
+.anim-slide-left { animation: tz-slide-left 150ms ease-out; }
+
+/* ---------------------------------------------------------------------------
+ * Shimmer placeholders for unhydrated size/date cells
+ * ------------------------------------------------------------------------- */
+
+@keyframes tz-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.shimmer {
+  display: inline-block;
+  width: 3.5em;
+  height: 9px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-raised) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-raised) 75%
+  );
+  background-size: 200% 100%;
+  animation: tz-shimmer 1.6s linear infinite;
+}
+
+/* ---------------------------------------------------------------------------
+ * Indeterminate loading bar under the toolbar
+ * ------------------------------------------------------------------------- */
+
+@keyframes tz-indeterminate {
+  0% { left: -35%; right: 100%; }
+  60% { left: 100%; right: -90%; }
+  100% { left: 100%; right: -90%; }
+}
+
+.loading-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  z-index: 30;
+  pointer-events: none;
+}
+.loading-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  animation: tz-indeterminate 1.2s cubic-bezier(0.65, 0.05, 0.55, 0.95) infinite;
+}
+
+/* ---------------------------------------------------------------------------
+ * Marquee rubber-band rectangle
+ * ------------------------------------------------------------------------- */
+
+.marquee-rect {
+  position: absolute;
+  z-index: 20;
+  border: 1px solid var(--accent);
+  background: var(--accent-faint);
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * Inline rename input
+ * ------------------------------------------------------------------------- */
+
+.rename-input {
+  background: var(--bg-pane);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  outline: none;
+  padding: 1px 4px;
+  font: inherit;
+  color: var(--text-primary);
+  min-width: 60px;
+}
+.rename-input.invalid {
+  border-color: var(--danger);
+  text-decoration: underline wavy var(--danger) 1px;
+  text-underline-offset: 2px;
+}
+
+/* thin progress bar in op cards */
+.op-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.op-progress > div {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 200ms linear;
+}
+.op-progress.indeterminate > div {
+  width: 30% !important;
+  animation: tz-op-indet 1.1s ease-in-out infinite alternate;
+}
+@keyframes tz-op-indet {
+  from { margin-left: 0; }
+  to { margin-left: 70%; }
+}
+
+/* drop-target ring */
+.drop-ring {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: 5px;
+  background: var(--accent-faint);
+}
+
+/* ghost rows awaiting watcher confirmation */
+.ghost-row {
+  opacity: 0.45;
+}
+
+/* focus rings only for keyboard nav on chrome controls */
+.focusable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: 5px;
+}
