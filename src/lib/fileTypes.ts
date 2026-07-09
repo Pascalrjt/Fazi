@@ -26,6 +26,17 @@ export const ARCHIVE_EXTS = new Set([
   "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "dmg", "iso", "pkg", "tgz",
 ]);
 
+/**
+ * True when Fazi can extract this file: .zip (ditto) and the tar family
+ * (bsdtar). `entry.ext` for "x.tar.gz" is "gz", so the compound suffixes need
+ * the name check. Lone .gz / 7z / rar / dmg stay display-only.
+ */
+export function isExtractableArchive(name: string, ext: string): boolean {
+  if (ext === "zip" || ext === "tar" || ext === "tgz") return true;
+  const lower = name.toLowerCase();
+  return lower.endsWith(".tar.gz") || lower.endsWith(".tar.bz2") || lower.endsWith(".tar.xz");
+}
+
 export type PreviewMode = "image" | "video" | "audio" | "text" | "thumbnail";
 
 export function previewModeFor(ext: string, kind: string): PreviewMode {

@@ -8,6 +8,7 @@ import {
   shiftArrowExtend,
 } from "../selection";
 import * as actions from "../actions";
+import { isExtractableArchive } from "../fileTypes";
 import { useApp } from "../../stores/app";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../../stores/panes";
 import { useOps } from "../../stores/ops";
@@ -222,6 +223,23 @@ export function registerAllCommands(): void {
       shortcut: "cmd+d",
       enabled: hasSelection,
       run: () => actions.duplicateSelection(),
+    },
+    {
+      id: "compress",
+      title: "Compress",
+      keywords: "zip archive",
+      enabled: hasSelection,
+      run: () => actions.compressSelection(),
+    },
+    {
+      id: "extract",
+      title: "Extract",
+      keywords: "unzip untar expand",
+      enabled: () =>
+        selectedEntries().some(
+          (e) => e.kind === "file" && isExtractableArchive(e.name, e.ext),
+        ),
+      run: () => actions.extractSelection(),
     },
     {
       id: "undo",

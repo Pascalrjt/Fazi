@@ -104,3 +104,37 @@ phase done. Check items off per release.
 - [ ] Drag from Finder into a Fazi folder row / pane background copies there.
 - [ ] Within Fazi: drag to folder rows, breadcrumbs, sidebar, other pane;
       spring-loaded folders open after ~600 ms hover; ⌥ shows copy behavior.
+
+## Archives
+- [ ] Compress a large folder and cancel mid-way → op card disappears, no
+      `.fazi-partial-*` leftovers in the destination, no zip produced.
+- [ ] Force-quit (`kill -9`) mid-compress → relaunch cleans all staging and
+      the interruption toast reads "0 of 1 item" (never "0 of N sources").
+- [ ] Finder opens the produced zip and shows the expected layout: single
+      file → the file at zip root; single folder → one top-level folder;
+      multi-select → all items at zip root (named `Archive.zip`).
+- [ ] Multi-select compress including an evicted iCloud file ("Remove
+      Download" in Finder first) → compress waits for materialization and the
+      zip contains the full file, never a placeholder; cancel during the wait
+      takes effect at the next entry/chunk boundary.
+- [ ] Extract a `.tar.gz` → contents promoted next to the archive; a
+      single-root tarball promotes under the inner name (no `X/X` nesting).
+- [ ] ⌘Z after compress trashes the zip; Edit menu reads "Undo Compress of
+      1 Item"; ⌘⇧Z restores it and the menu still says Compress.
+- [ ] Compress/extract progress: compress card shows bytes (no rate/ETA) and
+      never exceeds 100%; multi-archive extract shows "N of M archives" and
+      advances past a failed archive.
+
+## Sidebar favorites
+- [ ] Right-click a folder → "Add to Sidebar" pins it under the default
+      Favorites; pinning ~/Downloads again is refused (no duplicate row).
+- [ ] Drag folders from the file list onto the Favorites section label /
+      whitespace → pinned; dragging files there is refused with a toast.
+- [ ] Drag a pinned favorite row up/down → 2 px insertion line, order
+      persists across relaunch.
+- [ ] Drag a file onto a pinned favorite row still moves it INTO that folder
+      (regression for the drop-propagation change) — it must not pin.
+- [ ] Right-click a pinned row → "Remove from Sidebar"; default rows offer no
+      such item.
+- [ ] Finder drag-in onto the sidebar does not pin (out of scope — it copies
+      into hit-tested folders only).

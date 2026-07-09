@@ -22,8 +22,8 @@ use crate::core::entry::is_dataless;
 use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, ReplaceOutcome,
-    Resolution, Trasher, WalkSink, WarnSeverity,
+    self, keep_both_name, staging_name, ConflictKind, DatalessPolicy, MergeCtx, Outcome,
+    ReplaceOutcome, Resolution, Trasher, WalkSink, WarnSeverity,
 };
 
 // ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ pub struct OpHandle {
 }
 
 impl OpHandle {
-    fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(OpHandle {
             cancel: AtomicBool::new(false),
             pending: Mutex::new(HashMap::new()),
@@ -204,7 +204,7 @@ impl Engine {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -398,7 +398,7 @@ impl WalkSink for OpSink {
 // Enumeration (concurrent, never blocks the byte path)
 // ---------------------------------------------------------------------------
 
-fn enumerate(sources: &[PathBuf], cancel: &AtomicBool) -> (u64, u64) {
+pub(crate) fn enumerate(sources: &[PathBuf], cancel: &AtomicBool) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut entries = 0u64;
     for s in sources {
@@ -778,7 +778,7 @@ fn transfer_toplevel(
         ));
     }
 
-    let outcome = walker::copy_fresh(source, &stage, sink)?;
+    let outcome = walker::copy_fresh(source, &stage, sink, DatalessPolicy::Skip)?;
     if outcome == Outcome::Cancelled {
         walker::remove_tree_best_effort(&stage);
         pop_staging(journal_entry, &stage);
@@ -877,7 +877,7 @@ fn replace_item(
         ));
     }
 
-    let outcome = walker::copy_fresh(source, &stage, sink)?;
+    let outcome = walker::copy_fresh(source, &stage, sink, DatalessPolicy::Skip)?;
     if outcome == Outcome::Cancelled {
         walker::remove_tree_best_effort(&stage);
         pop_staging(journal_entry, &stage);
@@ -1051,7 +1051,7 @@ fn run_duplicate_thread(
             continue;
         }
 
-        match walker::copy_fresh(source, &stage, &mut sink) {
+        match walker::copy_fresh(source, &stage, &mut sink, DatalessPolicy::Skip) {
             Ok(Outcome::Done) => match copier::rename_excl(&stage, &dest) {
                 Ok(()) => {
                     pop_staging(&mut journal_entry, &stage);

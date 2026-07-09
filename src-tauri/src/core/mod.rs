@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod copier;
 pub mod entry;
 pub mod journal;

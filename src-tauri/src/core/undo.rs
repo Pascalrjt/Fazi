@@ -6,9 +6,26 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::core::copier;
-use crate::core::walker::{self, SilentSink, Trasher};
+use crate::core::walker::{self, DatalessPolicy, SilentSink, Trasher};
 
 const CAP: usize = 50;
+
+/// Which archive op produced the items — a typed kind so labels and the wire
+/// kind both match on the enum rather than arbitrary strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProducedKind {
+    Compress,
+    Extract,
+}
+
+impl ProducedKind {
+    fn verb(&self) -> &'static str {
+        match self {
+            ProducedKind::Compress => "Compress",
+            ProducedKind::Extract => "Extract",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum UndoOp {
@@ -20,6 +37,13 @@ pub enum UndoOp {
     NewFolder { path: PathBuf },
     /// Items trashed: (original_path, trashed_path) — undo restores them.
     Trash { pairs: Vec<(PathBuf, PathBuf)> },
+    /// Archive outputs: (produced_path, trashed_path_once_undone). The trashed
+    /// paths double as the redo bookkeeping so the inverse never collapses
+    /// into `Trash`/`Move` (both stack tops keep the archive label).
+    ProducedItems {
+        kind: ProducedKind,
+        pairs: Vec<(PathBuf, Option<PathBuf>)>,
+    },
 }
 
 impl UndoOp {
@@ -30,6 +54,9 @@ impl UndoOp {
             UndoOp::Rename { .. } => "Rename".to_string(),
             UndoOp::NewFolder { .. } => "New Folder".to_string(),
             UndoOp::Trash { pairs } => format!("Move of {} to Trash", count_label(pairs.len())),
+            UndoOp::ProducedItems { kind, pairs } => {
+                format!("{} of {}", kind.verb(), count_label(pairs.len()))
+            }
         }
     }
 
@@ -40,6 +67,8 @@ impl UndoOp {
             UndoOp::Rename { .. } => "rename",
             UndoOp::NewFolder { .. } => "newFolder",
             UndoOp::Trash { .. } => "trash",
+            UndoOp::ProducedItems { kind: ProducedKind::Compress, .. } => "compress",
+            UndoOp::ProducedItems { kind: ProducedKind::Extract, .. } => "extract",
         }
     }
 }
@@ -197,6 +226,49 @@ fn apply_inverse(op: &UndoOp, trasher: &dyn Trasher) -> io::Result<UndoOutcome> 
                 },
             })
         }
+        UndoOp::ProducedItems { kind, pairs } => {
+            let undoing = pairs.iter().all(|(_, trashed)| trashed.is_none());
+            if undoing {
+                // Undo: trash each produced item; the inverse carries the
+                // trashed locations so redo can restore them.
+                for (produced, _) in pairs {
+                    validate_exists(produced)?;
+                }
+                let mut inverse_pairs = Vec::new();
+                for (produced, _) in pairs {
+                    let trashed = trasher.trash(produced)?;
+                    inverse_pairs.push((produced.clone(), Some(trashed)));
+                }
+                Ok(UndoOutcome {
+                    label: op.label(),
+                    restored: Vec::new(),
+                    inverse: UndoOp::ProducedItems { kind: *kind, pairs: inverse_pairs },
+                })
+            } else {
+                // Redo: restore each pair from the Trash; the inverse clears
+                // the trashed paths, ready to be undone again.
+                let mut restored = Vec::new();
+                let mut inverse_pairs = Vec::new();
+                for (produced, trashed) in pairs {
+                    let Some(trashed) = trashed else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "inconsistent archive undo record",
+                        ));
+                    };
+                    validate_exists(trashed)?;
+                    validate_absent(produced)?;
+                    move_back(trashed, produced)?;
+                    restored.push(produced.clone());
+                    inverse_pairs.push((produced.clone(), None));
+                }
+                Ok(UndoOutcome {
+                    label: op.label(),
+                    restored,
+                    inverse: UndoOp::ProducedItems { kind: *kind, pairs: inverse_pairs },
+                })
+            }
+        }
     }
 }
 
@@ -226,7 +298,7 @@ fn move_back(from: &Path, to: &Path) -> io::Result<()> {
         Ok(()) => Ok(()),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             let mut sink = SilentSink;
-            walker::copy_fresh(from, to, &mut sink)?;
+            walker::copy_fresh(from, to, &mut sink, DatalessPolicy::Skip)?;
             let report = walker::verify_tree(from, to, &HashSet::new(), 5_000)?;
             if !report.mismatches.is_empty() {
                 walker::remove_tree_best_effort(to);
@@ -327,6 +399,56 @@ mod tests {
         assert_eq!(fs::read(&f).unwrap(), b"important");
         assert_eq!(out.restored, vec![f.clone()]);
         fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn produced_items_label_round_trip() {
+        // Undo → redo → undo must keep the archive semantic on BOTH stack
+        // tops — the inverse must never collapse into Trash/Move.
+        let d = tmp("produced");
+        let zip = d.join("Report.pdf.zip");
+        fs::write(&zip, b"zipbytes").unwrap();
+
+        let mut stack = UndoStack::default();
+        stack.push(UndoOp::ProducedItems {
+            kind: ProducedKind::Compress,
+            pairs: vec![(zip.clone(), None)],
+        });
+        assert_eq!(stack.undo_top().unwrap().label(), "Compress of 1 Item");
+        assert_eq!(stack.undo_top().unwrap().kind_wire(), "compress");
+
+        let trash = DirTrasher(d.join("trash"));
+        // Undo: zip trashed; redo-stack top keeps the compress label.
+        let out = stack.undo(&trash).unwrap().unwrap();
+        assert_eq!(out.label, "Compress of 1 Item");
+        assert!(!zip.exists());
+        assert_eq!(stack.redo_top().unwrap().label(), "Compress of 1 Item");
+        assert_eq!(stack.redo_top().unwrap().kind_wire(), "compress");
+
+        // Redo: zip restored; undo-stack top STILL reads Compress.
+        let out = stack.redo(&trash).unwrap().unwrap();
+        assert_eq!(out.label, "Compress of 1 Item");
+        assert_eq!(out.restored, vec![zip.clone()]);
+        assert_eq!(fs::read(&zip).unwrap(), b"zipbytes");
+        assert_eq!(stack.undo_top().unwrap().label(), "Compress of 1 Item");
+
+        // And the cycle keeps working.
+        stack.undo(&trash).unwrap().unwrap();
+        assert!(!zip.exists());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn produced_items_extract_label() {
+        let op = UndoOp::ProducedItems {
+            kind: ProducedKind::Extract,
+            pairs: vec![
+                (PathBuf::from("/x/a"), None),
+                (PathBuf::from("/x/b"), None),
+            ],
+        };
+        assert_eq!(op.label(), "Extract of 2 Items");
+        assert_eq!(op.kind_wire(), "extract");
     }
 
     #[test]

@@ -123,6 +123,37 @@ pub enum Outcome {
     Cancelled,
 }
 
+/// What `copy_fresh` does with dataless (evicted iCloud) regular files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatalessPolicy {
+    /// Skip and report via `skipped_dataless` (copy/move/duplicate behavior).
+    Skip,
+    /// Force a byte copy — the data read blocks while fileproviderd
+    /// materializes the file, guaranteeing the copy holds real bytes
+    /// (compress staging must never zip a placeholder).
+    Materialize,
+}
+
+/// How one entry routes through the copy ladder given the dataless policy.
+/// Pure so it's unit-testable without real iCloud state (`is_dataless` reads
+/// `st_flags` directly and has no injectable seam).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatalessRoute {
+    SkipEntry,
+    /// Never the clone ladder: a clonefile of a dataless file could yield a
+    /// copy that is itself still dataless. The byte copy forces a real read.
+    ForceByteCopy,
+    CloneLadder,
+}
+
+pub fn dataless_route(policy: DatalessPolicy, dataless: bool) -> DatalessRoute {
+    match (policy, dataless) {
+        (_, false) => DatalessRoute::CloneLadder,
+        (DatalessPolicy::Skip, true) => DatalessRoute::SkipEntry,
+        (DatalessPolicy::Materialize, true) => DatalessRoute::ForceByteCopy,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Naming helpers
 // ---------------------------------------------------------------------------
@@ -212,7 +243,12 @@ pub fn remove_tree_best_effort(path: &Path) {
 
 /// Copy `src` (file, dir, or symlink) to `dst`, which must not exist.
 /// Per-entry clone-then-copy ladder with cancellation between entries.
-pub fn copy_fresh(src: &Path, dst: &Path, sink: &mut dyn WalkSink) -> io::Result<Outcome> {
+pub fn copy_fresh(
+    src: &Path,
+    dst: &Path,
+    sink: &mut dyn WalkSink,
+    policy: DatalessPolicy,
+) -> io::Result<Outcome> {
     if sink.cancelled() {
         return Ok(Outcome::Cancelled);
     }
@@ -228,7 +264,7 @@ pub fn copy_fresh(src: &Path, dst: &Path, sink: &mut dyn WalkSink) -> io::Result
             }
             let name = child.file_name();
             let cdst = dst.join(&name);
-            match copy_fresh(&child.path(), &cdst, sink) {
+            match copy_fresh(&child.path(), &cdst, sink, policy) {
                 Ok(Outcome::Cancelled) => return Ok(Outcome::Cancelled),
                 Ok(Outcome::Done) => {}
                 Err(e) => sink.item_error(&child.path(), &e),
@@ -243,39 +279,51 @@ pub fn copy_fresh(src: &Path, dst: &Path, sink: &mut dyn WalkSink) -> io::Result
     }
 
     // File or symlink.
-    if meta.file_type().is_file() && is_dataless(&meta) {
-        sink.skipped_dataless(src);
-        return Ok(Outcome::Done);
-    }
+    let dataless = meta.file_type().is_file() && is_dataless(&meta);
     let size = if meta.file_type().is_file() { meta.len() } else { 0 };
 
-    match copier::clone_entry(src, dst) {
-        Ok(()) => {
-            // man copyfile: no progress callbacks on the clone path — count entries.
-            sink.progress(size, 1, src, true);
+    match dataless_route(policy, dataless) {
+        DatalessRoute::SkipEntry => {
+            sink.skipped_dataless(src);
             Ok(Outcome::Done)
         }
-        Err(_) => {
-            // Any clone failure degrades honestly to a byte copy.
-            let mut last = 0u64;
-            let end = {
-                let sink_cell = std::cell::RefCell::new(&mut *sink);
-                copier::copy_file_all(src, dst, &mut |bytes| {
-                    let mut s = sink_cell.borrow_mut();
-                    let delta = bytes.saturating_sub(last);
-                    last = bytes;
-                    s.progress(delta, 0, src, false);
-                    !s.cancelled()
-                })?
-            };
-            match end {
-                CopyEnd::Done => {
-                    sink.progress(size.saturating_sub(last), 1, src, false);
-                    Ok(Outcome::Done)
-                }
-                CopyEnd::Cancelled => Ok(Outcome::Cancelled),
+        DatalessRoute::ForceByteCopy => byte_copy_entry(src, dst, size, sink),
+        DatalessRoute::CloneLadder => match copier::clone_entry(src, dst) {
+            Ok(()) => {
+                // man copyfile: no progress callbacks on the clone path — count entries.
+                sink.progress(size, 1, src, true);
+                Ok(Outcome::Done)
             }
+            // Any clone failure degrades honestly to a byte copy.
+            Err(_) => byte_copy_entry(src, dst, size, sink),
+        },
+    }
+}
+
+/// Byte copy of one file/symlink with streaming, cancellable progress.
+fn byte_copy_entry(
+    src: &Path,
+    dst: &Path,
+    size: u64,
+    sink: &mut dyn WalkSink,
+) -> io::Result<Outcome> {
+    let mut last = 0u64;
+    let end = {
+        let sink_cell = std::cell::RefCell::new(&mut *sink);
+        copier::copy_file_all(src, dst, &mut |bytes| {
+            let mut s = sink_cell.borrow_mut();
+            let delta = bytes.saturating_sub(last);
+            last = bytes;
+            s.progress(delta, 0, src, false);
+            !s.cancelled()
+        })?
+    };
+    match end {
+        CopyEnd::Done => {
+            sink.progress(size.saturating_sub(last), 1, src, false);
+            Ok(Outcome::Done)
         }
+        CopyEnd::Cancelled => Ok(Outcome::Cancelled),
     }
 }
 
@@ -685,7 +733,7 @@ pub fn merge_into(
                         let staged = if ctx.moving {
                             stage_cross_volume(&spath, &stage, ctx, sink)
                         } else {
-                            copy_fresh(&spath, &stage, sink)
+                            copy_fresh(&spath, &stage, sink, DatalessPolicy::Skip)
                         };
                         match staged {
                             Ok(Outcome::Cancelled) => {
@@ -786,7 +834,7 @@ fn transfer_entry(
     let stage = dir.join(staging_name(&name, ctx.op_id));
     remove_tree_best_effort(&stage);
 
-    match copy_fresh(src, &stage, sink)? {
+    match copy_fresh(src, &stage, sink, DatalessPolicy::Skip)? {
         Outcome::Cancelled => {
             remove_tree_best_effort(&stage);
             return Ok(Outcome::Cancelled);
@@ -829,7 +877,7 @@ fn stage_cross_volume(
     ctx: &MergeCtx,
     sink: &mut dyn WalkSink,
 ) -> io::Result<Outcome> {
-    match copy_fresh(src, stage, sink)? {
+    match copy_fresh(src, stage, sink, DatalessPolicy::Skip)? {
         Outcome::Cancelled => Ok(Outcome::Cancelled),
         Outcome::Done => {
             let report = verify_tree(src, stage, &HashSet::new(), ctx.tol_ms)?;
@@ -951,7 +999,7 @@ mod tests {
         make_tree(&src);
         let dst = d.join("dst");
         let mut sink = TestSink::new(Resolution::Skip);
-        assert_eq!(copy_fresh(&src, &dst, &mut sink).unwrap(), Outcome::Done);
+        assert_eq!(copy_fresh(&src, &dst, &mut sink, DatalessPolicy::Skip).unwrap(), Outcome::Done);
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"alpha");
         assert_eq!(fs::read(dst.join("sub/deep/c.bin")).unwrap().len(), 1024);
         assert!(fs::symlink_metadata(dst.join("link")).unwrap().file_type().is_symlink());
@@ -976,7 +1024,7 @@ mod tests {
         let dst = d.join("dst");
         let mut sink = TestSink::new(Resolution::Skip);
         sink.cancel_after_entries = Some(10);
-        assert_eq!(copy_fresh(&src, &dst, &mut sink).unwrap(), Outcome::Cancelled);
+        assert_eq!(copy_fresh(&src, &dst, &mut sink, DatalessPolicy::Skip).unwrap(), Outcome::Cancelled);
         // Caller removes staging; here we just assert the walk stopped early.
         assert!(sink.entries < 50);
         fs::remove_dir_all(&d).ok();
@@ -989,7 +1037,7 @@ mod tests {
         make_tree(&src);
         let dst = d.join("dst");
         let mut sink = TestSink::new(Resolution::Skip);
-        copy_fresh(&src, &dst, &mut sink).unwrap();
+        copy_fresh(&src, &dst, &mut sink, DatalessPolicy::Skip).unwrap();
 
         let clean = verify_tree(&src, &dst, &HashSet::new(), 2_000).unwrap();
         assert!(clean.mismatches.is_empty(), "{:?}", clean.mismatches);
@@ -1197,6 +1245,28 @@ mod tests {
         assert_eq!(sink.warnings[0].2, WarnSeverity::Warning);
         assert_staging_free(&dst, "opwarn");
         fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn dataless_route_table() {
+        // (policy, dataless) → route. Materialize must NEVER hit the clone
+        // ladder for a dataless file: a clonefile could yield a still-dataless
+        // copy; the byte copy forces a real (materializing) read.
+        let cases = [
+            (DatalessPolicy::Skip, true, DatalessRoute::SkipEntry),
+            (DatalessPolicy::Materialize, true, DatalessRoute::ForceByteCopy),
+            (DatalessPolicy::Skip, false, DatalessRoute::CloneLadder),
+            (DatalessPolicy::Materialize, false, DatalessRoute::CloneLadder),
+        ];
+        for (policy, dataless, expected) in cases {
+            assert_eq!(
+                dataless_route(policy, dataless),
+                expected,
+                "policy {:?}, dataless {}",
+                policy,
+                dataless
+            );
+        }
     }
 
     #[test]

@@ -117,6 +117,8 @@ pub fn run() {
             commands::watch::unwatch,
             commands::ops::run_op,
             commands::ops::duplicate_paths,
+            commands::ops::compress_paths,
+            commands::ops::extract_paths,
             commands::ops::cancel_op,
             commands::ops::respond_conflict,
             commands::ops::trash_paths,

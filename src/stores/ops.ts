@@ -29,7 +29,7 @@ export type CardStatus = "running" | OpStatus;
 
 export interface OpCard {
   opId: string;
-  kind: "copy" | "move" | "duplicate";
+  kind: "copy" | "move" | "duplicate" | "compress" | "extract";
   label: string;
   visible: boolean;
   startedAt: number;
@@ -79,6 +79,8 @@ interface OpsState {
 
   startOp(opts: StartOpOptions): string;
   duplicate(paths: string[]): string;
+  compress(paths: string[], destDir: string): string;
+  extract(paths: string[], destDir: string): string;
   cancel(opId: string): void;
   dismiss(opId: string): void;
   toggleExpanded(opId: string): void;
@@ -94,7 +96,7 @@ const visibilityTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const dismissTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const rateSamples = new Map<string, { at: number; bytes: number }>();
 
-function opVerb(kind: OpCard["kind"], done = false): string {
+export function opVerb(kind: OpCard["kind"], done = false): string {
   switch (kind) {
     case "copy":
       return done ? "Copied" : "Copying";
@@ -102,6 +104,25 @@ function opVerb(kind: OpCard["kind"], done = false): string {
       return done ? "Moved" : "Moving";
     case "duplicate":
       return done ? "Duplicated" : "Duplicating";
+    case "compress":
+      return done ? "Compressed" : "Compressing";
+    case "extract":
+      return done ? "Extracted" : "Extracting";
+  }
+}
+
+/** Past-tense failure verb: "N items couldn't be <verb>". */
+export function opFailVerb(kind: OpCard["kind"]): string {
+  switch (kind) {
+    case "copy":
+    case "duplicate":
+      return "copied";
+    case "move":
+      return "moved";
+    case "compress":
+      return "compressed";
+    case "extract":
+      return "extracted";
   }
 }
 
@@ -334,6 +355,38 @@ export const useOps = create<OpsState>()(
         return opId;
       },
 
+      compress: (paths, destDir) => {
+        const opId = crypto.randomUUID();
+        const label =
+          paths.length === 1
+            ? `${opVerb("compress")} “${basename(paths[0])}”`
+            : `${opVerb("compress")} ${pluralize(paths.length, "item")}`;
+        set((s) => {
+          s.cards.push(makeCard(opId, "compress", label, paths, destDir, "keepBoth"));
+        });
+        armVisibility(opId);
+        safeIpc(() => ipc.compressPaths(opId, paths, destDir, (e) => handleEvent(opId, e))).catch(
+          (err) => failCard(opId, String(err)),
+        );
+        return opId;
+      },
+
+      extract: (paths, destDir) => {
+        const opId = crypto.randomUUID();
+        const label =
+          paths.length === 1
+            ? `${opVerb("extract")} “${basename(paths[0])}”`
+            : `${opVerb("extract")} ${pluralize(paths.length, "archive")}`;
+        set((s) => {
+          s.cards.push(makeCard(opId, "extract", label, paths, destDir, "keepBoth"));
+        });
+        armVisibility(opId);
+        safeIpc(() => ipc.extractPaths(opId, paths, destDir, (e) => handleEvent(opId, e))).catch(
+          (err) => failCard(opId, String(err)),
+        );
+        return opId;
+      },
+
       cancel: (opId) => {
         void ipc.cancelOp(opId).catch(() => {});
         set((s) => {
@@ -364,15 +417,29 @@ export const useOps = create<OpsState>()(
         const failedPaths = card.errors.map((e) => e.path).filter((p) => p !== "");
         const sources = failedPaths.length > 0 ? failedPaths : card.sources;
         get().dismiss(opId);
-        if (card.kind === "duplicate") {
-          get().duplicate(sources);
-        } else {
-          get().startOp({
-            kind: card.kind,
-            sources,
-            destDir: card.destDir,
-            policy: card.policy,
-          });
+        switch (card.kind) {
+          case "duplicate":
+            get().duplicate(sources);
+            break;
+          case "compress":
+            // All-or-nothing: errors may carry paths of children INSIDE a
+            // selected folder — retrying those would compress a child alone.
+            // Always re-run the full selection.
+            get().compress(card.sources, card.destDir);
+            break;
+          case "extract":
+            // Safe: the backend guarantees ItemError.path is the archive path.
+            get().extract(sources, card.destDir);
+            break;
+          case "copy":
+          case "move":
+            get().startOp({
+              kind: card.kind,
+              sources,
+              destDir: card.destDir,
+              policy: card.policy,
+            });
+            break;
         }
       },
 
@@ -388,8 +455,23 @@ export const useOps = create<OpsState>()(
         ipc
           .downloadIcloud(skipped)
           .then(() => {
-            if (kind === "duplicate") get().duplicate(skipped);
-            else get().startOp({ kind, sources: skipped, destDir, policy });
+            switch (kind) {
+              case "duplicate":
+                get().duplicate(skipped);
+                break;
+              case "compress":
+                // Materializing staging means compress never skips iCloud
+                // files, but keep the retry meaningful if that ever changes.
+                get().compress(skipped, destDir);
+                break;
+              case "extract":
+                get().extract(skipped, destDir);
+                break;
+              case "copy":
+              case "move":
+                get().startOp({ kind, sources: skipped, destDir, policy });
+                break;
+            }
           })
           .catch((err) => {
             useApp.getState().pushToast(`iCloud download failed: ${err}`, { danger: true });

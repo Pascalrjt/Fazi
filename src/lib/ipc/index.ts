@@ -125,6 +125,28 @@ export function duplicatePaths(
   return invoke(COMMANDS.duplicatePaths, { opId, paths, channel });
 }
 
+export function compressPaths(
+  opId: string,
+  sources: string[],
+  destDir: string,
+  onEvent: (e: OpEvent) => void,
+): Promise<void> {
+  const channel = new Channel<OpEvent>();
+  channel.onmessage = onEvent;
+  return invoke(COMMANDS.compressPaths, { opId, sources, destDir, channel });
+}
+
+export function extractPaths(
+  opId: string,
+  sources: string[],
+  destDir: string,
+  onEvent: (e: OpEvent) => void,
+): Promise<void> {
+  const channel = new Channel<OpEvent>();
+  channel.onmessage = onEvent;
+  return invoke(COMMANDS.extractPaths, { opId, sources, destDir, channel });
+}
+
 export function undoLast(): Promise<UndoResult | null> {
   return invoke(COMMANDS.undoLast);
 }

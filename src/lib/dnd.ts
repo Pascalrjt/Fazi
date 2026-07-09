@@ -6,8 +6,34 @@ import { useOps } from "../stores/ops";
 
 export const FAZI_DND_MIME = "application/x-fazi-paths";
 
+/** Sidebar-favorite reorder drags — distinct MIME so rows never treat them
+ *  as file moves (`dragHasPaths()` stays false). */
+export const FAZI_FAV_MIME = "application/x-fazi-favorite";
+
 /** dataTransfer isn't readable during dragover — mirror the payload here. */
 let currentDragPaths: string[] | null = null;
+
+/** Mirror of the favorite path being reorder-dragged (same dragover trick). */
+let currentFavoritePath: string | null = null;
+
+export function beginFavoriteDrag(e: React.DragEvent, path: string): void {
+  currentFavoritePath = path;
+  e.dataTransfer.setData(FAZI_FAV_MIME, path);
+  e.dataTransfer.effectAllowed = "move";
+}
+
+export function endFavoriteDrag(): void {
+  currentFavoritePath = null;
+}
+
+export function dragHasFavorite(e: React.DragEvent): boolean {
+  return e.dataTransfer.types.includes(FAZI_FAV_MIME) || currentFavoritePath != null;
+}
+
+export function draggedFavoritePath(e: React.DragEvent): string | null {
+  const raw = e.dataTransfer.getData(FAZI_FAV_MIME);
+  return raw !== "" ? raw : currentFavoritePath;
+}
 
 export function beginInternalDrag(e: React.DragEvent, paths: string[]): void {
   currentDragPaths = paths;

@@ -6,6 +6,7 @@
 import type { Entry } from "../types/ipc";
 import * as ipc from "./ipc";
 import { basename, dirname, pluralize, splitExt } from "./format";
+import { isExtractableArchive } from "./fileTypes";
 import { useApp, toast } from "../stores/app";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
 import { useOps } from "../stores/ops";
@@ -158,6 +159,30 @@ export function duplicateSelection(): void {
   const entries = selectedEntries();
   if (entries.length === 0) return;
   useOps.getState().duplicate(entries.map((e) => e.path));
+}
+
+// ---------------------------------------------------------------------------
+// archives
+// ---------------------------------------------------------------------------
+
+/** Compress the selection to a zip in the active tab's folder. */
+export function compressSelection(): void {
+  const entries = selectedEntries();
+  const at = activePaneTab();
+  if (entries.length === 0 || !at) return;
+  useOps.getState().compress(entries.map((e) => e.path), at.tab.path);
+}
+
+/** Extract every selected archive into the active tab's folder. */
+export function extractSelection(): void {
+  const entries = selectedEntries();
+  const at = activePaneTab();
+  if (!at) return;
+  const archives = entries.filter(
+    (e) => e.kind === "file" && isExtractableArchive(e.name, e.ext),
+  );
+  if (archives.length === 0) return;
+  useOps.getState().extract(archives.map((e) => e.path), at.tab.path);
 }
 
 // ---------------------------------------------------------------------------

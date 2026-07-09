@@ -97,7 +97,7 @@ export type WatchEvent =
 // File operations
 // ---------------------------------------------------------------------------
 
-export type OpKind = "copy" | "move" | "trash" | "restoreTrash" | "delete" | "rename" | "newFolder" | "duplicate";
+export type OpKind = "copy" | "move" | "trash" | "restoreTrash" | "delete" | "rename" | "newFolder" | "duplicate" | "compress" | "extract";
 
 export type ConflictPolicy = "ask" | "keepBoth" | "replace" | "skip";
 
@@ -311,6 +311,8 @@ export const COMMANDS = {
   renamePath: "rename_path", // (path, newName) -> newPath
   newFolder: "new_folder", // (parent, name) -> path
   duplicatePaths: "duplicate_paths", // (paths, channel opEvent) — keep-both copy in place
+  compressPaths: "compress_paths", // (opId, sources, destDir, channel opEvent) — ditto zip
+  extractPaths: "extract_paths", // (opId, sources, destDir, channel opEvent) — ditto/tar
   undoLast: "undo_last", // () -> UndoResult | null
   redoLast: "redo_last",
   undoStackTop: "undo_stack_top", // () -> UndoDescription | null (for menu label)

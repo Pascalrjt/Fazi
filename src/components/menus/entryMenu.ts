@@ -6,6 +6,9 @@ import * as ipc from "../../lib/ipc";
 import { useApp, toast } from "../../stores/app";
 import { usePanes, selectedEntries } from "../../stores/panes";
 import type { PaneId } from "../../stores/app";
+import { useSettings } from "../../stores/settings";
+import { useVolumes } from "../../stores/volumes";
+import { isExtractableArchive } from "../../lib/fileTypes";
 import { FINDER_TAG_COLORS } from "../../lib/tags";
 import { pluralize } from "../../lib/format";
 
@@ -83,6 +86,18 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
   });
   items.push({
     type: "item",
+    label: n > 1 ? `Compress ${pluralize(n, "item")}` : `Compress “${entry.name}”`,
+    action: () => actions.compressSelection(),
+  });
+  if (targets.every((t) => t.kind === "file" && isExtractableArchive(t.name, t.ext))) {
+    items.push({
+      type: "item",
+      label: "Extract Here",
+      action: () => actions.extractSelection(),
+    });
+  }
+  items.push({
+    type: "item",
     label: "Quick Look",
     shortcut: "space",
     action: () => useApp.getState().setPreviewOpen(true),
@@ -120,6 +135,30 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
     label: "Reveal in Finder",
     action: () => actions.revealPaths(targets.map((t) => t.path)),
   });
+  if (targets.every((t) => t.kind === "dir" && !t.isPackage)) {
+    items.push({
+      type: "item",
+      label: "Add to Sidebar",
+      action: () => {
+        const folders = useVolumes.getState().folders;
+        const defaultPaths = folders
+          ? [
+              folders.home,
+              folders.desktop,
+              folders.documents,
+              folders.downloads,
+              folders.applications,
+            ]
+          : [];
+        const added = useSettings.getState().addFavorites(
+          targets.map((t) => ({ path: t.path, name: t.name })),
+          defaultPaths,
+        );
+        if (added === 0) toast("Already in the sidebar");
+        else toast(`Added ${pluralize(added, "folder")} to the sidebar`);
+      },
+    });
+  }
   if (entry.icloud === "placeholder") {
     items.push({ type: "separator" });
     items.push({

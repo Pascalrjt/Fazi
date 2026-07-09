@@ -25,6 +25,8 @@ Remaining from the original phase list, still open:
 - [ ] Paste image/text from clipboard as a new file
 
 ## Phase 2 — Hardening (~4 wk)
+- [x] User-pinnable sidebar favorites (context menu + drag-to-pin onto the
+      Favorites section, drag-to-reorder, remove; persisted in settings)
 - [ ] Columns (Miller) view
 - [ ] Tag sidebar filters
 - [ ] iCloud download/evict UX (beyond skip-and-retry)
@@ -40,7 +42,10 @@ Remaining from the original phase list, still open:
 
 ## Phase 3 — Power tools (~4–6 wk)
 - [ ] Batch rename (regex/numbering, live preview)
-- [ ] Archives (zip crate + `ditto` fallback)
+- [x] Archives — compress any selection to Finder-compatible `.zip` via
+      `ditto`; extract `.zip` + tar family (`.tar/.tgz/.tar.gz/.tar.bz2/.tar.xz`)
+      via `ditto`/`bsdtar`, with staging + journal crash safety, post-extract
+      path validation, typed undo ("Undo Compress/Extract of N Items")
 - [ ] Multi-window
 - [ ] Rust-side directory sessions (escape hatch if 100k-entry dirs ever hurt
       the JS-side model)

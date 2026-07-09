@@ -7,6 +7,7 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::core::archive::{spawn_compress, spawn_extract};
 use crate::core::op_queue::{spawn_duplicate, spawn_op, OpArgs, OpEmitter, OpEvent, OpKind, Policy};
 use crate::core::undo::UndoOp;
 use crate::core::walker::{self, Resolution};
@@ -63,6 +64,50 @@ pub fn duplicate_paths(
         state.engine.clone(),
         op_id,
         paths.iter().map(PathBuf::from).collect(),
+        Arc::new(ChannelEmitter(channel)),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub fn compress_paths(
+    state: State<'_, AppState>,
+    op_id: String,
+    sources: Vec<String>,
+    dest_dir: String,
+    channel: Channel<OpEvent>,
+) -> Result<()> {
+    let dest = PathBuf::from(&dest_dir);
+    if !dest.is_dir() {
+        return Err(Error::msg("destination is not a directory"));
+    }
+    spawn_compress(
+        state.engine.clone(),
+        op_id,
+        sources.iter().map(PathBuf::from).collect(),
+        dest,
+        Arc::new(ChannelEmitter(channel)),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub fn extract_paths(
+    state: State<'_, AppState>,
+    op_id: String,
+    sources: Vec<String>,
+    dest_dir: String,
+    channel: Channel<OpEvent>,
+) -> Result<()> {
+    let dest = PathBuf::from(&dest_dir);
+    if !dest.is_dir() {
+        return Err(Error::msg("destination is not a directory"));
+    }
+    spawn_extract(
+        state.engine.clone(),
+        op_id,
+        sources.iter().map(PathBuf::from).collect(),
+        dest,
         Arc::new(ChannelEmitter(channel)),
     );
     Ok(())

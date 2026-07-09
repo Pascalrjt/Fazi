@@ -1,9 +1,22 @@
 /** Bottom-right non-modal op card stack: progress, rate, ETA, errors, retry. */
 import clsx from "clsx";
-import { useOps, type OpCard } from "../../stores/ops";
+import { useOps, opVerb, opFailVerb, type OpCard } from "../../stores/ops";
 import { formatBytes, formatEta, formatRate, basename, pluralize } from "../../lib/format";
 
 function progressFraction(card: OpCard): number | null {
+  // Archive kinds get an explicit contract — never the bytes-vs-entries
+  // heuristics below.
+  if (card.kind === "compress") {
+    if (card.totalBytes == null || card.totalBytes === 0) return null;
+    // The backend byte ratchet can overshoot the uncompressed total before
+    // Enumerated arrives (zip-size poll on incompressible data) and can never
+    // come back down — the ≤100% clamp lives HERE at render time.
+    return Math.min(1, card.bytesDone / card.totalBytes);
+  }
+  if (card.kind === "extract") {
+    if (card.totalEntries == null || card.totalEntries === 0) return null;
+    return Math.min(1, card.entriesDone / card.totalEntries);
+  }
   if (card.cloned || card.totalBytes == null || card.totalBytes === 0) {
     if (card.totalEntries != null && card.totalEntries > 0) {
       return Math.min(1, card.entriesDone / card.totalEntries);
@@ -14,6 +27,19 @@ function progressFraction(card: OpCard): number | null {
 }
 
 function progressLine(card: OpCard): string {
+  if (card.kind === "compress") {
+    // Byte-only before totals; clamped bytes-of-total after.
+    if (card.totalBytes != null && card.totalBytes > 0) {
+      return `${formatBytes(Math.min(card.bytesDone, card.totalBytes))} of ${formatBytes(card.totalBytes)}`;
+    }
+    return `${formatBytes(card.bytesDone)} compressed…`;
+  }
+  if (card.kind === "extract") {
+    // Entry-count mode only: N of M archives (absolute processed count).
+    return card.totalEntries != null
+      ? `${card.entriesDone.toLocaleString()} of ${pluralize(card.totalEntries, "archive")}`
+      : `${card.entriesDone.toLocaleString()} archives`;
+  }
   if (card.cloned || (card.totalBytes == null && card.totalEntries != null)) {
     // entry-count mode (clone fast path)
     return card.totalEntries != null
@@ -26,6 +52,15 @@ function progressLine(card: OpCard): string {
   return `${formatBytes(card.bytesDone)} copied…`;
 }
 
+/** "Compressing 3 items" → "Compressed 3 items" (derived, no verb regex). */
+function doneLabel(card: OpCard): string {
+  const running = opVerb(card.kind);
+  if (card.label.startsWith(running)) {
+    return opVerb(card.kind, true) + card.label.slice(running.length);
+  }
+  return card.label;
+}
+
 function CardView({ card }: { card: OpCard }) {
   const cancel = useOps((s) => s.cancel);
   const dismiss = useOps((s) => s.dismiss);
@@ -36,8 +71,11 @@ function CardView({ card }: { card: OpCard }) {
   const running = card.status === "running";
   const failed = card.status === "failed" || card.status === "partial";
   const fraction = progressFraction(card);
+  // Rate/ETA are suppressed for archive kinds: compressed-bytes/sec against
+  // an uncompressed total is meaningless, and extract counts archives.
+  const isArchive = card.kind === "compress" || card.kind === "extract";
   const etaSeconds =
-    running && fraction != null && card.rate > 0 && card.totalBytes != null
+    running && !isArchive && fraction != null && card.rate > 0 && card.totalBytes != null
       ? (card.totalBytes - card.bytesDone) / card.rate
       : null;
 
@@ -48,11 +86,7 @@ function CardView({ card }: { card: OpCard }) {
     >
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-primary">
-          {card.status === "success"
-            ? card.label.replace(/^(Copying|Moving|Duplicating)/, (v) =>
-                v === "Copying" ? "Copied" : v === "Moving" ? "Moved" : "Duplicated",
-              )
-            : card.label}
+          {card.status === "success" ? doneLabel(card) : card.label}
         </span>
         {running ? (
           <button
@@ -80,7 +114,7 @@ function CardView({ card }: { card: OpCard }) {
           </div>
           <div className="tnum mt-1.5 flex items-center gap-2 text-[11px] text-secondary">
             <span className="min-w-0 flex-1 truncate">{progressLine(card)}</span>
-            {!card.cloned && card.rate > 1 && <span>{formatRate(card.rate)}</span>}
+            {!card.cloned && !isArchive && card.rate > 1 && <span>{formatRate(card.rate)}</span>}
             {etaSeconds != null && <span>· {formatEta(etaSeconds)}</span>}
           </div>
           {card.currentPath && (
@@ -105,9 +139,7 @@ function CardView({ card }: { card: OpCard }) {
         <div className="mt-1">
           <div className="text-[11px] text-danger">
             {card.errors.length > 0
-              ? `${pluralize(card.errors.length, "item")} couldn't be ${
-                  card.kind === "move" ? "moved" : "copied"
-                }`
+              ? `${pluralize(card.errors.length, "item")} couldn't be ${opFailVerb(card.kind)}`
               : "The operation failed"}
           </div>
           <div className="mt-1.5 flex gap-2">
