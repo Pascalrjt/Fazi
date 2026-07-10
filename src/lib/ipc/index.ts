@@ -23,6 +23,7 @@ import {
   type OpEvent,
   type PasteboardContents,
   type ConflictResponse,
+  type SearchArgs,
   type SearchEvent,
   type TextPreview,
   type TrashStats,
@@ -52,6 +53,10 @@ export function cancelListing(listingId: string): Promise<void> {
 
 export function statPath(path: string, listingId: string): Promise<Entry | null> {
   return invoke(COMMANDS.statPath, { path, listingId });
+}
+
+export function statPaths(owner: string, paths: string[]): Promise<(Entry | null)[]> {
+  return invoke(COMMANDS.statPaths, { owner, paths });
 }
 
 // ---------------------------------------------------------------------------
@@ -186,10 +191,7 @@ export function interruptedOps(): Promise<InterruptedOp[]> {
 // Search
 // ---------------------------------------------------------------------------
 
-export function search(
-  args: { searchId: string; query: string; scope: string | null; contents: boolean },
-  onEvent: (e: SearchEvent) => void,
-): Promise<void> {
+export function search(args: SearchArgs, onEvent: (e: SearchEvent) => void): Promise<void> {
   const channel = new Channel<SearchEvent>();
   channel.onmessage = onEvent;
   return invoke(COMMANDS.search, { ...args, channel });

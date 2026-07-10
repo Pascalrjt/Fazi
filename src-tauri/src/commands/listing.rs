@@ -152,6 +152,23 @@ pub fn stat_path(
     build_entry(&app, &state, &p, &listing_id)
 }
 
+/// Bulk stat: fully-hydrated entries for many paths in one IPC round-trip
+/// (watcher upsert batches, search-fallback hydration). `build_entry` mints
+/// icon tokens, so the owner scope is an explicit argument: the listingId for
+/// watcher upserts, the searchId for search hits.
+#[tauri::command]
+pub fn stat_paths(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    owner: String,
+    paths: Vec<String>,
+) -> Vec<Option<Entry>> {
+    paths
+        .iter()
+        .map(|p| build_entry(&app, &state, Path::new(p), &owner))
+        .collect()
+}
+
 pub fn build_entry<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &AppState,

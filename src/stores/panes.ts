@@ -569,13 +569,16 @@ export const usePanes = create<PanesState>()(
               }
             });
           }
-          const listingId = tab.listingId;
-          for (const name of event.upserted) {
-            const path = joinPath(tab.path, name);
+          if (event.upserted.length > 0) {
+            // One bulk stat per batch — hot dirs no longer fan out one IPC
+            // call per changed name.
+            const paths = event.upserted.map((name) => joinPath(tab.path, name));
             ipc
-              .statPath(path, listingId)
-              .then((entry) => {
-                if (entry) get().upsertEntryNow(paneId, tabId, entry);
+              .statPaths(tab.listingId, paths)
+              .then((entries) => {
+                for (const entry of entries) {
+                  if (entry) get().upsertEntryNow(paneId, tabId, entry);
+                }
               })
               .catch(() => {});
           }

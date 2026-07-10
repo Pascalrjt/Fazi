@@ -222,11 +222,22 @@ export interface SearchArgs {
   scope: string | null;
   /** Also match file contents (kMDItemTextContent). */
   contents: boolean;
+  /** Predicate filters compiled to raw kMDItem* comparisons. */
+  filters?: FuzzyFilters;
+  /** Result cap; clamped server-side to 1..=10,000. */
+  maxResults?: number;
 }
 
 export type SearchEvent =
   | { event: "hit"; path: string; name: string; isDir: boolean; icon: string }
-  | { event: "done"; total: number }
+  | {
+      event: "done";
+      total: number;
+      /** The cap truncated the stream — more matches exist. */
+      capped: boolean;
+      /** Spotlight indexing enabled on the scope's volume (always true for This Mac). */
+      indexed: boolean;
+    }
   | { event: "error"; message: string };
 
 // ---------------------------------------------------------------------------
@@ -351,6 +362,7 @@ export const COMMANDS = {
   listDir: "list_dir",
   cancelListing: "cancel_listing",
   statPath: "stat_path", // (path, listingId) -> Entry | null
+  statPaths: "stat_paths", // (owner, paths) -> (Entry | null)[] — bulk, owner scopes the icon tokens
   // watching
   watchDir: "watch_dir", // (path, watchId, channel)
   unwatch: "unwatch",

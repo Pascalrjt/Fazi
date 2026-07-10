@@ -139,6 +139,12 @@ function Breadcrumbs() {
   );
 }
 
+const PREDICATE_HINTS: Array<[string, string]> = [
+  ["kind:image", "images (also: video, audio, doc, pdf, folder, archive)"],
+  ["date:7d", "modified in the last 7 days (also: today, yesterday, 30d, ISO..ISO)"],
+  ["size:>10mb", "larger than 10 MB (also: <1gb, 10mb..1gb)"],
+];
+
 function SearchField() {
   const activePaneId = useApp((s) => s.activePaneId);
   const focusSeq = useApp((s) => s.searchFocusSeq);
@@ -149,6 +155,7 @@ function SearchField() {
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const [value, setValue] = useState("");
+  const [hintsOpen, setHintsOpen] = useState(false);
 
   useEffect(() => {
     if (focusSeq > 0) {
@@ -221,6 +228,34 @@ function SearchField() {
           <button className="cursor-default text-[10px] text-tertiary hover:text-secondary" onClick={clear}>
             ✕
           </button>
+        )}
+        {globalSearch.active && (
+          <div className="relative">
+            <button
+              className="cursor-default text-[10px] text-tertiary hover:text-secondary"
+              title="Search predicates"
+              onClick={() => setHintsOpen((v) => !v)}
+            >
+              ?
+            </button>
+            {hintsOpen && (
+              <div
+                className="absolute right-0 top-6 z-[90] w-[340px] rounded-lg border border-edge bg-raised p-3 text-left"
+                style={{ boxShadow: "var(--shadow-overlay)" }}
+                onMouseLeave={() => setHintsOpen(false)}
+              >
+                <div className="mb-1.5 text-[11px] font-semibold text-secondary">
+                  Search predicates
+                </div>
+                {PREDICATE_HINTS.map(([token, desc]) => (
+                  <div key={token} className="mb-1 flex gap-2 text-[11px]">
+                    <code className="shrink-0 rounded bg-pane px-1 text-accent">{token}</code>
+                    <span className="text-tertiary">{desc}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
       {globalSearch.active && (

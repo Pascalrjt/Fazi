@@ -7,7 +7,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::error::Result;
-use crate::search::mdfind::{self, SearchEvent};
+use crate::search::mdfind::{self, SearchEvent, SearchFilters, MAX_RESULTS_CEILING};
 use crate::state::AppState;
 
 #[tauri::command]
@@ -17,6 +17,8 @@ pub fn search(
     query: String,
     scope: Option<String>,
     contents: bool,
+    filters: Option<SearchFilters>,
+    max_results: Option<u64>,
     channel: Channel<SearchEvent>,
 ) -> Result<()> {
     // Replace any previous search under this id.
@@ -30,8 +32,12 @@ pub fn search(
 
     let handle = mdfind::spawn_search(
         query,
+        filters.unwrap_or_default(),
         scope.map(PathBuf::from),
         contents,
+        // Clamped server-side: the same 1..=10,000 ceiling every search mode
+        // shares (fuzzy top-K uses the same bound).
+        max_results.unwrap_or(MAX_RESULTS_CEILING).clamp(1, MAX_RESULTS_CEILING),
         icon_token,
         move |e| {
             let _ = channel.send(e);

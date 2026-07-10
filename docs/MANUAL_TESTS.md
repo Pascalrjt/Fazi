@@ -85,6 +85,15 @@ phase done. Check items off per release.
 - [ ] Filename/Contents pill: switching to Contents re-runs the query and
       returns kMDItemTextContent hits; the results header notes "matching
       file contents".
+- [ ] Predicates: `kind:image`, `date:7d`, `size:>10mb` narrow results;
+      the "?" popover lists the syntax; unparseable values search as text.
+- [ ] A query with >2,000 matches renders past the old cap (default 10,000)
+      with a "showing the first N results" note when truncated; scrolling a
+      10k-hit list stays smooth (batched updates).
+- [ ] Unindexed volume (mdutil -i off on a test stick): searching This Folder
+      on it auto-falls back to the walker with the "searched by walking"
+      caption; predicates still apply; This Mac scope and Contents mode show
+      their explanatory notices instead of falling back.
 
 ## Fuzzy finder (⌘P)
 - [ ] ⌘P on a ~100k-file tree: overlay opens instantly, results refine live

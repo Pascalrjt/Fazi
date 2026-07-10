@@ -28,6 +28,8 @@ interface SettingsState {
    *  root-relative path prefix. */
   fuzzyExcludes: string[];
   fuzzyIndexMaxEntries: number;
+  /** Global-search result cap (1..=10,000; same ceiling as the fuzzy top-K). */
+  searchMaxResults: number;
 
   setShowHidden(v: boolean): void;
   setSearchContentsDefault(v: boolean): void;
@@ -59,6 +61,7 @@ export const useSettings = create<SettingsState>()(
       dragOutEnabled: true,
       fuzzyExcludes: [".git", "node_modules", "Library/Caches", ".Trash"],
       fuzzyIndexMaxEntries: 2_000_000,
+      searchMaxResults: 10_000,
 
       setShowHidden: (v) => set({ showHidden: v }),
       setSearchContentsDefault: (v) => set({ searchContentsDefault: v }),

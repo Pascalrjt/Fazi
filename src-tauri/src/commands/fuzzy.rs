@@ -120,6 +120,19 @@ pub fn fuzzy_query(
 
     std::thread::spawn(move || {
         let generation = index.generation.load(Ordering::SeqCst);
+        // One-shot queries (the search fallback) want COMPLETE results — wait
+        // out the walk instead of scanning a partial snapshot. Live queries
+        // scan immediately and refine via the active slot.
+        if !live {
+            while index.indexing.load(Ordering::SeqCst) {
+                if cancel.load(Ordering::SeqCst)
+                    || index.generation.load(Ordering::SeqCst) != generation
+                {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
         let indexing = index.indexing.load(Ordering::SeqCst);
         let outcome = run_query(&index, &query, max_results, &filters, &cancel, generation);
         if let Some(outcome) = outcome {

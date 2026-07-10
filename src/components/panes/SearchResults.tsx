@@ -19,6 +19,10 @@ export function SearchResults() {
   const query = useApp((s) => s.globalSearch.query);
   const error = useApp((s) => s.globalSearch.error);
   const contents = useApp((s) => s.globalSearch.contents);
+  const capped = useApp((s) => s.globalSearch.capped);
+  const indexed = useApp((s) => s.globalSearch.indexed);
+  const usedFallback = useApp((s) => s.globalSearch.usedFallback);
+  const scope = useApp((s) => s.globalSearch.scope);
   const home = useVolumes((s) => s.folders?.home ?? null);
   const [selected, setSelected] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -101,6 +105,16 @@ export function SearchResults() {
           {status === "idle" && "Type to search"}
         </span>
         {contents && <span className="text-tertiary">matching file contents</span>}
+        {usedFallback && (
+          <span className="text-tertiary">
+            searched by walking (Spotlight index unavailable)
+          </span>
+        )}
+        {capped && status === "done" && (
+          <span className="text-accent">
+            showing the first {hits.length.toLocaleString()} results
+          </span>
+        )}
         <div className="flex-1" />
         <span className="text-tertiary">⏎ open · ⌘R reveal · esc back</span>
       </div>
@@ -109,10 +123,25 @@ export function SearchResults() {
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             <div className="text-2xl text-tertiary">⌕</div>
             <div className="text-[13px] text-secondary">Nothing found for “{query}”</div>
-            <div className="text-xs text-tertiary">
-              Spotlight may not index this location — external and network volumes often aren't
-              indexed.
-            </div>
+            {usedFallback ? (
+              <div className="text-xs text-tertiary">
+                Searched by walking the folder — Spotlight doesn't index this location.
+              </div>
+            ) : !indexed && contents ? (
+              <div className="text-xs text-tertiary">
+                Content search needs a Spotlight-indexed location — this volume isn't indexed.
+              </div>
+            ) : scope === "mac" ? (
+              <div className="text-xs text-tertiary">
+                Spotlight may not index every location. Switch to This Folder or Home to search
+                by walking.
+              </div>
+            ) : (
+              <div className="text-xs text-tertiary">
+                Spotlight may not index this location — external and network volumes often
+                aren't indexed.
+              </div>
+            )}
           </div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>

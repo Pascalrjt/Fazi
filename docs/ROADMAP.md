@@ -46,7 +46,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
       indexing, per-query cancellation, capped at 2M entries). Index is a
       snapshot of the walk moment (watchers are non-recursive); footer shows
       age + explicit Rebuild.
-- [ ] **M4 — Search predicates + cap** (Tier 1 #9): `kind:/date:/size:`
+- [x] **M4 — Search predicates + cap** (Tier 1 #9): `kind:/date:/size:`
       predicate tokens compiled to raw mdfind queries, configurable result
       cap on both sides with a truncation note, not-indexed volume detection
       with automatic fuzzy-walker fallback (This-Mac scope and Contents mode
@@ -113,10 +113,10 @@ Dropped: iCloud download/evict UX (iCloud support removed in M1).
   notification observers.
 - Merge outcomes and Replace are not undoable via ⌘Z (originals recoverable
   from Trash; UI says so). Per-entry merge undo is a possible later item.
-- Watcher upserts stat one path per changed name → resolved by `stat_paths`
-  (M4) and the `hydrate_paths` patch API (M7).
-- mdfind result cap at 2000 rows → resolved in M4 (configurable cap, both
-  sides, with truncation note).
+- ~~Watcher upserts stat one path per changed name~~ — resolved: `stat_paths`
+  bulk command (M4); M7 adds the id-preserving `hydrate_paths` patch API.
+- ~~mdfind result cap at 2000 rows~~ — resolved in M4 (configurable cap on
+  both sides, truncation note).
 - Icon cache clears wholesale past 4096 entries (crude but bounded).
 - TokenTable grows with every listing/search; at ~100k-entry listings the
   icon-token table becomes a memory concern — M7 stops minting new tokens on

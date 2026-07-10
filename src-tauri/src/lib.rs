@@ -117,6 +117,7 @@ pub fn run() {
             commands::listing::list_dir,
             commands::listing::cancel_listing,
             commands::listing::stat_path,
+            commands::listing::stat_paths,
             commands::watch::watch_dir,
             commands::watch::unwatch,
             commands::ops::run_op,
