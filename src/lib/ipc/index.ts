@@ -18,6 +18,7 @@ import {
   type FuzzyIndexStatus,
   type FuzzyQueryArgs,
   type GetInfoResult,
+  type HydrateItem,
   type InterruptedOp,
   type ListEvent,
   type OpEvent,
@@ -57,6 +58,13 @@ export function statPath(path: string, listingId: string): Promise<Entry | null>
 
 export function statPaths(owner: string, paths: string[]): Promise<(Entry | null)[]> {
   return invoke(COMMANDS.statPaths, { owner, paths });
+}
+
+export function hydratePaths(
+  listingId: string,
+  items: HydrateItem[],
+): Promise<(Entry | null)[]> {
+  return invoke(COMMANDS.hydratePaths, { listingId, items });
 }
 
 // ---------------------------------------------------------------------------

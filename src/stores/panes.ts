@@ -10,6 +10,8 @@ import { immer } from "zustand/middleware/immer";
 import { enableMapSet } from "immer";
 import type { Entry, ListErrorCode, ListEvent, WatchEvent } from "../types/ipc";
 import * as ipc from "../lib/ipc";
+import { dropHydrator, initHydrator } from "../lib/hydration";
+import { useDirSizes } from "./dirSizes";
 import { safeIpc } from "../lib/safeIpc";
 import { sortEntries, type SortDir, type SortKey, type SortSpec } from "../lib/sort";
 import {
@@ -225,7 +227,10 @@ function startListing(
 }
 
 function stopListing(tab: Tab): void {
-  if (tab.listingId) void ipc.cancelListing(tab.listingId).catch(() => {});
+  if (tab.listingId) {
+    void ipc.cancelListing(tab.listingId).catch(() => {});
+    dropHydrator(tab.listingId);
+  }
   if (tab.watchId) {
     void ipc.unwatch(tab.watchId).catch(() => {});
   }
@@ -525,6 +530,11 @@ export const usePanes = create<PanesState>()(
       if (event.event === "done") {
         const tab = findTab(get(), paneId, tabId);
         if (!tab || tab.listingId !== listingId || tab.error) return;
+        // Big listing (pass 2 skipped server-side): hand the unhydrated rows
+        // to the shared viewport-priority scheduler.
+        if (tab.entries.some((e) => !e.hydrated)) {
+          initHydrator(paneId, tabId, listingId, tab.entries);
+        }
         const watchId = crypto.randomUUID();
         set((s) => {
           const t = findTab(s, paneId, tabId);
@@ -569,6 +579,10 @@ export const usePanes = create<PanesState>()(
               }
             });
           }
+          const changed = [...event.upserted, ...event.removed].map((name) =>
+            joinPath(tab.path, name),
+          );
+          if (changed.length > 0) useDirSizes.getState().invalidate(changed);
           if (event.upserted.length > 0) {
             // One bulk stat per batch — hot dirs no longer fan out one IPC
             // call per changed name.

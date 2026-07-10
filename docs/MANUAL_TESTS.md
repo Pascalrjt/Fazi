@@ -130,6 +130,13 @@ phase done. Check items off per release.
 ## Perf
 - [ ] 100k-file directory: first rows <50 ms, scrolling never hitches,
       sort settles once, filter-as-you-type stays instant.
+- [ ] 100k-file directory hydrates from the viewport outward: visible rows
+      lose their shimmer first (even after jumping to the middle), the rest
+      trickles in the background, and navigating away mid-hydration leaves
+      no stray updates in the next folder.
+- [ ] Folder sizes (Advanced → on): list-view dirs show "…" then the value
+      as rows scroll into view (max 2 computing at once); copying INTO a
+      cached folder refreshes its size; values recompute after ~5 min TTL.
 - [ ] Open a dir on a slow SMB share: thin indeterminate bar, pane stays
       interactive, no blank white pane.
 

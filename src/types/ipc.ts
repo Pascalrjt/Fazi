@@ -67,6 +67,14 @@ export type ListErrorCode =
   | "cancelled"
   | "io";
 
+/** Row identity handed back to hydrate_paths so responses keep the original
+ *  id and icon token (no TokenTable growth on rehydrate). */
+export interface HydrateItem {
+  id: number;
+  path: string;
+  icon: string;
+}
+
 export interface ListDirArgs {
   path: string;
   /** Frontend-generated UUID; also used to cancel and to scope icon tokens. */
@@ -367,6 +375,7 @@ export const COMMANDS = {
   cancelListing: "cancel_listing",
   statPath: "stat_path", // (path, listingId) -> Entry | null
   statPaths: "stat_paths", // (owner, paths) -> (Entry | null)[] — bulk, owner scopes the icon tokens
+  hydratePaths: "hydrate_paths", // (listingId, {id,path,icon}[]) -> (Entry|null)[] — keeps caller ids/tokens
   // watching
   watchDir: "watch_dir", // (path, watchId, channel)
   unwatch: "unwatch",

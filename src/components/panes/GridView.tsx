@@ -21,6 +21,7 @@ import {
 } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
 import { useSettings } from "../../stores/settings";
+import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
 const CELL_W = 112;
@@ -164,6 +165,16 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     estimateSize: () => CELL_H,
     overscan: 6,
   });
+
+  // Viewport-priority hydration for big listings (pass 2 skipped). Grid rows
+  // hold `columns` entries each.
+  const vRows = virtualizer.getVirtualItems();
+  useViewportHydration(
+    tab?.listingId,
+    visible,
+    (vRows[0]?.index ?? 0) * columns,
+    ((vRows[vRows.length - 1]?.index ?? -1) + 1) * columns - 1,
+  );
 
   // keep lead in view
   const leadId = tab?.selection.lead ?? null;

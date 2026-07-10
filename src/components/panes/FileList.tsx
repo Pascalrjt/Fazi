@@ -43,6 +43,8 @@ import {
 } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
 import { useSettings } from "../../stores/settings";
+import { useDirSizes } from "../../stores/dirSizes";
+import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { tagCss } from "../../lib/tags";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
@@ -162,6 +164,25 @@ function RenameInput({
       )}
     </span>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Folder-size cell (lazy, cached, opt-in — explicitly approximate)
+// ---------------------------------------------------------------------------
+
+function DirSizeCell({ path }: { path: string }) {
+  const enabled = useSettings((s) => s.showFolderSizes);
+  const entry = useDirSizes(useCallback((s) => s.sizes[path], [path]));
+
+  // Viewport-triggered: rows are virtualized, so mounting = visible.
+  useEffect(() => {
+    if (enabled) useDirSizes.getState().request(path);
+  }, [enabled, path]);
+
+  if (!enabled) return <>—</>;
+  if (!entry) return <>…</>;
+  if (entry.computing && entry.bytes == null) return <>…</>;
+  return <span title="Approximate — computed lazily">{formatBytes(entry.bytes)}</span>;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +328,7 @@ const FileRow = memo(function FileRow({
       </span>
       <span className="tnum shrink-0 text-right text-xs text-secondary" style={{ width: cols.size }}>
         {entry.kind === "dir" && !entry.isPackage ? (
-          "—"
+          <DirSizeCell path={entry.path} />
         ) : entry.hydrated ? (
           formatBytes(entry.size)
         ) : (
@@ -450,6 +471,15 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     virtualizer.measure();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ROW_H]);
+
+  // Viewport-priority hydration for big listings (pass 2 skipped).
+  const vItems = virtualizer.getVirtualItems();
+  useViewportHydration(
+    tab?.listingId,
+    visible,
+    vItems[0]?.index ?? 0,
+    vItems[vItems.length - 1]?.index ?? -1,
+  );
 
   // scroll restore once per listing settle
   useEffect(() => {

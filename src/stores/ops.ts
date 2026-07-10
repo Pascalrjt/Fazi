@@ -20,6 +20,7 @@ import * as ipc from "../lib/ipc";
 import { safeIpc } from "../lib/safeIpc";
 import { usePanes } from "./panes";
 import { useApp } from "./app";
+import { useDirSizes } from "./dirSizes";
 import { useFuzzy } from "./fuzzy";
 import { useSettings } from "./settings";
 import { basename, pluralize } from "../lib/format";
@@ -213,15 +214,16 @@ export const useOps = create<OpsState>()(
       });
       const onDone = doneCallbacks.get(opId);
       doneCallbacks.delete(opId);
-      // A completed op under a warm fuzzy root makes that index stale.
+      // A completed op under a warm fuzzy root makes that index stale, and
+      // cached folder sizes containing touched paths are dropped.
       if (event.status !== "cancelled") {
         const card = get().cards.find((c) => c.opId === opId);
-        useFuzzy
-          .getState()
-          .markStaleIfUnder([
-            ...event.produced,
-            ...(card ? [...card.sources, card.destDir] : []),
-          ]);
+        const touched = [
+          ...event.produced,
+          ...(card ? [...card.sources, card.destDir] : []),
+        ];
+        useFuzzy.getState().markStaleIfUnder(touched);
+        useDirSizes.getState().invalidate(touched);
       }
       // optimistic ghost rows in any pane showing the destination
       if (event.produced.length > 0 && destDir) {

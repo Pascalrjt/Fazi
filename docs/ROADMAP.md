@@ -60,7 +60,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
       two-phase batch rename (regex/numbering, live preview, ⌘⇧R, single
       undo entry), paste clipboard image/text as a new file with full
       undo/redo through Trash.
-- [ ] **M7 — Viewport hydration + folder sizes** (Phase 1 leftover, Tier 1
+- [x] **M7 — Viewport hydration + folder sizes** (Phase 1 leftover, Tier 1
       #12): listings >5,000 entries hydrate on demand from the viewport
       outward via an id-preserving `hydrate_paths` patch API (single shared
       scheduler), lazy folder sizes in list view (opt-in, cached,
@@ -70,7 +70,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
 
 - [ ] Real-device passes over `docs/MANUAL_TESTS.md` (TCC prompts,
       external volumes, 100k-dir perf, kill -9 mid-copy)
-- [ ] Viewport-priority hydration (→ M7)
+- [x] Viewport-priority hydration (M7)
 - [x] Paste image/text from clipboard as a new file (M6)
 
 ## Done (former Phase 2/3 items)
@@ -118,9 +118,10 @@ Dropped: iCloud download/evict UX (iCloud support removed in M1).
 - ~~mdfind result cap at 2000 rows~~ — resolved in M4 (configurable cap on
   both sides, truncation note).
 - Icon cache clears wholesale past 4096 entries (crude but bounded).
-- TokenTable grows with every listing/search; at ~100k-entry listings the
-  icon-token table becomes a memory concern — M7 stops minting new tokens on
+- TokenTable grows with every listing/search; ~100k-entry listings still
+  mint one token per row in pass 1 — but M7's hydrate_paths never mints on
   rehydrate, and search/fuzzy owner scopes are revoked on replacement/close.
+  A per-listing token scheme is a possible later refinement.
 - Drag-out (M2) is copy-only with a static drag image — a
   `tauri-plugin-drag` limitation, documented, revisit if the plugin grows
   promise-file support.
