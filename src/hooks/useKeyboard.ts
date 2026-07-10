@@ -9,6 +9,7 @@ import {
   type TypeAheadState,
 } from "../lib/selection";
 import { useApp } from "../stores/app";
+import { useFuzzy } from "../stores/fuzzy";
 import { useOps } from "../stores/ops";
 import { useMenu } from "../stores/menu";
 import { activePaneTab, usePanes, visibleEntries } from "../stores/panes";
@@ -25,7 +26,7 @@ export function currentKeyContext(target: EventTarget | null = null): KeyContext
   const app = useApp.getState();
   const ops = useOps.getState();
   if (app.confirm || ops.conflicts.length > 0) return "modal";
-  if (app.paletteOpen) return "palette";
+  if (app.paletteOpen || useFuzzy.getState().open) return "palette";
   if (app.renaming) return "rename";
   if (app.previewOpen) return "preview";
   if (app.searchFieldFocused || app.pathBarEditing || isEditableTarget(target)) return "search";

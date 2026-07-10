@@ -230,6 +230,52 @@ export type SearchEvent =
   | { event: "error"; message: string };
 
 // ---------------------------------------------------------------------------
+// Fuzzy finder (⌘P)
+// ---------------------------------------------------------------------------
+
+export interface FuzzyItem {
+  path: string;
+  name: string;
+  isDir: boolean;
+  icon: string;
+  score: number;
+}
+
+/** Streamed over the Channel passed to `fuzzy_query`. Live queries emit
+ *  multiple `results` batches (replace, don't append) while indexing. */
+export type FuzzyEvent =
+  | { event: "results"; queryId: string; items: FuzzyItem[]; indexed: number; indexing: boolean }
+  | { event: "done"; queryId: string; capped: boolean };
+
+export interface FuzzyIndexStatus {
+  indexed: number;
+  indexing: boolean;
+  /** The walk hit the entry cap — the index is incomplete. */
+  capped: boolean;
+  builtAtMs: number;
+}
+
+/** Predicate filters applied in Rust before top-K selection (M4 fallback). */
+export interface FuzzyFilters {
+  kind?: string;
+  dateFromMs?: number;
+  dateToMs?: number;
+  sizeMin?: number;
+  sizeMax?: number;
+}
+
+export interface FuzzyQueryArgs {
+  root: string;
+  query: string;
+  queryId: string;
+  maxResults: number;
+  /** true = the ⌘P overlay (occupies the live-refinement slot); false =
+   *  one-shot scan (search fallback) that never evicts the live query. */
+  live: boolean;
+  filters?: FuzzyFilters;
+}
+
+// ---------------------------------------------------------------------------
 // Volumes & sidebar
 // ---------------------------------------------------------------------------
 
@@ -329,6 +375,11 @@ export const COMMANDS = {
   // search
   search: "search",
   cancelSearch: "cancel_search",
+  // fuzzy finder
+  fuzzyWarm: "fuzzy_warm", // (root, excludes, maxEntries?, force?) -> FuzzyIndexStatus
+  fuzzyQuery: "fuzzy_query", // (FuzzyQueryArgs, channel FuzzyEvent)
+  fuzzyCancel: "fuzzy_cancel", // (queryId) — also revokes its icon tokens
+  fuzzyDrop: "fuzzy_drop", // (root)
   // macOS integration
   openPaths: "open_paths",
   openWith: "open_with", // (paths, appPath)

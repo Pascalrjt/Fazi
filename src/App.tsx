@@ -21,6 +21,7 @@ import { GetInfoPanel } from "./components/info/GetInfoPanel";
 import { OpCards } from "./components/ops/OpCards";
 import { ConflictDialog } from "./components/ops/ConflictDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
+import { FuzzyFinder } from "./components/overlays/FuzzyFinder";
 import { PreviewOverlay } from "./components/preview/PreviewOverlay";
 import { ContextMenuHost } from "./components/menus/ContextMenu";
 
@@ -107,6 +108,7 @@ export default function App() {
       {/* overlays & transient chrome */}
       <PreviewOverlay />
       <CommandPalette />
+      <FuzzyFinder />
       <ConflictDialog />
       <ConfirmDialog />
       <OpCards />

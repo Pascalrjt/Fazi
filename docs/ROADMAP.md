@@ -41,7 +41,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
       `tauri-plugin-drag` (self-drop bridge, ⌥-copy, kill-switch setting;
       copy-only + static drag image are documented limitations), pdf.js
       preview overlay (CORS on `preview://` + CSP delta prerequisite).
-- [ ] **M3 — Fuzzy finder** (Tier 0 #2): ⌘P overlay backed by a concurrent
+- [x] **M3 — Fuzzy finder** (Tier 0 #2): ⌘P overlay backed by a concurrent
       Rust index (`nucleo-matcher`, jwalk walk, live query refinement while
       indexing, per-query cancellation, capped at 2M entries). Index is a
       snapshot of the walk moment (watchers are non-recursive); footer shows

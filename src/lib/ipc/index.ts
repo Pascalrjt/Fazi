@@ -14,6 +14,9 @@ import {
   type EmptyTrashEvent,
   type Entry,
   type FinderTag,
+  type FuzzyEvent,
+  type FuzzyIndexStatus,
+  type FuzzyQueryArgs,
   type GetInfoResult,
   type InterruptedOp,
   type ListEvent,
@@ -194,6 +197,36 @@ export function search(
 
 export function cancelSearch(searchId: string): Promise<void> {
   return invoke(COMMANDS.cancelSearch, { searchId });
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzy finder
+// ---------------------------------------------------------------------------
+
+export function fuzzyWarm(
+  root: string,
+  excludes: string[],
+  maxEntries?: number,
+  force?: boolean,
+): Promise<FuzzyIndexStatus> {
+  return invoke(COMMANDS.fuzzyWarm, { root, excludes, maxEntries, force });
+}
+
+export function fuzzyQuery(
+  args: FuzzyQueryArgs,
+  onEvent: (e: FuzzyEvent) => void,
+): Promise<void> {
+  const channel = new Channel<FuzzyEvent>();
+  channel.onmessage = onEvent;
+  return invoke(COMMANDS.fuzzyQuery, { ...args, channel });
+}
+
+export function fuzzyCancel(queryId: string): Promise<void> {
+  return invoke(COMMANDS.fuzzyCancel, { queryId });
+}
+
+export function fuzzyDrop(root: string): Promise<void> {
+  return invoke(COMMANDS.fuzzyDrop, { root });
 }
 
 // ---------------------------------------------------------------------------

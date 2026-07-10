@@ -20,6 +20,7 @@ import * as ipc from "../lib/ipc";
 import { safeIpc } from "../lib/safeIpc";
 import { usePanes } from "./panes";
 import { useApp } from "./app";
+import { useFuzzy } from "./fuzzy";
 import { basename, pluralize } from "../lib/format";
 
 const CARD_DELAY_MS = 250;
@@ -209,6 +210,16 @@ export const useOps = create<OpsState>()(
       });
       const onDone = doneCallbacks.get(opId);
       doneCallbacks.delete(opId);
+      // A completed op under a warm fuzzy root makes that index stale.
+      if (event.status !== "cancelled") {
+        const card = get().cards.find((c) => c.opId === opId);
+        useFuzzy
+          .getState()
+          .markStaleIfUnder([
+            ...event.produced,
+            ...(card ? [...card.sources, card.destDir] : []),
+          ]);
+      }
       // optimistic ghost rows in any pane showing the destination
       if (event.produced.length > 0 && destDir) {
         usePanes.getState().addGhosts(destDir, event.produced);

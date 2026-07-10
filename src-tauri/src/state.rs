@@ -11,6 +11,7 @@ use crate::core::journal::InterruptedOp;
 use crate::core::op_queue::Engine;
 use crate::core::watcher::DirDebouncer;
 use crate::macos::icons::IconCache;
+use crate::search::fuzzy::FuzzyIndex;
 
 /// Opaque per-session tokens for the custom protocols — protocol handlers
 /// never accept raw paths (webview threat model, see ARCHITECTURE.md).
@@ -54,6 +55,12 @@ pub struct AppState {
     pub watchers: DashMap<String, DirDebouncer>,
     /// search id → mdfind child handle.
     pub searches: DashMap<String, Arc<Mutex<Option<Child>>>>,
+    /// fuzzy-index root → live index (cap 2, LRU order in fuzzy_lru).
+    pub fuzzy: DashMap<PathBuf, Arc<FuzzyIndex>>,
+    /// Least-recently-used order of warm fuzzy roots (front = oldest).
+    pub fuzzy_lru: Mutex<Vec<PathBuf>>,
+    /// fuzzy query id → cancel flag (the listing-cancel pattern).
+    pub fuzzy_queries: DashMap<String, Arc<AtomicBool>>,
     pub engine: Arc<Engine>,
     pub icon_cache: Arc<IconCache>,
     pub thumb_cache_dir: PathBuf,

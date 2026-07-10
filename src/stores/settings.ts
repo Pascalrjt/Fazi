@@ -24,6 +24,10 @@ interface SettingsState {
   /** Native drag-out (drag to Finder/Mail/…). Kill-switch: off = HTML5-only
    *  internal drag & drop, exactly the pre-drag-out behavior. */
   dragOutEnabled: boolean;
+  /** Fuzzy-index excludes: bare name = component at any depth; with "/" =
+   *  root-relative path prefix. */
+  fuzzyExcludes: string[];
+  fuzzyIndexMaxEntries: number;
 
   setShowHidden(v: boolean): void;
   setSearchContentsDefault(v: boolean): void;
@@ -53,6 +57,8 @@ export const useSettings = create<SettingsState>()(
       favorites: [],
       searchContentsDefault: false,
       dragOutEnabled: true,
+      fuzzyExcludes: [".git", "node_modules", "Library/Caches", ".Trash"],
+      fuzzyIndexMaxEntries: 2_000_000,
 
       setShowHidden: (v) => set({ showHidden: v }),
       setSearchContentsDefault: (v) => set({ searchContentsDefault: v }),

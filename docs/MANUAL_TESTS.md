@@ -86,6 +86,19 @@ phase done. Check items off per release.
       returns kMDItemTextContent hits; the results header notes "matching
       file contents".
 
+## Fuzzy finder (⌘P)
+- [ ] ⌘P on a ~100k-file tree: overlay opens instantly, results refine live
+      while the footer counts up "indexing… N items"; typing mid-index keeps
+      refining without stalls.
+- [ ] Tab toggles This Folder ↔ Home; the old scope's in-flight query is
+      cancelled (no stale rows flash in).
+- [ ] Enter opens the hit; ⌘Enter navigates to its parent with the hit
+      selected; Esc closes and ⌘P over a previously-warm root reuses the
+      index (footer shows its age).
+- [ ] Rebuild (footer button / ⌘R) re-walks; after a copy INTO the indexed
+      root completes, reopening ⌘P rebuilds automatically (stale marking).
+- [ ] With fuzzyIndexMaxEntries lowered, the footer shows "index capped".
+
 ## Previews
 - [ ] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3,
       .txt/.rs/.ts (text with line numbers), .docx / .sketch (QL thumbnail

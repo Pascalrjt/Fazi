@@ -11,6 +11,7 @@ import * as actions from "../actions";
 import { isExtractableArchive } from "../fileTypes";
 import { useApp } from "../../stores/app";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../../stores/panes";
+import { useFuzzy } from "../../stores/fuzzy";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
 import { useVolumes } from "../../stores/volumes";
@@ -456,6 +457,14 @@ export function registerAllCommands(): void {
       shortcut: "cmd+f",
       context: ["browse", "search"],
       run: () => useApp.getState().requestSearchFocus(),
+    },
+    {
+      id: "fuzzyFinder",
+      title: "Go to File…",
+      keywords: "fuzzy jump quick open anything",
+      shortcut: "cmd+p",
+      context: ["browse", "search"],
+      run: () => useFuzzy.getState().openFinder(),
     },
     {
       id: "globalSearch",
