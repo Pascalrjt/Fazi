@@ -37,7 +37,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
       Filename/Contents search toggle in the toolbar, Empty Trash
       (all-volume stats, streamed progress, undo-history purge) + Trash
       sidebar row with drop-to-trash semantics.
-- [ ] **M2 — Drag-out + PDF preview** (Tier 0 #1, #4): native drag-out via
+- [x] **M2 — Drag-out + PDF preview** (Tier 0 #1, #4): native drag-out via
       `tauri-plugin-drag` (self-drop bridge, ⌥-copy, kill-switch setting;
       copy-only + static drag image are documented limitations), pdf.js
       preview overlay (CORS on `preview://` + CSP delta prerequisite).

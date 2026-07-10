@@ -19,6 +19,8 @@ import {
   isInvalidDrop,
   registerDropZone,
 } from "../../lib/dnd";
+import { startNativeDrag } from "../../lib/ipc/dnd";
+import { useSettings } from "../../stores/settings";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
 const CELL_W = 112;
@@ -72,6 +74,13 @@ const GridCell = memo(function GridCell({
         const paths = tab.selection.selected.has(entry.id)
           ? tab.entries.filter((en) => tab.selection.selected.has(en.id)).map((en) => en.path)
           : [entry.path];
+        if (useSettings.getState().dragOutEnabled) {
+          // Native drag: reaches Finder/Mail/…; self-drops come back through
+          // the bridge as internal moves. Kill-switch reverts to HTML5-only.
+          e.preventDefault();
+          startNativeDrag(paths, e.altKey);
+          return;
+        }
         beginInternalDrag(e, paths);
       }}
       onDragEnd={endInternalDrag}

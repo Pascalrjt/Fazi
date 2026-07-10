@@ -21,9 +21,13 @@ interface SettingsState {
   favorites: FavoriteFolder[];
   /** Global search starts in Contents mode (kMDItemTextContent) when true. */
   searchContentsDefault: boolean;
+  /** Native drag-out (drag to Finder/Mail/…). Kill-switch: off = HTML5-only
+   *  internal drag & drop, exactly the pre-drag-out behavior. */
+  dragOutEnabled: boolean;
 
   setShowHidden(v: boolean): void;
   setSearchContentsDefault(v: boolean): void;
+  setDragOutEnabled(v: boolean): void;
   setViewMode(v: ViewMode): void;
   toggleSidebar(): void;
   setDefaultSort(key: SortKey, dir: SortDir): void;
@@ -48,9 +52,11 @@ export const useSettings = create<SettingsState>()(
       fdaBannerDismissed: false,
       favorites: [],
       searchContentsDefault: false,
+      dragOutEnabled: true,
 
       setShowHidden: (v) => set({ showHidden: v }),
       setSearchContentsDefault: (v) => set({ searchContentsDefault: v }),
+      setDragOutEnabled: (v) => set({ dragOutEnabled: v }),
       setViewMode: (v) => set({ viewMode: v }),
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setDefaultSort: (key, dir) => set({ defaultSortKey: key, defaultSortDir: dir }),

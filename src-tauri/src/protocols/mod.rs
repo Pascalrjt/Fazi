@@ -100,9 +100,45 @@ fn mime_for(path: &Path) -> Cow<'static, str> {
     })
 }
 
+/// Webview origins allowed to `fetch()` preview:// bytes (the PDF renderer).
+/// Prod WKWebView pages live at tauri://localhost; dev at the Vite devUrl.
+/// The request Origin is echoed only when it matches — never a wildcard.
+const PREVIEW_FETCH_ORIGINS: &[&str] = &["tauri://localhost", "http://localhost:1420"];
+
+pub fn allowed_fetch_origin(origin: Option<&str>) -> Option<&str> {
+    origin.filter(|o| PREVIEW_FETCH_ORIGINS.contains(o))
+}
+
+fn with_cors(mut resp: Response<Vec<u8>>, origin: Option<&str>) -> Response<Vec<u8>> {
+    if let Some(o) = origin {
+        if let Ok(v) = o.parse() {
+            resp.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+            resp.headers_mut().insert(header::VARY, header::HeaderValue::from_static("Origin"));
+        }
+    }
+    resp
+}
+
 /// preview:// — raw bytes for registered tokens, with HTTP Range support so
-/// <video>/<audio> can seek.
+/// <video>/<audio> can seek. CORS: <img>/<video> loads need no CORS headers,
+/// but the PDF renderer uses `fetch()`, which does — the allow-listed request
+/// Origin is echoed back.
 pub fn handle_preview<R: Runtime>(
+    app: &AppHandle<R>,
+    request: Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    with_cors(
+        preview_response(app, request),
+        allowed_fetch_origin(origin.as_deref()),
+    )
+}
+
+fn preview_response<R: Runtime>(
     app: &AppHandle<R>,
     request: Request<Vec<u8>>,
 ) -> Response<Vec<u8>> {
@@ -188,7 +224,7 @@ fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_range;
+    use super::{allowed_fetch_origin, parse_range};
 
     #[test]
     fn range_parsing() {
@@ -196,5 +232,18 @@ mod tests {
         assert_eq!(parse_range("bytes=500-"), Some((500, None)));
         assert_eq!(parse_range("chunks=1-2"), None);
         assert_eq!(parse_range("bytes=x-2"), None);
+    }
+
+    #[test]
+    fn preview_cors_origin_allow_list() {
+        assert_eq!(allowed_fetch_origin(Some("tauri://localhost")), Some("tauri://localhost"));
+        assert_eq!(
+            allowed_fetch_origin(Some("http://localhost:1420")),
+            Some("http://localhost:1420")
+        );
+        // Never a wildcard, never an unknown origin, never absent.
+        assert_eq!(allowed_fetch_origin(Some("https://evil.example")), None);
+        assert_eq!(allowed_fetch_origin(Some("*")), None);
+        assert_eq!(allowed_fetch_origin(None), None);
     }
 }

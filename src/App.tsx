@@ -5,6 +5,7 @@ import { runCommand } from "./lib/commands/registry";
 import { useKeyboard } from "./hooks/useKeyboard";
 import * as ipc from "./lib/ipc";
 import { setupFinderDragIn } from "./lib/ipc/dnd";
+import { setAltDuringDrag } from "./lib/dnd";
 import { usePanes } from "./stores/panes";
 import { useVolumes } from "./stores/volumes";
 import { useApp } from "./stores/app";
@@ -75,10 +76,20 @@ export default function App() {
         else fn();
       })
       .catch(() => {});
+    // ⌥ tracker for native drag-out: the dragstart snapshot covers
+    // press-then-drag; these keep mid-drag presses/releases current while the
+    // window still receives key events.
+    const onAltKey = (e: KeyboardEvent) => {
+      if (e.key === "Alt") setAltDuringDrag(e.type === "keydown");
+    };
+    window.addEventListener("keydown", onAltKey);
+    window.addEventListener("keyup", onAltKey);
     return () => {
       alive = false;
       unlistenDnd?.();
       unlistenMenu?.();
+      window.removeEventListener("keydown", onAltKey);
+      window.removeEventListener("keyup", onAltKey);
     };
   }, []);
 

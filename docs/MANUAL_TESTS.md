@@ -87,10 +87,13 @@ phase done. Check items off per release.
       file contents".
 
 ## Previews
-- [ ] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3, PDF
-      (page thumbnail render), .txt/.rs/.ts (text with line numbers), .docx /
-      .sketch (QL thumbnail render), a 0-byte file, a broken symlink (no
-      crash).
+- [ ] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3,
+      .txt/.rs/.ts (text with line numbers), .docx / .sketch (QL thumbnail
+      render), a 0-byte file, a broken symlink (no crash).
+- [ ] PDF: multi-page renders via pdf.js; PageUp/PageDown and the on-screen
+      arrows page; ←/→ still walk file-to-file; a >100 MB PDF falls back to
+      the thumbnail. Verify in `tauri dev` AND the bundled app (worker URL
+      forms differ dev vs prod).
 - [ ] ←/→ walks the selection; title shows "n of m"; Esc and Space close.
 - [ ] ⌘Y opens qlmanage for anything exotic.
 
@@ -121,6 +124,21 @@ phase done. Check items off per release.
 - [ ] Drag from Finder into a Fazi folder row / pane background copies there.
 - [ ] Within Fazi: drag to folder rows, breadcrumbs, sidebar, other pane;
       spring-loaded folders open after ~600 ms hover; ⌥ shows copy behavior.
+
+## Drag-out (native)
+- [ ] Drag a file from Fazi into Finder → copies there; into Mail → attaches;
+      into Slack/a browser upload field → uploads. Multi-select shows the
+      count badge on the drag image.
+- [ ] Self-drop: drag a row onto another Fazi folder row → internal MOVE
+      (not copy); ⌥ during the drag → copy. Drop onto the sidebar Trash row →
+      trashed with Put Back intact.
+- [ ] Self-drop onto the row's own parent folder is a no-op (no duplicate).
+- [ ] A cancelled native drag (Esc / drop on nothing) leaves the next
+      Finder→Fazi drag-in a COPY (the self-drop flag cleared).
+- [ ] Kill-switch: Advanced → disable drag-out → rows drag HTML5-only again
+      (internal DnD works, Finder drop does nothing).
+- [ ] Sidebar favorite reorder still works with drag-out enabled (stays
+      HTML5).
 
 ## Archives
 - [ ] Compress a large folder and cancel mid-way → op card disappears, no

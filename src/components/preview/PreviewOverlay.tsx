@@ -12,8 +12,11 @@ import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
 import { previewModeFor } from "../../lib/fileTypes";
 import { entryKindLabel } from "../../lib/sort";
 import { formatBytes, formatDateFull } from "../../lib/format";
+import { PdfPreview } from "./PdfPreview";
 
 const TEXT_HEAD_BYTES = 512 * 1024;
+/** PDFs above this fall back to the thumbnail (whole file is fetched into memory). */
+const MAX_PDF_BYTES = 100 * 1024 * 1024;
 
 function ImagePreview({ token }: { token: string }) {
   const [zoom, setZoom] = useState(1);
@@ -144,10 +147,13 @@ function FallbackPreview({ entry }: { entry: Entry }) {
 }
 
 function PreviewContent({ entry }: { entry: Entry }) {
-  const mode = previewModeFor(entry.ext, entry.kind);
+  let mode = previewModeFor(entry.ext, entry.kind);
+  if (mode === "pdf" && entry.size != null && entry.size > MAX_PDF_BYTES) {
+    mode = "thumbnail"; // huge PDFs: don't pull the whole file into memory
+  }
   const [token, setToken] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
-  const needsToken = mode === "image" || mode === "video" || mode === "audio";
+  const needsToken = mode === "image" || mode === "video" || mode === "audio" || mode === "pdf";
 
   useEffect(() => {
     if (!needsToken) return;
@@ -196,6 +202,8 @@ function PreviewContent({ entry }: { entry: Entry }) {
           <audio src={previewUrl(token as string)} controls autoPlay className="w-[420px]" />
         </div>
       );
+    case "pdf":
+      return <PdfPreview token={token as string} />;
     case "text":
       return <TextPreviewView entry={entry} />;
     case "thumbnail":

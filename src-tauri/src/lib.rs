@@ -31,6 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let cache_dir = app.path().app_cache_dir()?;

@@ -39,6 +39,7 @@ objc2-foundation = "0.3.2"
 objc2-app-kit = "0.3.2"
 block2 = "0.6.2"
 objc2-quick-look-thumbnailing = "0.3.2"
+tauri-plugin-drag = "2.1.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
