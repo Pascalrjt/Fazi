@@ -51,7 +51,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
       cap on both sides with a truncation note, not-indexed volume detection
       with automatic fuzzy-walker fallback (This-Mac scope and Contents mode
       excluded), bulk `stat_paths` (watcher-upsert debt payoff).
-- [ ] **M5 — Settings + keybindings** (Tier 1 #10, #8): in-app settings
+- [x] **M5 — Settings + keybindings** (Tier 1 #10, #8): in-app settings
       overlay on ⌘, (General/Appearance/Keyboard/Search/Operations/Sidebar/
       Advanced), opt-in BLAKE3 copy verification with a wire-level
       "verifying" phase, custom keybindings with recorder + conflict

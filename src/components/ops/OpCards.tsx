@@ -112,7 +112,9 @@ function CardView({ card }: { card: OpCard }) {
             <div style={{ width: `${(fraction ?? 0.3) * 100}%` }} />
           </div>
           <div className="tnum mt-1.5 flex items-center gap-2 text-[11px] text-secondary">
-            <span className="min-w-0 flex-1 truncate">{progressLine(card)}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {card.phase === "verifying" ? "Verifying…" : progressLine(card)}
+            </span>
             {!card.cloned && !isArchive && card.rate > 1 && <span>{formatRate(card.rate)}</span>}
             {etaSeconds != null && <span>· {formatEta(etaSeconds)}</span>}
           </div>

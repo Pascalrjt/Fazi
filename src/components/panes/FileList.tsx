@@ -46,8 +46,12 @@ import { useSettings } from "../../stores/settings";
 import { tagCss } from "../../lib/tags";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
-const ROW_H = 28;
 const SPRING_LOAD_MS = 600;
+
+/** Row height by density (Settings → Appearance). */
+export function rowHeight(density: "normal" | "compact"): number {
+  return density === "compact" ? 24 : 28;
+}
 
 interface ColWidths {
   kind: number;
@@ -421,6 +425,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const [cols, setCols] = useState<ColWidths>(loadCols);
   const [marquee, setMarquee] = useState<Rect | null>(null);
   const restoredListing = useRef<string>("");
+  const density = useSettings((s) => s.density);
+  const ROW_H = rowHeight(density);
 
   const visible = useMemo(
     () =>
@@ -438,6 +444,12 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     estimateSize: () => ROW_H,
     overscan: 12,
   });
+
+  // Re-measure rows when density flips.
+  useEffect(() => {
+    virtualizer.measure();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ROW_H]);
 
   // scroll restore once per listing settle
   useEffect(() => {
@@ -498,7 +510,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     });
     return unregister;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paneId, tabId, tab != null]);
+  }, [paneId, tabId, tab != null, ROW_H]);
 
   const setSelection = usePanes((s) => s.setSelection);
   const openEntry = usePanes((s) => s.openEntry);

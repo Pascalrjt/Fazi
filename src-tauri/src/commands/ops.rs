@@ -31,6 +31,7 @@ pub fn run_op(
     sources: Vec<String>,
     dest_dir: String,
     policy: String,
+    verify: Option<bool>,
     channel: Channel<OpEvent>,
 ) -> Result<()> {
     let kind = match kind.as_str() {
@@ -48,6 +49,7 @@ pub fn run_op(
         sources: sources.iter().map(PathBuf::from).collect(),
         dest_dir: dest,
         policy: Policy::from_wire(&policy),
+        verify: verify.unwrap_or(false),
     };
     spawn_op(state.engine.clone(), args, Arc::new(ChannelEmitter(channel)));
     Ok(())

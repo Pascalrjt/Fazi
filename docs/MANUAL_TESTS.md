@@ -133,6 +133,26 @@ phase done. Check items off per release.
 - [ ] Open a dir on a slow SMB share: thin indeterminate bar, pane stays
       interactive, no blank white pane.
 
+## Settings (⌘,)
+- [ ] ⌘, opens the overlay; browse shortcuts don't fire underneath; Esc
+      closes. Theme Light/Dark/System applies live (System follows the OS);
+      accent swatches recolor selection/focus; Compact density tightens list
+      rows without breaking marquee selection.
+- [ ] Operations → Verify copies: a large copy shows "Verifying…" after the
+      bytes land; flip a byte in the source mid-copy is impractical — instead
+      verify a normal copy passes clean, and confirm cross-volume moves still
+      verify with the toggle OFF (mandatory gate unaffected).
+- [ ] Keyboard pane: Record ⌘⇧M for New Folder → palette label updates, old
+      binding dead, new one fires; recording ⌘D (Duplicate's) is blocked with
+      "unbind the other command"; Unbind removes a shortcut; Reset restores
+      the default; all of it survives relaunch.
+- [ ] Corrupt-blob recovery: hand-edit localStorage fazi-settings
+      keybindingOverrides to garbage → app still boots with default
+      shortcuts.
+- [ ] Confirm toggles: disabling "Confirm permanent delete" / "Confirm Empty
+      Trash" skips those dialogs; Reset-to-defaults restores everything but
+      keeps pinned folders and column widths.
+
 ## Keyboard sweep
 - [ ] ⏎ rename (stem preselected), Tab serial-rename, Esc cancels.
 - [ ] ⌘⇧N new folder appears in rename mode, sorted into place.

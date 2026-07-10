@@ -156,6 +156,7 @@ interface AppState {
   toasts: Toast[];
   previewOpen: boolean;
   getInfoOpen: boolean;
+  settingsOpen: boolean;
   renaming: RenameTarget | null;
   pathBarEditing: boolean;
   searchFieldFocused: boolean;
@@ -172,6 +173,7 @@ interface AppState {
   dismissToast(id: number): void;
   setPreviewOpen(open: boolean): void;
   setGetInfoOpen(open: boolean): void;
+  setSettingsOpen(open: boolean): void;
   startRename(target: RenameTarget): void;
   stopRename(): void;
   setPathBarEditing(v: boolean): void;
@@ -200,6 +202,7 @@ export const useApp = create<AppState>()(
     toasts: [],
     previewOpen: false,
     getInfoOpen: false,
+    settingsOpen: false,
     renaming: null,
     pathBarEditing: false,
     searchFieldFocused: false,
@@ -244,6 +247,7 @@ export const useApp = create<AppState>()(
 
     setPreviewOpen: (open) => set({ previewOpen: open }),
     setGetInfoOpen: (open) => set({ getInfoOpen: open }),
+    setSettingsOpen: (open) => set({ settingsOpen: open }),
     startRename: (target) => set({ renaming: target }),
     stopRename: () => set({ renaming: null }),
     setPathBarEditing: (v) => set({ pathBarEditing: v }),

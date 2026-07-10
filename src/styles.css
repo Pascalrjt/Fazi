@@ -30,7 +30,8 @@
 }
 
 @media (prefers-color-scheme: light) {
-  :root {
+  /* System theme only — an explicit data-theme wins below. */
+  :root:not([data-theme="dark"]) {
     --bg-window: #f2f3f5;
     --bg-pane: #ffffff;
     --bg-raised: #eceef1;
@@ -51,6 +52,51 @@
 
     color-scheme: light;
   }
+}
+
+/* Explicit theme override (Settings → Appearance). */
+:root[data-theme="light"] {
+    --bg-window: #f2f3f5;
+    --bg-pane: #ffffff;
+    --bg-raised: #eceef1;
+    --bg-hover: rgba(0, 0, 0, 0.045);
+
+    --text-primary: #1c1e22;
+    --text-secondary: #5c626c;
+    --text-tertiary: #9aa0aa;
+
+    --accent: #3478f6;
+    --accent-dim: rgba(52, 120, 246, 0.24);
+    --accent-faint: rgba(52, 120, 246, 0.1);
+
+    --border: rgba(0, 0, 0, 0.1);
+    --border-strong: rgba(0, 0, 0, 0.18);
+    --danger: #d0342c;
+    --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
+
+    color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg-window: #1a1c20;
+  --bg-pane: #202329;
+  --bg-raised: #2a2e36;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0aa;
+  --text-tertiary: #61666e;
+
+  --accent: #4f8ef7;
+  --accent-dim: rgba(79, 142, 247, 0.28);
+  --accent-faint: rgba(79, 142, 247, 0.14);
+
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --danger: #e5534b;
+  --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+
+  color-scheme: dark;
 }
 
 @theme inline {

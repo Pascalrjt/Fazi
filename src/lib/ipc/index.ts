@@ -88,6 +88,7 @@ export function runOp(
     sources: string[];
     destDir: string;
     policy: ConflictPolicy;
+    verify?: boolean;
   },
   onEvent: (e: OpEvent) => void,
 ): Promise<void> {

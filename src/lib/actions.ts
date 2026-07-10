@@ -8,6 +8,7 @@ import * as ipc from "./ipc";
 import { basename, dirname, pluralize, splitExt } from "./format";
 import { isExtractableArchive } from "./fileTypes";
 import { useApp, toast } from "../stores/app";
+import { useSettings } from "../stores/settings";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
 import { useOps } from "../stores/ops";
 import { useVolumes } from "../stores/volumes";
@@ -145,6 +146,27 @@ export function confirmEmptyTrash(): void {
         toast("The Trash is empty");
         return;
       }
+      const runEmpty = () => {
+        void ipc
+          .emptyTrash((e) => {
+            if (e.event !== "done") return;
+            if (e.errors.length === 0) {
+              toast("Trash emptied");
+            } else {
+              toast(
+                `${pluralize(e.errors.length, "item")} couldn't be deleted from the Trash`,
+                { danger: true },
+              );
+            }
+            const s = usePanes.getState();
+            for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+          })
+          .catch((err) => toast(`Empty Trash failed: ${err}`, { danger: true }));
+      };
+      if (!useSettings.getState().confirmEmptyTrash) {
+        runEmpty();
+        return;
+      }
       const external =
         stats.externalCount > 0 ? ` (${stats.externalCount} on external volumes)` : "";
       useApp.getState().showConfirm({
@@ -152,23 +174,7 @@ export function confirmEmptyTrash(): void {
         message: `${pluralize(stats.count, "item")}${external} will be permanently deleted. You can't undo this action.`,
         confirmLabel: "Empty Trash",
         danger: true,
-        onConfirm: () => {
-          void ipc
-            .emptyTrash((e) => {
-              if (e.event !== "done") return;
-              if (e.errors.length === 0) {
-                toast("Trash emptied");
-              } else {
-                toast(
-                  `${pluralize(e.errors.length, "item")} couldn't be deleted from the Trash`,
-                  { danger: true },
-                );
-              }
-              const s = usePanes.getState();
-              for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
-            })
-            .catch((err) => toast(`Empty Trash failed: ${err}`, { danger: true }));
-        },
+        onConfirm: runEmpty,
       });
     })
     .catch((err) => toast(`Couldn't read the Trash: ${err}`, { danger: true }));
@@ -177,6 +183,22 @@ export function confirmEmptyTrash(): void {
 export function deleteSelectionPermanently(): void {
   const entries = selectedEntries();
   if (entries.length === 0) return;
+  const runDelete = () => {
+    const paths = entries.map((e) => e.path);
+    usePanes.getState().removeEntriesByPath(paths);
+    ipc
+      .deletePermanent(paths)
+      .then(() => toast(`Deleted ${pluralize(paths.length, "item")}`))
+      .catch((err) => {
+        const s = usePanes.getState();
+        for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+        toast(`Delete failed: ${err}`, { danger: true });
+      });
+  };
+  if (!useSettings.getState().confirmPermanentDelete) {
+    runDelete();
+    return;
+  }
   const label =
     entries.length === 1 ? `“${entries[0].name}”` : pluralize(entries.length, "item");
   useApp.getState().showConfirm({
@@ -184,18 +206,7 @@ export function deleteSelectionPermanently(): void {
     message: "This item will be deleted immediately. You can't undo this action.",
     confirmLabel: "Delete",
     danger: true,
-    onConfirm: () => {
-      const paths = entries.map((e) => e.path);
-      usePanes.getState().removeEntriesByPath(paths);
-      ipc
-        .deletePermanent(paths)
-        .then(() => toast(`Deleted ${pluralize(paths.length, "item")}`))
-        .catch((err) => {
-          const s = usePanes.getState();
-          for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
-          toast(`Delete failed: ${err}`, { danger: true });
-        });
-    },
+    onConfirm: runDelete,
   });
 }
 

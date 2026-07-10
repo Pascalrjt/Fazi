@@ -348,9 +348,11 @@ export function Sidebar() {
     favorite: true,
   }));
 
-  const trashRows: RowSpec[] = folders
-    ? [{ key: "trash", label: "Trash", path: folders.trash, glyph: "🗑", trash: true }]
-    : [];
+  const showTrash = useSettings((s) => s.showTrashInSidebar);
+  const trashRows: RowSpec[] =
+    folders && showTrash
+      ? [{ key: "trash", label: "Trash", path: folders.trash, glyph: "🗑", trash: true }]
+      : [];
 
   const volumeRows: RowSpec[] = volumes.map((v) => ({
     key: `vol:${v.path}`,

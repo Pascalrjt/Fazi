@@ -78,6 +78,46 @@ export function parseShortcut(shortcut: string): ParsedShortcut | null {
   return parsed;
 }
 
+/** Reverse map: KeyboardEvent.code → shortcut token (inverse of CODE_MAP). */
+const TOKEN_MAP: Record<string, string> = Object.fromEntries(
+  Object.entries(CODE_MAP)
+    .filter(([token]) => !["return", "esc", "backspace"].includes(token))
+    .map(([token, code]) => [code, token]),
+);
+
+/**
+ * Build a shortcut string from a captured keydown (the keybinding recorder).
+ * Returns null for lone modifiers and unmappable keys.
+ */
+export function shortcutFromEvent(e: KeyLike): string | null {
+  const code = e.code;
+  if (
+    code === "" ||
+    code.startsWith("Meta") ||
+    code.startsWith("Control") ||
+    code.startsWith("Alt") ||
+    code.startsWith("Shift") ||
+    code === "CapsLock" ||
+    code === "Fn"
+  ) {
+    return null; // lone modifier
+  }
+  let token: string | null = null;
+  if (TOKEN_MAP[code]) token = TOKEN_MAP[code];
+  else if (/^Key[A-Z]$/.test(code)) token = code.slice(3).toLowerCase();
+  else if (/^Digit[0-9]$/.test(code)) token = code.slice(5);
+  else if (/^F([1-9]|1[0-9])$/.test(code)) token = code.toLowerCase();
+  if (token == null) return null;
+  // Canonical modifier order matches the hand-written specs: cmd first.
+  const parts: string[] = [];
+  if (e.metaKey) parts.push("cmd");
+  if (e.ctrlKey) parts.push("ctrl");
+  if (e.altKey) parts.push("opt");
+  if (e.shiftKey) parts.push("shift");
+  parts.push(token);
+  return parts.join("+");
+}
+
 export interface KeyLike {
   code: string;
   metaKey: boolean;

@@ -105,6 +105,8 @@ export interface RunOpArgs {
   destDir: string;
   /** Initial policy; "ask" surfaces conflicts over the channel. */
   policy: ConflictPolicy;
+  /** Opt-in BLAKE3 checksum verification (copies only). */
+  verify?: boolean;
 }
 
 export interface ConflictSide {
@@ -146,6 +148,8 @@ export type OpEvent =
       currentPath: string;
       /** True while the fast clone path is active (progress is entry-based). */
       cloned: boolean;
+      /** Additive: absent = copying; "verifying" during the opt-in checksum pass. */
+      phase?: "copying" | "verifying";
     }
   | {
       event: "conflict";

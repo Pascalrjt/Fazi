@@ -21,10 +21,10 @@ import { safeIpc } from "../lib/safeIpc";
 import { usePanes } from "./panes";
 import { useApp } from "./app";
 import { useFuzzy } from "./fuzzy";
+import { useSettings } from "./settings";
 import { basename, pluralize } from "../lib/format";
 
 const CARD_DELAY_MS = 250;
-const SUCCESS_DISMISS_MS = 4000;
 
 export type CardStatus = "running" | OpStatus;
 
@@ -40,6 +40,8 @@ export interface OpCard {
   totalEntries: number | null;
   /** Fast clone path active → progress counted in entries. */
   cloned: boolean;
+  /** "verifying" while the opt-in checksum pass runs; absent = copying. */
+  phase: "copying" | "verifying";
   currentPath: string;
   /** Bytes/sec, exponential moving average. */
   rate: number;
@@ -146,6 +148,7 @@ export const useOps = create<OpsState>()(
         totalBytes: null,
         totalEntries: null,
         cloned: false,
+        phase: "copying",
         currentPath: "",
         rate: 0,
         status: "running",
@@ -197,7 +200,7 @@ export const useOps = create<OpsState>()(
           } else {
             dismissTimers.set(
               opId,
-              setTimeout(() => get().dismiss(opId), SUCCESS_DISMISS_MS),
+              setTimeout(() => get().dismiss(opId), useSettings.getState().opCardAutoHideMs),
             );
           }
         } else if (event.status === "cancelled") {
@@ -256,6 +259,7 @@ export const useOps = create<OpsState>()(
             card.entriesDone = event.entriesDone;
             card.currentPath = event.currentPath;
             card.cloned = event.cloned;
+            card.phase = event.phase ?? "copying";
             if (rate != null) {
               card.rate = card.rate === 0 ? rate : card.rate * 0.7 + rate * 0.3;
             }
@@ -332,8 +336,11 @@ export const useOps = create<OpsState>()(
         });
         armVisibility(opId);
         if (onDone) doneCallbacks.set(opId, onDone);
+        const verify = kind === "copy" && useSettings.getState().verifyCopies;
         safeIpc(() =>
-          ipc.runOp({ opId, kind, sources, destDir, policy }, (e) => handleEvent(opId, e)),
+          ipc.runOp({ opId, kind, sources, destDir, policy, verify }, (e) =>
+            handleEvent(opId, e),
+          ),
         ).catch((err) => failCard(opId, String(err)));
         return opId;
       },

@@ -1,7 +1,8 @@
 /** Fazi application shell: layout grid, boot sequence, global overlays. */
 import { useEffect } from "react";
-import { registerAllCommands } from "./lib/commands";
+import { rebuildRegistry, registerAllCommands } from "./lib/commands";
 import { runCommand } from "./lib/commands/registry";
+import { useSettings } from "./stores/settings";
 import { useKeyboard } from "./hooks/useKeyboard";
 import * as ipc from "./lib/ipc";
 import { setupFinderDragIn } from "./lib/ipc/dnd";
@@ -18,6 +19,7 @@ import { ConfirmDialog } from "./components/chrome/ConfirmDialog";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { PaneArea } from "./components/panes/PaneArea";
 import { GetInfoPanel } from "./components/info/GetInfoPanel";
+import { SettingsOverlay } from "./components/settings/SettingsOverlay";
 import { OpCards } from "./components/ops/OpCards";
 import { ConflictDialog } from "./components/ops/ConflictDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
@@ -25,7 +27,31 @@ import { FuzzyFinder } from "./components/overlays/FuzzyFinder";
 import { PreviewOverlay } from "./components/preview/PreviewOverlay";
 import { ContextMenuHost } from "./components/menus/ContextMenu";
 
-registerAllCommands();
+registerAllCommands(useSettings.getState().keybindingOverrides);
+
+// Keybinding overrides re-register the whole command set (labels, menus, and
+// dispatch all read the registry).
+useSettings.subscribe((s, prev) => {
+  if (s.keybindingOverrides !== prev.keybindingOverrides) {
+    rebuildRegistry(s.keybindingOverrides);
+  }
+});
+
+/** Apply theme + accent to the document root. */
+function applyAppearance(theme: string, accent: string): void {
+  const root = document.documentElement;
+  if (theme === "light" || theme === "dark") root.dataset.theme = theme;
+  else delete root.dataset.theme;
+  if (accent !== "") {
+    root.style.setProperty("--accent", accent);
+    root.style.setProperty("--accent-dim", `color-mix(in srgb, ${accent} 26%, transparent)`);
+    root.style.setProperty("--accent-faint", `color-mix(in srgb, ${accent} 12%, transparent)`);
+  } else {
+    root.style.removeProperty("--accent");
+    root.style.removeProperty("--accent-dim");
+    root.style.removeProperty("--accent-faint");
+  }
+}
 
 let booted = false;
 
@@ -60,6 +86,12 @@ function boot(): void {
 
 export default function App() {
   useKeyboard();
+  const theme = useSettings((s) => s.theme);
+  const accent = useSettings((s) => s.accent);
+
+  useEffect(() => {
+    applyAppearance(theme, accent);
+  }, [theme, accent]);
 
   useEffect(() => {
     boot();
@@ -109,6 +141,7 @@ export default function App() {
       <PreviewOverlay />
       <CommandPalette />
       <FuzzyFinder />
+      <SettingsOverlay />
       <ConflictDialog />
       <ConfirmDialog />
       <OpCards />

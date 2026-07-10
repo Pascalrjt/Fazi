@@ -70,6 +70,10 @@ pub enum OpEvent {
         entries_done: u64,
         current_path: String,
         cloned: bool,
+        /// Additive wire extension: absent = copying. "verifying" while the
+        /// opt-in post-promote checksum pass runs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<&'static str>,
     },
     #[serde(rename_all = "camelCase")]
     Conflict {
@@ -138,6 +142,9 @@ pub struct OpArgs {
     pub sources: Vec<PathBuf>,
     pub dest_dir: PathBuf,
     pub policy: Policy,
+    /// Opt-in BLAKE3 checksum verification for copies (verifyCopies setting).
+    /// The mandatory cross-volume move gate is separate and unconditional.
+    pub verify: bool,
 }
 
 /// Per-op handle: cancellation + the conflict-response rendezvous.
@@ -258,6 +265,17 @@ impl OpSink {
         }
     }
 
+    fn emit_phase(&mut self, current: &Path, phase: &'static str) {
+        self.last_emit = Instant::now();
+        self.emitter.emit(OpEvent::Progress {
+            bytes_done: self.bytes,
+            entries_done: self.entries,
+            current_path: current.to_string_lossy().into_owned(),
+            cloned: self.any_clone,
+            phase: Some(phase),
+        });
+    }
+
     fn emit_progress(&mut self, current: &Path, force: bool) {
         if force || self.last_emit.elapsed() >= Duration::from_millis(80) {
             self.last_emit = Instant::now();
@@ -266,6 +284,7 @@ impl OpSink {
                 entries_done: self.entries,
                 current_path: current.to_string_lossy().into_owned(),
                 cloned: self.any_clone,
+                phase: None,
             });
         }
     }
@@ -797,6 +816,28 @@ fn transfer_toplevel(
 
     if args.kind == OpKind::Move {
         walker::remove_tree_best_effort(source);
+    }
+
+    // Opt-in checksum verification, post-promote, copies only. A mismatch is
+    // a per-item error (op → partial) but the copy stays in place AND in
+    // `produced` — the op remains undoable and ⌘Z removes the suspect file.
+    if args.verify && args.kind == OpKind::Copy {
+        sink.emit_phase(dest, "verifying");
+        let handle = sink.handle.clone();
+        let cancelled = move || handle.cancel.load(Ordering::SeqCst);
+        let report = crate::core::verify::checksum_compare(source, dest, &cancelled);
+        for m in &report.mismatches {
+            sink.item_error(
+                dest,
+                &io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{} — copy kept for inspection; Undo removes it",
+                        m
+                    ),
+                ),
+            );
+        }
     }
     Ok(true)
 }

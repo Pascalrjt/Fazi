@@ -213,6 +213,7 @@ impl ArchiveSink {
                 entries_done: self.entries,
                 current_path: current.to_string_lossy().into_owned(),
                 cloned: false,
+                phase: None,
             });
         }
     }
@@ -594,6 +595,7 @@ fn run_compress_thread(
                     entries_done,
                     current_path: zip.to_string_lossy().into_owned(),
                     cloned: false,
+                    phase: None,
                 });
             }
             // 250ms in short slices so the join after stop is prompt.
@@ -689,6 +691,7 @@ fn run_compress_thread(
                         entries_done: sink.entries,
                         current_path: dest.to_string_lossy().into_owned(),
                         cloned: false,
+                        phase: None,
                     });
                     finish("success", Vec::new(), vec![dest]);
                 }
@@ -919,6 +922,7 @@ fn run_extract_thread(
             entries_done: index as u64,
             current_path: archive.to_string_lossy().into_owned(),
             cloned: false,
+            phase: None,
         });
 
         // One closure per archive so every failure path shares the
@@ -1059,6 +1063,7 @@ fn run_extract_thread(
             entries_done: (index + 1) as u64,
             current_path: archive.to_string_lossy().into_owned(),
             cloned: false,
+            phase: None,
         });
     }
 

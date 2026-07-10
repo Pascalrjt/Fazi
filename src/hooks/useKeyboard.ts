@@ -25,7 +25,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 export function currentKeyContext(target: EventTarget | null = null): KeyContext {
   const app = useApp.getState();
   const ops = useOps.getState();
-  if (app.confirm || ops.conflicts.length > 0) return "modal";
+  if (app.confirm || app.settingsOpen || ops.conflicts.length > 0) return "modal";
   if (app.paletteOpen || useFuzzy.getState().open) return "palette";
   if (app.renaming) return "rename";
   if (app.previewOpen) return "preview";

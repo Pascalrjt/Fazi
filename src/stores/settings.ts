@@ -4,6 +4,8 @@ import { persist } from "zustand/middleware";
 import type { SortDir, SortKey } from "../lib/sort";
 
 export type ViewMode = "list" | "grid";
+export type Theme = "system" | "light" | "dark";
+export type Density = "normal" | "compact";
 
 /** A user-pinned sidebar folder (defaults live in useVolumes, not here). */
 export interface FavoriteFolder {
@@ -11,33 +13,66 @@ export interface FavoriteFolder {
   name: string;
 }
 
+/**
+ * Per-command shortcut overrides: `string[]` replaces the command's bindings
+ * (first entry is the primary), `null` unbinds it, absent = default.
+ */
+export type KeybindingOverrides = Record<string, string[] | null>;
+
 interface SettingsState {
+  // General
   showHidden: boolean;
   viewMode: ViewMode;
   sidebarCollapsed: boolean;
   defaultSortKey: SortKey;
   defaultSortDir: SortDir;
   fdaBannerDismissed: boolean;
-  favorites: FavoriteFolder[];
+  confirmPermanentDelete: boolean;
+  confirmEmptyTrash: boolean;
+  // Appearance
+  theme: Theme;
+  /** Custom accent CSS color; "" = the built-in accent. */
+  accent: string;
+  density: Density;
+  // Keyboard
+  keybindingOverrides: KeybindingOverrides;
+  // Search
   /** Global search starts in Contents mode (kMDItemTextContent) when true. */
   searchContentsDefault: boolean;
-  /** Native drag-out (drag to Finder/Mail/…). Kill-switch: off = HTML5-only
-   *  internal drag & drop, exactly the pre-drag-out behavior. */
-  dragOutEnabled: boolean;
+  /** Global-search result cap (1..=10,000; same ceiling as the fuzzy top-K). */
+  searchMaxResults: number;
   /** Fuzzy-index excludes: bare name = component at any depth; with "/" =
    *  root-relative path prefix. */
   fuzzyExcludes: string[];
   fuzzyIndexMaxEntries: number;
-  /** Global-search result cap (1..=10,000; same ceiling as the fuzzy top-K). */
-  searchMaxResults: number;
+  // Operations
+  /** Opt-in BLAKE3 checksum verification for copies. The mandatory
+   *  cross-volume move verification is separate and always on. */
+  verifyCopies: boolean;
+  opCardAutoHideMs: number;
+  // Sidebar
+  favorites: FavoriteFolder[];
+  showTrashInSidebar: boolean;
+  // Advanced
+  /** Lazy folder sizes in list view (M7) — explicitly approximate. */
+  showFolderSizes: boolean;
+  /** Native drag-out (drag to Finder/Mail/…). Kill-switch: off = HTML5-only
+   *  internal drag & drop, exactly the pre-drag-out behavior. */
+  dragOutEnabled: boolean;
 
   setShowHidden(v: boolean): void;
-  setSearchContentsDefault(v: boolean): void;
-  setDragOutEnabled(v: boolean): void;
   setViewMode(v: ViewMode): void;
   toggleSidebar(): void;
   setDefaultSort(key: SortKey, dir: SortDir): void;
   dismissFdaBanner(): void;
+  setSearchContentsDefault(v: boolean): void;
+  setDragOutEnabled(v: boolean): void;
+  /** Generic patch used by the settings panes. */
+  patch(partial: Partial<SettingsValues>): void;
+  setKeybindingOverride(commandId: string, shortcuts: string[] | null): void;
+  clearKeybindingOverride(commandId: string): void;
+  /** Reset everything except favorites (fazi-cols lives outside this store). */
+  resetToDefaults(): void;
   /**
    * Pin folders, skipping paths already pinned or matching a default sidebar
    * row (`defaultPaths`). Returns how many were actually added.
@@ -47,29 +82,84 @@ interface SettingsState {
   moveFavorite(path: string, toIndex: number): void;
 }
 
+/** The persisted value shape (no functions). */
+export type SettingsValues = Omit<
+  SettingsState,
+  | "setShowHidden"
+  | "setViewMode"
+  | "toggleSidebar"
+  | "setDefaultSort"
+  | "dismissFdaBanner"
+  | "setSearchContentsDefault"
+  | "setDragOutEnabled"
+  | "patch"
+  | "setKeybindingOverride"
+  | "clearKeybindingOverride"
+  | "resetToDefaults"
+  | "addFavorites"
+  | "removeFavorite"
+  | "moveFavorite"
+>;
+
+export const SETTINGS_DEFAULTS: SettingsValues = {
+  showHidden: false,
+  viewMode: "list",
+  sidebarCollapsed: false,
+  defaultSortKey: "name",
+  defaultSortDir: "asc",
+  fdaBannerDismissed: false,
+  confirmPermanentDelete: true,
+  confirmEmptyTrash: true,
+  theme: "system",
+  accent: "",
+  density: "normal",
+  keybindingOverrides: {},
+  searchContentsDefault: false,
+  searchMaxResults: 10_000,
+  fuzzyExcludes: [".git", "node_modules", "Library/Caches", ".Trash"],
+  fuzzyIndexMaxEntries: 2_000_000,
+  verifyCopies: false,
+  opCardAutoHideMs: 4000,
+  favorites: [],
+  showTrashInSidebar: true,
+  showFolderSizes: false,
+  dragOutEnabled: true,
+};
+
 export const useSettings = create<SettingsState>()(
   persist(
     (set, get) => ({
-      showHidden: false,
-      viewMode: "list",
-      sidebarCollapsed: false,
-      defaultSortKey: "name",
-      defaultSortDir: "asc",
-      fdaBannerDismissed: false,
-      favorites: [],
-      searchContentsDefault: false,
-      dragOutEnabled: true,
-      fuzzyExcludes: [".git", "node_modules", "Library/Caches", ".Trash"],
-      fuzzyIndexMaxEntries: 2_000_000,
-      searchMaxResults: 10_000,
+      ...SETTINGS_DEFAULTS,
 
       setShowHidden: (v) => set({ showHidden: v }),
-      setSearchContentsDefault: (v) => set({ searchContentsDefault: v }),
-      setDragOutEnabled: (v) => set({ dragOutEnabled: v }),
       setViewMode: (v) => set({ viewMode: v }),
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setDefaultSort: (key, dir) => set({ defaultSortKey: key, defaultSortDir: dir }),
       dismissFdaBanner: () => set({ fdaBannerDismissed: true }),
+      setSearchContentsDefault: (v) => set({ searchContentsDefault: v }),
+      setDragOutEnabled: (v) => set({ dragOutEnabled: v }),
+      patch: (partial) => set(partial),
+
+      setKeybindingOverride: (commandId, shortcuts) => {
+        set((s) => ({
+          keybindingOverrides: { ...s.keybindingOverrides, [commandId]: shortcuts },
+        }));
+      },
+
+      clearKeybindingOverride: (commandId) => {
+        set((s) => {
+          const next = { ...s.keybindingOverrides };
+          delete next[commandId];
+          return { keybindingOverrides: next };
+        });
+      },
+
+      resetToDefaults: () => {
+        // Favorites survive a reset (and fazi-cols lives outside this store —
+        // noted in the Advanced pane copy).
+        const { favorites } = get();
+        set({ ...SETTINGS_DEFAULTS, favorites });
+      },
 
       addFavorites: (items, defaultPaths) => {
         const taken = new Set([
@@ -107,8 +197,9 @@ export const useSettings = create<SettingsState>()(
       },
     }),
     // NO version bump: the store persists at implicit version 0 today, and a
-    // bump without `migrate` would discard existing users' settings. The
-    // shallow merge on rehydrate fills `favorites: []` for old blobs.
+    // bump without `migrate` would discard existing users' settings. New keys
+    // are ADDITIVE with defaults only — the shallow merge on rehydrate fills
+    // them for old blobs. (A vitest guard asserts no version key sneaks in.)
     { name: "fazi-settings" },
   ),
 );
