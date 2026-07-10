@@ -56,7 +56,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
       Advanced), opt-in BLAKE3 copy verification with a wire-level
       "verifying" phase, custom keybindings with recorder + conflict
       detection.
-- [ ] **M6 — Batch rename + paste-as-file** (Tier 1 #7, #11): all-or-nothing
+- [x] **M6 — Batch rename + paste-as-file** (Tier 1 #7, #11): all-or-nothing
       two-phase batch rename (regex/numbering, live preview, ⌘⇧R, single
       undo entry), paste clipboard image/text as a new file with full
       undo/redo through Trash.
@@ -71,7 +71,7 @@ blocks daily-driver adoption; Tier 1 = high-value quality of life.
 - [ ] Real-device passes over `docs/MANUAL_TESTS.md` (TCC prompts,
       external volumes, 100k-dir perf, kill -9 mid-copy)
 - [ ] Viewport-priority hydration (→ M7)
-- [ ] Paste image/text from clipboard as a new file (→ M6)
+- [x] Paste image/text from clipboard as a new file (M6)
 
 ## Done (former Phase 2/3 items)
 

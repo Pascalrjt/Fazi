@@ -157,6 +157,7 @@ interface AppState {
   previewOpen: boolean;
   getInfoOpen: boolean;
   settingsOpen: boolean;
+  batchRenameOpen: boolean;
   renaming: RenameTarget | null;
   pathBarEditing: boolean;
   searchFieldFocused: boolean;
@@ -174,6 +175,7 @@ interface AppState {
   setPreviewOpen(open: boolean): void;
   setGetInfoOpen(open: boolean): void;
   setSettingsOpen(open: boolean): void;
+  setBatchRenameOpen(open: boolean): void;
   startRename(target: RenameTarget): void;
   stopRename(): void;
   setPathBarEditing(v: boolean): void;
@@ -203,6 +205,7 @@ export const useApp = create<AppState>()(
     previewOpen: false,
     getInfoOpen: false,
     settingsOpen: false,
+    batchRenameOpen: false,
     renaming: null,
     pathBarEditing: false,
     searchFieldFocused: false,
@@ -248,6 +251,7 @@ export const useApp = create<AppState>()(
     setPreviewOpen: (open) => set({ previewOpen: open }),
     setGetInfoOpen: (open) => set({ getInfoOpen: open }),
     setSettingsOpen: (open) => set({ settingsOpen: open }),
+    setBatchRenameOpen: (open) => set({ batchRenameOpen: open }),
     startRename: (target) => set({ renaming: target }),
     stopRename: () => set({ renaming: null }),
     setPathBarEditing: (v) => set({ pathBarEditing: v }),

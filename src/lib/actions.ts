@@ -70,7 +70,12 @@ export function pasteInto(destDir: string, forceMove = false): void {
   ipc
     .pbReadFiles()
     .then((contents) => {
-      if (!contents || contents.paths.length === 0) return;
+      if (!contents || contents.paths.length === 0) {
+        // Plain ⌘V only: no file paths on the pasteboard → paste clipboard
+        // image/text as a new file. ⌘⌥V ("Move Items Here") stays a no-op.
+        if (!forceMove) pasteClipboardAsFile(destDir);
+        return;
+      }
       const kind = forceMove || contents.isCut ? "move" : "copy";
       // pasting into the folder the items already live in → duplicate semantics for copy
       const allSameDir = contents.paths.every((p) => dirname(p) === destDir);
@@ -90,6 +95,40 @@ export function pasteInto(destDir: string, forceMove = false): void {
 export function pasteIntoActive(forceMove = false): void {
   const at = activePaneTab();
   if (at) pasteInto(at.tab.path, forceMove);
+}
+
+/** Clipboard image/text → a new file in destDir (image wins). */
+function pasteClipboardAsFile(destDir: string): void {
+  ipc
+    .pbPasteNewFile(destDir)
+    .then(async (path) => {
+      if (path == null) return; // nothing usable on the pasteboard
+      toast(`Pasted “${basename(path)}”`);
+      const at = activePaneTab();
+      if (!at || at.tab.path !== destDir) return;
+      // Pull the fresh entry in and select it.
+      try {
+        const entry = await ipc.statPath(path, at.tab.listingId);
+        if (entry) {
+          usePanes.getState().upsertEntryNow(at.pane.id, at.tab.id, entry);
+          const fresh = usePanes
+            .getState()
+            .panes.find((p) => p.id === at.pane.id)
+            ?.tabs.find((t) => t.id === at.tab.id)
+            ?.entries.find((e) => e.name === entry.name);
+          if (fresh) {
+            usePanes.getState().setSelection(at.pane.id, at.tab.id, {
+              selected: new Set([fresh.id]),
+              anchor: fresh.id,
+              lead: fresh.id,
+            });
+          }
+        }
+      } catch {
+        usePanes.getState().addGhosts(destDir, [path]);
+      }
+    })
+    .catch((err) => toast(`Paste failed: ${err}`, { danger: true }));
 }
 
 export function copyPathnames(): void {

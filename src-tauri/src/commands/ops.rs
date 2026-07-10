@@ -254,19 +254,121 @@ pub fn delete_permanent(paths: Vec<String>) -> Result<()> {
 
 /// Illegal characters in a macOS file name (POSIX layer).
 fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::msg("name can't be empty"));
+    crate::core::batch_rename::validate_name(name).map_err(Error::Io)
+}
+
+// ---------------------------------------------------------------------------
+// Batch rename
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRenameItem {
+    pub from: String,
+    pub to_name: String,
+}
+
+/// All-or-nothing two-phase batch rename. Every `from` must share ONE parent
+/// directory — enforced here at the boundary, not just by UI construction.
+/// Returns the new absolute paths (same order); records a single undo entry.
+#[tauri::command]
+pub fn batch_rename(
+    state: State<'_, AppState>,
+    renames: Vec<BatchRenameItem>,
+) -> Result<Vec<String>> {
+    use crate::core::batch_rename::{std_rename, two_phase_rename, validate_batch};
+    if renames.is_empty() {
+        return Err(Error::msg("nothing to rename"));
     }
-    if name.contains('/') {
-        return Err(Error::msg("name can't contain \"/\""));
+    let mut parent: Option<PathBuf> = None;
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for item in &renames {
+        let from = PathBuf::from(&item.from);
+        let dir = from
+            .parent()
+            .ok_or_else(|| Error::msg("can't rename this item"))?
+            .to_path_buf();
+        match &parent {
+            None => parent = Some(dir),
+            Some(p) if *p == dir => {}
+            Some(_) => return Err(Error::msg("all items must be in the same folder")),
+        }
+        let from_name = from
+            .file_name()
+            .ok_or_else(|| Error::msg("can't rename this item"))?
+            .to_string_lossy()
+            .into_owned();
+        pairs.push((from_name, item.to_name.clone()));
     }
-    if name.contains('\0') {
-        return Err(Error::msg("invalid name"));
+    let parent = parent.expect("non-empty batch has a parent");
+    // Skip no-op pairs (name unchanged) — they'd trip the collision check.
+    pairs.retain(|(f, t)| f != t);
+    if pairs.is_empty() {
+        return Ok(renames.iter().map(|r| r.from.clone()).collect());
     }
-    if name == "." || name == ".." {
-        return Err(Error::msg("invalid name"));
+
+    validate_batch(&parent, &pairs).map_err(Error::Io)?;
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let finals = two_phase_rename(&parent, &pairs, &tag, &std_rename).map_err(Error::Io)?;
+
+    let undo_pairs: Vec<(PathBuf, PathBuf)> = pairs
+        .iter()
+        .zip(&finals)
+        .map(|((from, _), to)| (parent.join(from), to.clone()))
+        .collect();
+    state
+        .engine
+        .undo
+        .lock()
+        .unwrap()
+        .push(UndoOp::BatchRename { pairs: undo_pairs });
+    Ok(finals.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Paste clipboard content as a new file
+// ---------------------------------------------------------------------------
+
+/// Create a new file in `dest_dir` from the clipboard: an image wins over
+/// text; returns None when the pasteboard holds neither. Undo trashes the
+/// created file and records the landed path, so redo restores it from the
+/// Trash (the ProducedItems round-trip).
+#[tauri::command]
+pub fn pb_paste_new_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    dest_dir: String,
+) -> Result<Option<String>> {
+    use crate::core::undo::ProducedKind;
+    use crate::core::walker::{exists_ci, keep_both_name};
+    use crate::macos::main_thread::on_main;
+    use crate::macos::pasteboard;
+
+    let dest = PathBuf::from(&dest_dir);
+    if !dest.is_dir() {
+        return Err(Error::msg("destination is not a directory"));
     }
-    Ok(())
+    let (bytes, base_name): (Vec<u8>, &str) =
+        if let Some(png) = on_main(&app, pasteboard::read_image_png) {
+            (png, "Pasted Image.png")
+        } else if let Some(text) = on_main(&app, pasteboard::read_string) {
+            (text.into_bytes(), "Pasted Text.txt")
+        } else {
+            return Ok(None);
+        };
+
+    let name = if exists_ci(&dest, base_name) {
+        keep_both_name(&dest, base_name)
+    } else {
+        base_name.to_string()
+    };
+    let path = dest.join(&name);
+    std::fs::write(&path, &bytes)?;
+    state.engine.undo.lock().unwrap().push(UndoOp::ProducedItems {
+        kind: ProducedKind::Paste,
+        pairs: vec![(path.clone(), None)],
+    });
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]

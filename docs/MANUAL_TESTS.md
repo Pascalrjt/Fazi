@@ -153,6 +153,18 @@ phase done. Check items off per release.
       Trash" skips those dialogs; Reset-to-defaults restores everything but
       keeps pinned folders and column widths.
 
+## Batch rename & paste-as-file
+- [ ] Select 5 files → ⌘⇧R: live preview updates per keystroke; a colliding
+      target flags its row and disables Rename; regex capture groups and
+      numbering work; Apply renames all 5 and ONE ⌘Z restores every name.
+- [ ] Permutation: select 1.jpg + 2.jpg, rename to each other's names →
+      contents swap correctly; ⌘Z swaps back.
+- [ ] Copy an image in Preview.app → ⌘V in Fazi creates "Pasted Image.png"
+      (selected); copy text → "Pasted Text.txt"; ⌘V again uniquifies
+      ("Pasted Image 2.png"). ⌘Z trashes it; ⌘⇧Z restores it from the Trash.
+- [ ] ⌘⌥V with no file paths on the pasteboard stays a no-op (never creates
+      a clipboard file).
+
 ## Keyboard sweep
 - [ ] ⏎ rename (stem preselected), Tab serial-rename, Esc cancels.
 - [ ] ⌘⇧N new folder appears in rename mode, sorted into place.

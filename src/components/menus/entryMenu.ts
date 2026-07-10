@@ -76,6 +76,13 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
       shortcut: "enter",
       action: () => useApp.getState().startRename({ paneId, tabId, entryId: entry.id }),
     });
+  } else {
+    items.push({
+      type: "item",
+      label: `Rename ${pluralize(n, "item")}…`,
+      shortcut: "cmd+shift+r",
+      action: () => useApp.getState().setBatchRenameOpen(true),
+    });
   }
   items.push({
     type: "item",

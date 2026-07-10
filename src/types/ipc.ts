@@ -94,7 +94,7 @@ export type WatchEvent =
 // File operations
 // ---------------------------------------------------------------------------
 
-export type OpKind = "copy" | "move" | "trash" | "restoreTrash" | "delete" | "rename" | "newFolder" | "duplicate" | "compress" | "extract";
+export type OpKind = "copy" | "move" | "trash" | "restoreTrash" | "delete" | "rename" | "newFolder" | "duplicate" | "compress" | "extract" | "batchRename" | "paste";
 
 export type ConflictPolicy = "ask" | "keepBoth" | "replace" | "skip";
 
@@ -379,6 +379,7 @@ export const COMMANDS = {
   emptyTrash: "empty_trash", // (channel EmptyTrashEvent) — permanent, purges undo history
   deletePermanent: "delete_permanent", // (paths) -> void
   renamePath: "rename_path", // (path, newName) -> newPath
+  batchRename: "batch_rename", // (renames: {from, toName}[]) -> newPaths (all-or-nothing, one undo entry)
   newFolder: "new_folder", // (parent, name) -> path
   duplicatePaths: "duplicate_paths", // (paths, channel opEvent) — keep-both copy in place
   compressPaths: "compress_paths", // (opId, sources, destDir, channel opEvent) — ditto zip
@@ -413,6 +414,7 @@ export const COMMANDS = {
   pbWriteFiles: "pb_write_files", // (paths, isCut)
   pbReadFiles: "pb_read_files", // () -> PasteboardContents | null
   pbWriteText: "pb_write_text",
+  pbPasteNewFile: "pb_paste_new_file", // (destDir) -> path | null — clipboard image/text as a new file
   quicklookPanel: "quicklook_panel", // (paths) — qlmanage -p escape hatch
   readTextHead: "read_text_head", // (path, maxBytes) -> TextPreview
   registerPreview: "register_preview", // (path) -> token for preview://

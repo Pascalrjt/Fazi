@@ -261,6 +261,14 @@ function buildCommandSpecs(): CommandSpec[] {
       run: () => actions.startRenameSelected(),
     },
     {
+      id: "batchRename",
+      title: "Rename Multiple Items…",
+      keywords: "batch rename regex numbering",
+      shortcut: "cmd+shift+r",
+      enabled: () => selectedEntries().length > 1,
+      run: () => useApp.getState().setBatchRenameOpen(true),
+    },
+    {
       id: "trash",
       title: "Move to Trash",
       keywords: "delete remove",

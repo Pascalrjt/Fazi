@@ -132,6 +132,12 @@ export function renamePath(path: string, newName: string): Promise<string> {
   return invoke(COMMANDS.renamePath, { path, newName });
 }
 
+export function batchRename(
+  renames: Array<{ from: string; toName: string }>,
+): Promise<string[]> {
+  return invoke(COMMANDS.batchRename, { renames });
+}
+
 export function newFolder(parent: string, name: string): Promise<string> {
   return invoke(COMMANDS.newFolder, { parent, name });
 }
@@ -300,6 +306,10 @@ export function pbReadFiles(): Promise<PasteboardContents | null> {
 
 export function pbWriteText(text: string): Promise<void> {
   return invoke(COMMANDS.pbWriteText, { text });
+}
+
+export function pbPasteNewFile(destDir: string): Promise<string | null> {
+  return invoke(COMMANDS.pbPasteNewFile, { destDir });
 }
 
 export function quicklookPanel(paths: string[]): Promise<void> {
