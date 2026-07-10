@@ -11,6 +11,7 @@ import {
   type ConflictPolicy,
   type DefaultFolders,
   type DirSizeEvent,
+  type EmptyTrashEvent,
   type Entry,
   type FinderTag,
   type GetInfoResult,
@@ -21,6 +22,7 @@ import {
   type ConflictResponse,
   type SearchEvent,
   type TextPreview,
+  type TrashStats,
   type UndoDescription,
   type UndoResult,
   type Volume,
@@ -101,6 +103,16 @@ export function respondConflict(
 
 export function trashPaths(paths: string[]): Promise<void> {
   return invoke(COMMANDS.trashPaths, { paths });
+}
+
+export function trashStats(): Promise<TrashStats> {
+  return invoke(COMMANDS.trashStats);
+}
+
+export function emptyTrash(onEvent: (e: EmptyTrashEvent) => void): Promise<void> {
+  const channel = new Channel<EmptyTrashEvent>();
+  channel.onmessage = onEvent;
+  return invoke(COMMANDS.emptyTrash, { channel });
 }
 
 export function deletePermanent(paths: string[]): Promise<void> {
@@ -268,10 +280,6 @@ export function registerPreview(path: string): Promise<string> {
 
 export function revokePreview(token: string): Promise<void> {
   return invoke(COMMANDS.revokePreview, { token });
-}
-
-export function downloadIcloud(paths: string[]): Promise<void> {
-  return invoke(COMMANDS.downloadIcloud, { paths });
 }
 
 // ---------------------------------------------------------------------------

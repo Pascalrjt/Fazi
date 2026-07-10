@@ -1,7 +1,7 @@
 //! Two-stage streamed directory listing (perf-critical, see plan).
 //! Pass 1: readdir names + d_type hints, streamed in chunks of ~1000, in
 //! directory order. Pass 2: background hydration batches (lstat, tags,
-//! packages, iCloud), streamed as delta updates over the same channel.
+//! packages), streamed as delta updates over the same channel.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

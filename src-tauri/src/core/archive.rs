@@ -25,8 +25,7 @@ use crate::core::journal::OpJournalEntry;
 use crate::core::op_queue::{enumerate, now_ms, Engine, OpEmitter, OpError, OpEvent, OpHandle};
 use crate::core::undo::{ProducedKind, UndoOp};
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, DatalessPolicy, Outcome, Resolution,
-    WalkSink,
+    self, keep_both_name, staging_name, ConflictKind, Outcome, Resolution, WalkSink,
 };
 
 const DITTO: &str = "/usr/bin/ditto";
@@ -244,12 +243,6 @@ impl WalkSink for ArchiveSink {
         self.aborted = true;
     }
 
-    fn skipped_dataless(&mut self, path: &Path) {
-        // Unreachable under DatalessPolicy::Materialize; if it ever fires, a
-        // silently missing file would mean an incomplete zip — treat as error.
-        self.item_error(path, &io::Error::other("file's data isn't available"));
-    }
-
     fn resolve(&mut self, _: ConflictKind, _: &Path, _: &Path) -> Resolution {
         // Staging dirs are fresh — conflicts are impossible.
         Resolution::Skip
@@ -275,7 +268,6 @@ fn journal_write_fail_fast(
                 message: format!("couldn't write the crash-safety journal: {}", e),
             }],
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: Vec::new(),
             undoable: false,
         });
@@ -352,7 +344,6 @@ fn run_compress_thread(
             status: "failed",
             errors,
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: Vec::new(),
             undoable: false,
         });
@@ -519,12 +510,9 @@ fn run_compress_thread(
                 // via the sink but still returns Done for a directory with
                 // failed children — snapshot the error count around each copy.
                 let errors_before = sink.errors.len();
-                match walker::copy_fresh(
-                    source,
-                    &stage_contents.join(&target_name),
-                    &mut sink,
-                    DatalessPolicy::Materialize,
-                ) {
+                // Dataless sources surface as item errors via the sink's
+                // fail-fast abort — an incomplete zip is never produced.
+                match walker::copy_fresh(source, &stage_contents.join(&target_name), &mut sink) {
                     Ok(Outcome::Done) => {
                         if sink.errors.len() > errors_before {
                             staging_failed = true;
@@ -558,7 +546,6 @@ fn run_compress_thread(
             status: if cancelled { "cancelled" } else { "failed" },
             errors: sink.errors.clone(),
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: Vec::new(),
             undoable: false,
         });
@@ -640,7 +627,6 @@ fn run_compress_thread(
             status,
             errors,
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
             undoable,
         });
@@ -1099,7 +1085,6 @@ fn run_extract_thread(
         status,
         errors,
         warnings: Vec::new(),
-        skipped_icloud: Vec::new(),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         undoable,
     });

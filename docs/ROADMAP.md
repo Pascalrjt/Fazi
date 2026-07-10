@@ -30,7 +30,7 @@ The daily-driver Tier structure below supersedes the old Phase 2/3/4 lists.
 Ordered for optimal build sequencing, not strict tier order. Tier 0 =
 blocks daily-driver adoption; Tier 1 = high-value quality of life.
 
-- [ ] **M1 — De-iCloud + free wins** (Tier 1 #6, Tier 0 #5, #3):
+- [x] **M1 — De-iCloud + free wins** (Tier 1 #6, Tier 0 #5, #3):
       remove iCloud plumbing (dataless files → per-item copy errors;
       same-volume moves/renames of trees containing dataless descendants
       remain allowed — the fast rename path never touches file content),

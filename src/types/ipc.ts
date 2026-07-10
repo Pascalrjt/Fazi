@@ -13,8 +13,6 @@
 
 export type EntryKind = "file" | "dir" | "symlink" | "unknown";
 
-export type ICloudState = "none" | "placeholder" | "local";
-
 export interface FinderTag {
   name: string;
   /** Finder label color 0–7: 0 none, 1 gray, 2 green, 3 purple, 4 blue, 5 yellow, 6 red, 7 orange */
@@ -50,7 +48,6 @@ export interface Entry {
   /** Resolved symlink target path, if kind === "symlink". */
   linkTarget: string | null;
   tags: FinderTag[];
-  icloud: ICloudState;
   /** True if the current user lacks read permission (renders lock badge). */
   noAccess: boolean;
 }
@@ -160,14 +157,12 @@ export type OpEvent =
     }
   | { event: "itemError"; path: string; message: string }
   | { event: "warning"; path: string; message: string; severity: "warning" | "critical" }
-  | { event: "skippedIcloud"; paths: string[] }
   | {
       event: "done";
       status: OpStatus;
       errors: OpError[];
       /** Complete, authoritative list — overwrites live-collected warnings. */
       warnings: OpWarning[];
-      skippedIcloud: string[];
       /** Destination paths of top-level items that were produced (for selection/ghost rows). */
       produced: string[];
       undoable: boolean;
@@ -193,6 +188,18 @@ export interface UndoResult {
   label: string;
   /** Paths the undo produced/restored (for revealing). */
   restored: string[];
+}
+
+/** Streamed over the Channel passed to `empty_trash`. */
+export type EmptyTrashEvent =
+  | { event: "progress"; deleted: number; total: number }
+  | { event: "done"; errors: OpError[] };
+
+/** Item counts across every user Trash dir (confirm-dialog copy). */
+export interface TrashStats {
+  count: number;
+  /** Items living in per-volume `.Trashes` (external disks). */
+  externalCount: number;
 }
 
 export interface InterruptedOp {
@@ -245,7 +252,6 @@ export interface DefaultFolders {
   music: string;
   movies: string;
   applications: string;
-  icloudDrive: string | null;
   trash: string;
 }
 
@@ -307,6 +313,8 @@ export const COMMANDS = {
   cancelOp: "cancel_op",
   respondConflict: "respond_conflict",
   trashPaths: "trash_paths", // (paths) -> void (undoable)
+  trashStats: "trash_stats", // () -> TrashStats
+  emptyTrash: "empty_trash", // (channel EmptyTrashEvent) — permanent, purges undo history
   deletePermanent: "delete_permanent", // (paths) -> void
   renamePath: "rename_path", // (path, newName) -> newPath
   newFolder: "new_folder", // (parent, name) -> path
@@ -342,7 +350,6 @@ export const COMMANDS = {
   readTextHead: "read_text_head", // (path, maxBytes) -> TextPreview
   registerPreview: "register_preview", // (path) -> token for preview://
   revokePreview: "revoke_preview", // (token)
-  downloadIcloud: "download_icloud", // (paths)
 } as const;
 
 /** Global broadcast events (tauri emit). */

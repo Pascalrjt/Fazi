@@ -27,7 +27,6 @@ vi.mock("../../../lib/ipc", () => ({
   respondConflict: () => Promise.resolve(),
   undoLast: () => Promise.resolve(null),
   redoLast: () => Promise.resolve(null),
-  downloadIcloud: () => Promise.resolve(),
   statPath: () => Promise.resolve(null),
   trashPaths: () => Promise.resolve(),
   eject: () => Promise.resolve(),
@@ -50,7 +49,6 @@ const FOLDERS = {
   music: "/Users/me/Music",
   movies: "/Users/me/Movies",
   applications: "/Applications",
-  icloudDrive: null,
   trash: "/Users/me/.Trash",
 };
 
@@ -82,7 +80,6 @@ function dirEntry(id: number, name: string, path: string): Entry {
     isAlias: false,
     linkTarget: null,
     tags: [],
-    icloud: "none",
     noAccess: false,
   };
 }

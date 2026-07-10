@@ -1,10 +1,11 @@
 /**
- * Sidebar: Favorites (default folders + user pins), iCloud Drive, Volumes
- * with eject. Rows navigate on click, act as drop targets, and offer a
- * context menu. The Favorites section additionally accepts drag-to-pin on its
- * chrome (label/whitespace — never on a row) and drag-to-reorder of pins.
+ * Sidebar: Favorites (default folders + user pins), Trash, Volumes with
+ * eject. Rows navigate on click, act as drop targets, and offer a context
+ * menu. The Favorites section additionally accepts drag-to-pin on its chrome
+ * (label/whitespace — never on a row) and drag-to-reorder of pins. Dropping
+ * on the Trash row trashes the dragged items (never a copy into ~/.Trash).
  */
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVolumes } from "../../stores/volumes";
 import { useSettings } from "../../stores/settings";
@@ -19,9 +20,10 @@ import {
   dropPaths,
   endFavoriteDrag,
   endInternalDrag,
+  registerDropZone,
 } from "../../lib/dnd";
 import * as ipc from "../../lib/ipc";
-import { ejectVolume } from "../../lib/actions";
+import { confirmEmptyTrash, ejectVolume, trashPathsWithUndo } from "../../lib/actions";
 import { showMenu } from "../../stores/menu";
 import { formatBytes, basename, pluralize } from "../../lib/format";
 import type { Entry, Volume } from "../../types/ipc";
@@ -34,6 +36,8 @@ interface RowSpec {
   volume?: Volume;
   /** User-pinned favorite: reorderable and removable. */
   favorite?: boolean;
+  /** The Trash row: drops trash items instead of moving into the dir. */
+  trash?: boolean;
 }
 
 function SidebarRow({ row }: { row: RowSpec }) {
@@ -44,11 +48,29 @@ function SidebarRow({ row }: { row: RowSpec }) {
   const openTab = usePanes((s) => s.openTab);
   const removeFavorite = useSettings((s) => s.removeFavorite);
   const [dropping, setDropping] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  // Finder drag-in onto the Trash row trashes the dragged files.
+  useEffect(() => {
+    if (!row.trash) return;
+    return registerDropZone({
+      priority: 20, // beats folder rows and pane backgrounds
+      action: "trash",
+      hitTest: (x, y) => {
+        const rect = rowRef.current?.getBoundingClientRect();
+        if (!rect) return null;
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+          ? row.path
+          : null;
+      },
+    });
+  }, [row.trash, row.path]);
 
   const isCurrent = tab?.path === row.path;
 
   return (
     <div
+      ref={rowRef}
       className={clsx(
         "group mx-2 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px]",
         isCurrent ? "bg-accent-dim text-primary" : "text-secondary hover:bg-hov",
@@ -82,6 +104,16 @@ function SidebarRow({ row }: { row: RowSpec }) {
                 },
               ]
             : []),
+          ...(row.trash
+            ? [
+                { type: "separator" as const },
+                {
+                  type: "item" as const,
+                  label: "Empty Trash…",
+                  action: () => confirmEmptyTrash(),
+                },
+              ]
+            : []),
           ...(row.volume && row.volume.isEjectable
             ? [
                 { type: "separator" as const },
@@ -112,6 +144,13 @@ function SidebarRow({ row }: { row: RowSpec }) {
         e.preventDefault();
         e.stopPropagation();
         setDropping(false);
+        if (row.trash) {
+          // Never a generic move into ~/.Trash — keep Finder Trash semantics.
+          const paths = draggedPaths(e);
+          endInternalDrag();
+          trashPathsWithUndo(paths);
+          return;
+        }
         dropPaths(e, row.path);
       }}
       title={
@@ -309,10 +348,9 @@ export function Sidebar() {
     favorite: true,
   }));
 
-  const icloud: RowSpec[] =
-    folders?.icloudDrive != null
-      ? [{ key: "icloud", label: "iCloud Drive", path: folders.icloudDrive, glyph: "☁" }]
-      : [];
+  const trashRows: RowSpec[] = folders
+    ? [{ key: "trash", label: "Trash", path: folders.trash, glyph: "🗑", trash: true }]
+    : [];
 
   const volumeRows: RowSpec[] = volumes.map((v) => ({
     key: `vol:${v.path}`,
@@ -327,14 +365,9 @@ export function Sidebar() {
       {(defaults.length > 0 || favoriteRows.length > 0) && (
         <FavoritesSection defaults={defaults} favorites={favoriteRows} />
       )}
-      {icloud.length > 0 && (
-        <>
-          <SectionLabel>iCloud</SectionLabel>
-          {icloud.map((row) => (
-            <SidebarRow key={row.key} row={row} />
-          ))}
-        </>
-      )}
+      {trashRows.map((row) => (
+        <SidebarRow key={row.key} row={row} />
+      ))}
       {volumeRows.length > 0 && (
         <>
           <SectionLabel>Volumes</SectionLabel>

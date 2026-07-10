@@ -66,7 +66,6 @@ function CardView({ card }: { card: OpCard }) {
   const dismiss = useOps((s) => s.dismiss);
   const toggleExpanded = useOps((s) => s.toggleExpanded);
   const retry = useOps((s) => s.retry);
-  const downloadAndRetry = useOps((s) => s.downloadAndRetrySkipped);
 
   const running = card.status === "running";
   const failed = card.status === "failed" || card.status === "partial";
@@ -125,11 +124,9 @@ function CardView({ card }: { card: OpCard }) {
         </>
       )}
 
-      {card.status === "success" &&
-        card.skippedIcloud.length === 0 &&
-        card.warnings.length === 0 && (
-          <div className="mt-1 text-[11px] text-secondary">Done</div>
-        )}
+      {card.status === "success" && card.warnings.length === 0 && (
+        <div className="mt-1 text-[11px] text-secondary">Done</div>
+      )}
 
       {card.status === "cancelled" && (
         <div className="mt-1 text-[11px] text-secondary">Cancelled</div>
@@ -186,19 +183,6 @@ function CardView({ card }: { card: OpCard }) {
         </div>
       )}
 
-      {card.skippedIcloud.length > 0 && card.status !== "running" && (
-        <div className="mt-2 rounded bg-pane p-2">
-          <div className="text-[11px] text-secondary">
-            {pluralize(card.skippedIcloud.length, "item")} skipped (not downloaded from iCloud)
-          </div>
-          <button
-            className="mt-1.5 cursor-default rounded bg-accent px-2 py-0.5 text-[11px] font-medium text-white hover:opacity-90"
-            onClick={() => downloadAndRetry(card.opId)}
-          >
-            Download & retry skipped
-          </button>
-        </div>
-      )}
     </div>
   );
 }

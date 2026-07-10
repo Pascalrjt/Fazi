@@ -22,8 +22,8 @@ use crate::core::entry::is_dataless;
 use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, DatalessPolicy, MergeCtx, Outcome,
-    ReplaceOutcome, Resolution, Trasher, WalkSink, WarnSeverity,
+    self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, ReplaceOutcome,
+    Resolution, Trasher, WalkSink, WarnSeverity,
 };
 
 // ---------------------------------------------------------------------------
@@ -88,13 +88,10 @@ pub enum OpEvent {
         severity: WarnSeverity,
     },
     #[serde(rename_all = "camelCase")]
-    SkippedIcloud { paths: Vec<String> },
-    #[serde(rename_all = "camelCase")]
     Done {
         status: &'static str,
         errors: Vec<OpError>,
         warnings: Vec<OpWarning>,
-        skipped_icloud: Vec<String>,
         produced: Vec<String>,
         undoable: bool,
     },
@@ -226,7 +223,6 @@ struct OpSink {
     any_clone: bool,
     errors: Vec<OpError>,
     warnings: Vec<OpWarning>,
-    skipped: Vec<PathBuf>,
     op_policy: Policy,
     file_policy: Option<Resolution>,
     dir_policy: Option<Resolution>,
@@ -254,7 +250,6 @@ impl OpSink {
             any_clone: false,
             errors: Vec::new(),
             warnings: Vec::new(),
-            skipped: Vec::new(),
             op_policy,
             file_policy: None,
             dir_policy: None,
@@ -353,10 +348,6 @@ impl WalkSink for OpSink {
             severity: w.severity,
         });
         self.warnings.push(w);
-    }
-
-    fn skipped_dataless(&mut self, path: &Path) {
-        self.skipped.push(path.to_path_buf());
     }
 
     fn resolve(&mut self, kind: ConflictKind, src: &Path, dst: &Path) -> Resolution {
@@ -498,7 +489,6 @@ fn run_op_thread(
                 message: format!("couldn't write the crash-safety journal: {}", e),
             }],
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: Vec::new(),
             undoable: false,
         });
@@ -580,7 +570,7 @@ fn run_op_thread(
             continue; // already there
         }
         if smeta.file_type().is_file() && is_dataless(&smeta) {
-            sink.skipped_dataless(source);
+            sink.item_error(source, &walker::dataless_error());
             continue;
         }
 
@@ -710,28 +700,19 @@ fn run_op_thread(
     engine.journal.remove(&args.op_id);
     engine.ops.remove(&args.op_id);
 
-    let skipped: Vec<String> = sink
-        .skipped
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
     let status = if cancelled {
         "cancelled"
-    } else if sink.errors.is_empty() && skipped.is_empty() {
+    } else if sink.errors.is_empty() {
         "success"
-    } else if produced.is_empty() && !sink.errors.is_empty() {
+    } else if produced.is_empty() {
         "failed"
     } else {
         "partial"
     };
-    if !skipped.is_empty() {
-        emitter.emit(OpEvent::SkippedIcloud { paths: skipped.clone() });
-    }
     emitter.emit(OpEvent::Done {
         status,
         errors: sink.errors.clone(),
         warnings: sink.warnings.clone(),
-        skipped_icloud: skipped,
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         undoable,
     });
@@ -778,7 +759,7 @@ fn transfer_toplevel(
         ));
     }
 
-    let outcome = walker::copy_fresh(source, &stage, sink, DatalessPolicy::Skip)?;
+    let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
         walker::remove_tree_best_effort(&stage);
         pop_staging(journal_entry, &stage);
@@ -788,9 +769,10 @@ fn transfer_toplevel(
 
     if args.kind == OpKind::Move {
         // Verify before deleting the source — that item is deleted only after
-        // *it* verifies; a crash mid-move never loses data.
-        let skipped: HashSet<PathBuf> = sink.skipped.iter().cloned().collect();
-        let report = walker::verify_tree(source, &stage, &skipped, tol_ms)?;
+        // *it* verifies; a crash mid-move never loses data. A dataless
+        // descendant surfaced as an item error above is missing from the
+        // stage, so verification fails and the source is preserved.
+        let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
             walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);
@@ -877,7 +859,7 @@ fn replace_item(
         ));
     }
 
-    let outcome = walker::copy_fresh(source, &stage, sink, DatalessPolicy::Skip)?;
+    let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
         walker::remove_tree_best_effort(&stage);
         pop_staging(journal_entry, &stage);
@@ -885,8 +867,7 @@ fn replace_item(
         return Ok(false);
     }
     if args.kind == OpKind::Move {
-        let skipped: HashSet<PathBuf> = sink.skipped.iter().cloned().collect();
-        let report = walker::verify_tree(source, &stage, &skipped, tol_ms)?;
+        let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
             walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);
@@ -991,7 +972,6 @@ fn run_duplicate_thread(
                 message: format!("couldn't write the crash-safety journal: {}", e),
             }],
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: Vec::new(),
             undoable: false,
         });
@@ -1051,7 +1031,7 @@ fn run_duplicate_thread(
             continue;
         }
 
-        match walker::copy_fresh(source, &stage, &mut sink, DatalessPolicy::Skip) {
+        match walker::copy_fresh(source, &stage, &mut sink) {
             Ok(Outcome::Done) => match copier::rename_excl(&stage, &dest) {
                 Ok(()) => {
                     pop_staging(&mut journal_entry, &stage);
@@ -1098,7 +1078,6 @@ fn run_duplicate_thread(
         status,
         errors: sink.errors.clone(),
         warnings: sink.warnings.clone(),
-        skipped_icloud: Vec::new(),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         undoable: !produced.is_empty(),
     });

@@ -247,6 +247,33 @@ function SearchField() {
           ))}
         </div>
       )}
+      {globalSearch.active && (
+        <div className="flex items-center gap-0.5 rounded-md bg-pane p-0.5">
+          {(
+            [
+              [false, "Filename"],
+              [true, "Contents"],
+            ] as const
+          ).map(([contents, label]) => (
+            <button
+              key={label}
+              className={clsx(
+                "cursor-default rounded px-1.5 py-0.5 text-[11px]",
+                globalSearch.contents === contents
+                  ? "bg-accent text-white"
+                  : "text-secondary hover:bg-hov",
+              )}
+              onClick={() => {
+                if (globalSearch.contents === contents) return;
+                useApp.getState().setSearchContents(contents);
+                kickGlobal(globalSearch.query, globalSearch.scope);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

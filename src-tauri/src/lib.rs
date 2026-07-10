@@ -122,6 +122,8 @@ pub fn run() {
             commands::ops::cancel_op,
             commands::ops::respond_conflict,
             commands::ops::trash_paths,
+            commands::ops::trash_stats,
+            commands::ops::empty_trash,
             commands::ops::delete_permanent,
             commands::ops::rename_path,
             commands::ops::new_folder,
@@ -152,7 +154,6 @@ pub fn run() {
             commands::macos::register_preview,
             commands::macos::revoke_preview,
             commands::macos::read_text_head,
-            commands::macos::download_icloud,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -106,9 +106,10 @@ export function copyPathnames(): void {
 // trash / delete / duplicate
 // ---------------------------------------------------------------------------
 
-export function trashEntries(entries: Entry[]): void {
-  if (entries.length === 0) return;
-  const paths = entries.map((e) => e.path);
+/** Trash by path with the undo toast — shared by selection ops and drops
+ *  onto the sidebar Trash row (internal drags and the Finder drag-in bridge). */
+export function trashPathsWithUndo(paths: string[]): void {
+  if (paths.length === 0) return;
   // optimistic instant removal; watcher confirms
   usePanes.getState().removeEntriesByPath(paths);
   ipc
@@ -126,8 +127,51 @@ export function trashEntries(entries: Entry[]): void {
     });
 }
 
+export function trashEntries(entries: Entry[]): void {
+  trashPathsWithUndo(entries.map((e) => e.path));
+}
+
 export function trashSelection(): void {
   trashEntries(selectedEntries());
+}
+
+/** Confirm-and-run Empty Trash: totals across every user trash dir (the
+ *  browsed listing shows only ~/.Trash — the dialog copy is authoritative). */
+export function confirmEmptyTrash(): void {
+  ipc
+    .trashStats()
+    .then((stats) => {
+      if (stats.count === 0) {
+        toast("The Trash is empty");
+        return;
+      }
+      const external =
+        stats.externalCount > 0 ? ` (${stats.externalCount} on external volumes)` : "";
+      useApp.getState().showConfirm({
+        title: "Empty Trash?",
+        message: `${pluralize(stats.count, "item")}${external} will be permanently deleted. You can't undo this action.`,
+        confirmLabel: "Empty Trash",
+        danger: true,
+        onConfirm: () => {
+          void ipc
+            .emptyTrash((e) => {
+              if (e.event !== "done") return;
+              if (e.errors.length === 0) {
+                toast("Trash emptied");
+              } else {
+                toast(
+                  `${pluralize(e.errors.length, "item")} couldn't be deleted from the Trash`,
+                  { danger: true },
+                );
+              }
+              const s = usePanes.getState();
+              for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+            })
+            .catch((err) => toast(`Empty Trash failed: ${err}`, { danger: true }));
+        },
+      });
+    })
+    .catch((err) => toast(`Couldn't read the Trash: ${err}`, { danger: true }));
 }
 
 export function deleteSelectionPermanently(): void {

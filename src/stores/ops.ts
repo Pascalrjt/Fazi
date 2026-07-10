@@ -45,7 +45,6 @@ export interface OpCard {
   status: CardStatus;
   errors: OpError[];
   warnings: OpWarning[];
-  skippedIcloud: string[];
   produced: string[];
   expanded: boolean;
   // retry material
@@ -85,7 +84,6 @@ interface OpsState {
   dismiss(opId: string): void;
   toggleExpanded(opId: string): void;
   retry(opId: string): void;
-  downloadAndRetrySkipped(opId: string): void;
   respondConflict(response: ConflictResponse, applyToAll: boolean): void;
 
   undo(): Promise<void>;
@@ -152,7 +150,6 @@ export const useOps = create<OpsState>()(
         status: "running",
         errors: [],
         warnings: [],
-        skippedIcloud: [],
         produced: [],
         expanded: false,
         sources,
@@ -190,14 +187,9 @@ export const useOps = create<OpsState>()(
         // Done's list is authoritative and complete — assign, never append
         // (each warning already arrived once as a live "warning" event).
         card.warnings = event.warnings;
-        card.skippedIcloud = event.skippedIcloud;
         card.produced = event.produced;
         const wasVisible = card.visible;
-        if (
-          event.status === "success" &&
-          event.skippedIcloud.length === 0 &&
-          event.warnings.length === 0
-        ) {
+        if (event.status === "success" && event.warnings.length === 0) {
           if (!wasVisible) {
             // never earned UI → remove silently
             s.cards = s.cards.filter((c) => c.opId !== opId);
@@ -210,8 +202,8 @@ export const useOps = create<OpsState>()(
         } else if (event.status === "cancelled") {
           s.cards = s.cards.filter((c) => c.opId !== opId);
         } else {
-          // partial/failed (or success with iCloud skips/warnings) persists,
-          // visibly and without auto-dismiss
+          // partial/failed (or success with warnings) persists, visibly and
+          // without auto-dismiss
           card.visible = true;
         }
       });
@@ -286,12 +278,6 @@ export const useOps = create<OpsState>()(
                 message: event.message,
                 severity: event.severity,
               });
-          });
-          break;
-        case "skippedIcloud":
-          set((s) => {
-            const card = s.cards.find((c) => c.opId === opId);
-            if (card) card.skippedIcloud.push(...event.paths);
           });
           break;
         case "done":
@@ -441,41 +427,6 @@ export const useOps = create<OpsState>()(
             });
             break;
         }
-      },
-
-      downloadAndRetrySkipped: (opId) => {
-        const card = get().cards.find((c) => c.opId === opId);
-        if (!card || card.skippedIcloud.length === 0) return;
-        const skipped = [...card.skippedIcloud];
-        const { kind, destDir, policy } = card;
-        get().dismiss(opId);
-        useApp
-          .getState()
-          .pushToast(`Downloading ${pluralize(skipped.length, "item")} from iCloud…`);
-        ipc
-          .downloadIcloud(skipped)
-          .then(() => {
-            switch (kind) {
-              case "duplicate":
-                get().duplicate(skipped);
-                break;
-              case "compress":
-                // Materializing staging means compress never skips iCloud
-                // files, but keep the retry meaningful if that ever changes.
-                get().compress(skipped, destDir);
-                break;
-              case "extract":
-                get().extract(skipped, destDir);
-                break;
-              case "copy":
-              case "move":
-                get().startOp({ kind, sources: skipped, destDir, policy });
-                break;
-            }
-          })
-          .catch((err) => {
-            useApp.getState().pushToast(`iCloud download failed: ${err}`, { danger: true });
-          });
       },
 
       respondConflict: (response, applyToAll) => {

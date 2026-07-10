@@ -5,6 +5,7 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { hitTestDropZones } from "../dnd";
 import { useOps } from "../../stores/ops";
+import { trashPathsWithUndo } from "../actions";
 
 /**
  * Start listening for files dragged in from Finder (or any other app).
@@ -22,18 +23,23 @@ export async function setupFinderDragIn(): Promise<() => void> {
       const scale = window.devicePixelRatio || 1;
       const clientX = position.x / scale;
       const clientY = position.y / scale;
-      const destDir = hitTestDropZones(clientX, clientY);
-      if (!destDir) return;
+      const hit = hitTestDropZones(clientX, clientY);
+      if (!hit) return;
+      if (hit.action === "trash") {
+        // Trash drops are a special action, never a copy into ~/.Trash.
+        trashPathsWithUndo(paths);
+        return;
+      }
       // don't copy something onto itself
       const filtered = paths.filter((p) => {
         const parent = p.slice(0, p.lastIndexOf("/")) || "/";
-        return parent !== destDir;
+        return parent !== hit.destDir;
       });
       if (filtered.length === 0) return;
       useOps.getState().startOp({
         kind: "copy",
         sources: filtered,
-        destDir,
+        destDir: hit.destDir,
         policy: "ask",
       });
     });

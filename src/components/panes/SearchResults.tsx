@@ -18,6 +18,7 @@ export function SearchResults() {
   const status = useApp((s) => s.globalSearch.status);
   const query = useApp((s) => s.globalSearch.query);
   const error = useApp((s) => s.globalSearch.error);
+  const contents = useApp((s) => s.globalSearch.contents);
   const home = useVolumes((s) => s.folders?.home ?? null);
   const [selected, setSelected] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -99,6 +100,7 @@ export function SearchResults() {
           {status === "error" && <span className="text-danger">Search failed: {error}</span>}
           {status === "idle" && "Type to search"}
         </span>
+        {contents && <span className="text-tertiary">matching file contents</span>}
         <div className="flex-1" />
         <span className="text-tertiary">⏎ open · ⌘R reveal · esc back</span>
       </div>

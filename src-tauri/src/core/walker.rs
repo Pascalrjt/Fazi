@@ -97,7 +97,6 @@ pub trait WalkSink {
     /// Non-fatal warning: the item succeeded but something needs the user's
     /// attention (e.g. the old original couldn't be trashed). Default no-op.
     fn item_warning(&mut self, _path: &Path, _message: &str, _severity: WarnSeverity) {}
-    fn skipped_dataless(&mut self, path: &Path);
     /// Resolve a conflict. May block on the user (op engine) or return a
     /// canned policy (tests). `dst` is the existing destination item.
     fn resolve(&mut self, kind: ConflictKind, src: &Path, dst: &Path) -> Resolution;
@@ -111,7 +110,6 @@ impl WalkSink for SilentSink {
     }
     fn progress(&mut self, _: u64, _: u64, _: &Path, _: bool) {}
     fn item_error(&mut self, _: &Path, _: &io::Error) {}
-    fn skipped_dataless(&mut self, _: &Path) {}
     fn resolve(&mut self, _: ConflictKind, _: &Path, _: &Path) -> Resolution {
         Resolution::Skip
     }
@@ -123,35 +121,14 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// What `copy_fresh` does with dataless (evicted iCloud) regular files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DatalessPolicy {
-    /// Skip and report via `skipped_dataless` (copy/move/duplicate behavior).
-    Skip,
-    /// Force a byte copy — the data read blocks while fileproviderd
-    /// materializes the file, guaranteeing the copy holds real bytes
-    /// (compress staging must never zip a placeholder).
-    Materialize,
-}
-
-/// How one entry routes through the copy ladder given the dataless policy.
-/// Pure so it's unit-testable without real iCloud state (`is_dataless` reads
-/// `st_flags` directly and has no injectable seam).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DatalessRoute {
-    SkipEntry,
-    /// Never the clone ladder: a clonefile of a dataless file could yield a
-    /// copy that is itself still dataless. The byte copy forces a real read.
-    ForceByteCopy,
-    CloneLadder,
-}
-
-pub fn dataless_route(policy: DatalessPolicy, dataless: bool) -> DatalessRoute {
-    match (policy, dataless) {
-        (_, false) => DatalessRoute::CloneLadder,
-        (DatalessPolicy::Skip, true) => DatalessRoute::SkipEntry,
-        (DatalessPolicy::Materialize, true) => DatalessRoute::ForceByteCopy,
-    }
+/// The per-item error for dataless (evicted cloud) files. Copying one would
+/// either block on materialization or produce a still-dataless clone — both
+/// wrong for an app without cloud integration, so it's a plain item error.
+pub fn dataless_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "content not downloaded (dataless); can't be copied",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -243,12 +220,8 @@ pub fn remove_tree_best_effort(path: &Path) {
 
 /// Copy `src` (file, dir, or symlink) to `dst`, which must not exist.
 /// Per-entry clone-then-copy ladder with cancellation between entries.
-pub fn copy_fresh(
-    src: &Path,
-    dst: &Path,
-    sink: &mut dyn WalkSink,
-    policy: DatalessPolicy,
-) -> io::Result<Outcome> {
+/// Dataless (evicted cloud) files surface as per-item errors, never copies.
+pub fn copy_fresh(src: &Path, dst: &Path, sink: &mut dyn WalkSink) -> io::Result<Outcome> {
     if sink.cancelled() {
         return Ok(Outcome::Cancelled);
     }
@@ -264,7 +237,7 @@ pub fn copy_fresh(
             }
             let name = child.file_name();
             let cdst = dst.join(&name);
-            match copy_fresh(&child.path(), &cdst, sink, policy) {
+            match copy_fresh(&child.path(), &cdst, sink) {
                 Ok(Outcome::Cancelled) => return Ok(Outcome::Cancelled),
                 Ok(Outcome::Done) => {}
                 Err(e) => sink.item_error(&child.path(), &e),
@@ -279,24 +252,20 @@ pub fn copy_fresh(
     }
 
     // File or symlink.
-    let dataless = meta.file_type().is_file() && is_dataless(&meta);
+    if meta.file_type().is_file() && is_dataless(&meta) {
+        sink.item_error(src, &dataless_error());
+        return Ok(Outcome::Done);
+    }
     let size = if meta.file_type().is_file() { meta.len() } else { 0 };
 
-    match dataless_route(policy, dataless) {
-        DatalessRoute::SkipEntry => {
-            sink.skipped_dataless(src);
+    match copier::clone_entry(src, dst) {
+        Ok(()) => {
+            // man copyfile: no progress callbacks on the clone path — count entries.
+            sink.progress(size, 1, src, true);
             Ok(Outcome::Done)
         }
-        DatalessRoute::ForceByteCopy => byte_copy_entry(src, dst, size, sink),
-        DatalessRoute::CloneLadder => match copier::clone_entry(src, dst) {
-            Ok(()) => {
-                // man copyfile: no progress callbacks on the clone path — count entries.
-                sink.progress(size, 1, src, true);
-                Ok(Outcome::Done)
-            }
-            // Any clone failure degrades honestly to a byte copy.
-            Err(_) => byte_copy_entry(src, dst, size, sink),
-        },
+        // Any clone failure degrades honestly to a byte copy.
+        Err(_) => byte_copy_entry(src, dst, size, sink),
     }
 }
 
@@ -623,7 +592,7 @@ pub fn merge_into(
         let src_is_dir = smeta.file_type().is_dir();
 
         if smeta.file_type().is_file() && is_dataless(&smeta) {
-            sink.skipped_dataless(&spath);
+            sink.item_error(&spath, &dataless_error());
             continue;
         }
 
@@ -733,7 +702,7 @@ pub fn merge_into(
                         let staged = if ctx.moving {
                             stage_cross_volume(&spath, &stage, ctx, sink)
                         } else {
-                            copy_fresh(&spath, &stage, sink, DatalessPolicy::Skip)
+                            copy_fresh(&spath, &stage, sink)
                         };
                         match staged {
                             Ok(Outcome::Cancelled) => {
@@ -834,7 +803,7 @@ fn transfer_entry(
     let stage = dir.join(staging_name(&name, ctx.op_id));
     remove_tree_best_effort(&stage);
 
-    match copy_fresh(src, &stage, sink, DatalessPolicy::Skip)? {
+    match copy_fresh(src, &stage, sink)? {
         Outcome::Cancelled => {
             remove_tree_best_effort(&stage);
             return Ok(Outcome::Cancelled);
@@ -877,7 +846,7 @@ fn stage_cross_volume(
     ctx: &MergeCtx,
     sink: &mut dyn WalkSink,
 ) -> io::Result<Outcome> {
-    match copy_fresh(src, stage, sink, DatalessPolicy::Skip)? {
+    match copy_fresh(src, stage, sink)? {
         Outcome::Cancelled => Ok(Outcome::Cancelled),
         Outcome::Done => {
             let report = verify_tree(src, stage, &HashSet::new(), ctx.tol_ms)?;
@@ -906,7 +875,6 @@ mod tests {
         bytes: u64,
         errors: Vec<String>,
         warnings: Vec<(PathBuf, String, WarnSeverity)>,
-        skipped: Vec<PathBuf>,
         canned: Resolution,
         conflicts_seen: Vec<ConflictKind>,
     }
@@ -920,7 +888,6 @@ mod tests {
                 bytes: 0,
                 errors: Vec::new(),
                 warnings: Vec::new(),
-                skipped: Vec::new(),
                 canned,
                 conflicts_seen: Vec::new(),
             }
@@ -945,9 +912,6 @@ mod tests {
         }
         fn item_warning(&mut self, p: &Path, message: &str, severity: WarnSeverity) {
             self.warnings.push((p.to_path_buf(), message.to_string(), severity));
-        }
-        fn skipped_dataless(&mut self, p: &Path) {
-            self.skipped.push(p.to_path_buf());
         }
         fn resolve(&mut self, kind: ConflictKind, _s: &Path, _d: &Path) -> Resolution {
             self.conflicts_seen.push(kind);
@@ -999,7 +963,7 @@ mod tests {
         make_tree(&src);
         let dst = d.join("dst");
         let mut sink = TestSink::new(Resolution::Skip);
-        assert_eq!(copy_fresh(&src, &dst, &mut sink, DatalessPolicy::Skip).unwrap(), Outcome::Done);
+        assert_eq!(copy_fresh(&src, &dst, &mut sink).unwrap(), Outcome::Done);
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"alpha");
         assert_eq!(fs::read(dst.join("sub/deep/c.bin")).unwrap().len(), 1024);
         assert!(fs::symlink_metadata(dst.join("link")).unwrap().file_type().is_symlink());
@@ -1024,7 +988,7 @@ mod tests {
         let dst = d.join("dst");
         let mut sink = TestSink::new(Resolution::Skip);
         sink.cancel_after_entries = Some(10);
-        assert_eq!(copy_fresh(&src, &dst, &mut sink, DatalessPolicy::Skip).unwrap(), Outcome::Cancelled);
+        assert_eq!(copy_fresh(&src, &dst, &mut sink).unwrap(), Outcome::Cancelled);
         // Caller removes staging; here we just assert the walk stopped early.
         assert!(sink.entries < 50);
         fs::remove_dir_all(&d).ok();
@@ -1037,7 +1001,7 @@ mod tests {
         make_tree(&src);
         let dst = d.join("dst");
         let mut sink = TestSink::new(Resolution::Skip);
-        copy_fresh(&src, &dst, &mut sink, DatalessPolicy::Skip).unwrap();
+        copy_fresh(&src, &dst, &mut sink).unwrap();
 
         let clean = verify_tree(&src, &dst, &HashSet::new(), 2_000).unwrap();
         assert!(clean.mismatches.is_empty(), "{:?}", clean.mismatches);
@@ -1245,28 +1209,6 @@ mod tests {
         assert_eq!(sink.warnings[0].2, WarnSeverity::Warning);
         assert_staging_free(&dst, "opwarn");
         fs::remove_dir_all(&d).ok();
-    }
-
-    #[test]
-    fn dataless_route_table() {
-        // (policy, dataless) → route. Materialize must NEVER hit the clone
-        // ladder for a dataless file: a clonefile could yield a still-dataless
-        // copy; the byte copy forces a real (materializing) read.
-        let cases = [
-            (DatalessPolicy::Skip, true, DatalessRoute::SkipEntry),
-            (DatalessPolicy::Materialize, true, DatalessRoute::ForceByteCopy),
-            (DatalessPolicy::Skip, false, DatalessRoute::CloneLadder),
-            (DatalessPolicy::Materialize, false, DatalessRoute::CloneLadder),
-        ];
-        for (policy, dataless, expected) in cases {
-            assert_eq!(
-                dataless_route(policy, dataless),
-                expected,
-                "policy {:?}, dataless {}",
-                policy,
-                dataless
-            );
-        }
     }
 
     #[test]

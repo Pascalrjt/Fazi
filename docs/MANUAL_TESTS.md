@@ -42,6 +42,14 @@ phase done. Check items off per release.
 ## Trash & undo
 - [ ] ⌘⌫ → toast with Undo; item appears in Finder's Trash with working
       "Put Back".
+- [ ] Sidebar Trash row navigates to ~/.Trash; the banner shows the item
+      count; dragging items onto the row trashes them (Put Back still works).
+- [ ] Empty Trash… (banner button / palette / row context menu): confirm
+      dialog totals items across volumes ("N items (M on external volumes)"
+      with a seeded external-volume .Trashes fixture); after emptying, ⌘Z has
+      nothing referencing the emptied content (purged undo history).
+- [ ] Empty Trash with an undeletable item (chmod 555 dir) reports the error
+      and still deletes the rest.
 - [ ] ⌘Z after trash restores to the original folder.
 - [ ] ⌘Z after a move returns items; ⌘⇧Z re-applies.
 - [ ] Replace in a conflict: old file is in Trash; ⌘Z does NOT undo the
@@ -57,17 +65,26 @@ phase done. Check items off per release.
 - [ ] Case-only rename `foo` → `Foo` works; `foo` → existing `BAR` variant
       `bar` is a collision.
 
-## iCloud
-- [ ] iCloud Drive shows placeholders with cloud badges and real names/sizes.
-- [ ] Opening a placeholder triggers download.
-- [ ] Copying a folder containing non-downloaded items skips them and the op
-      card offers "Download & retry skipped".
+## Dataless (evicted cloud) files
+- [ ] Copying a dataless file ("Remove Download" in Finder first) fails that
+      item with "content not downloaded (dataless); can't be copied" — the op
+      is partial, other items succeed.
+- [ ] Same-volume move/rename of a folder containing dataless descendants
+      succeeds instantly (fast rename never touches file content; the
+      descendants stay dataless and intact).
+- [ ] Cross-volume move of a folder containing a dataless descendant fails
+      that top-level item (verification) and the source is left untouched.
 
 ## Volumes
 - [ ] Plugging a USB disk adds it to the sidebar ≤2 s; eject button works;
       ejecting while browsing it walks the tab up + toast.
 - [ ] SMB share: browse (DT_UNKNOWN pass-1 rows hydrate correctly), copy to
       and from, search shows the unindexed-volume notice.
+
+## Search
+- [ ] Filename/Contents pill: switching to Contents re-runs the query and
+      returns kMDItemTextContent hits; the results header notes "matching
+      file contents".
 
 ## Previews
 - [ ] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3, PDF
@@ -113,10 +130,9 @@ phase done. Check items off per release.
 - [ ] Finder opens the produced zip and shows the expected layout: single
       file → the file at zip root; single folder → one top-level folder;
       multi-select → all items at zip root (named `Archive.zip`).
-- [ ] Multi-select compress including an evicted iCloud file ("Remove
-      Download" in Finder first) → compress waits for materialization and the
-      zip contains the full file, never a placeholder; cancel during the wait
-      takes effect at the next entry/chunk boundary.
+- [ ] Multi-select compress including a dataless file ("Remove Download" in
+      Finder first) → the op fails all-or-nothing with the dataless item
+      error; no zip is produced.
 - [ ] Extract a `.tar.gz` → contents promoted next to the archive; a
       single-root tarball promotes under the inner name (no `X/X` nesting).
 - [ ] ⌘Z after compress trashes the zip; Edit menu reads "Undo Compress of

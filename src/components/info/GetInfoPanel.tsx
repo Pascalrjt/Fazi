@@ -145,11 +145,6 @@ function SingleInfo({ entry }: { entry: Entry }) {
             <span className="select-text break-all">{entry.linkTarget}</span>
           </Row>
         )}
-        {entry.icloud !== "none" && (
-          <Row label="iCloud">
-            {entry.icloud === "placeholder" ? "Not downloaded" : "Downloaded"}
-          </Row>
-        )}
       </div>
       <div className="mx-4 border-t border-edge py-2">
         {infoError ? (

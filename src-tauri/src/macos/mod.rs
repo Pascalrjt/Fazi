@@ -1,4 +1,3 @@
-pub mod icloud;
 pub mod icons;
 pub mod main_thread;
 pub mod pasteboard;

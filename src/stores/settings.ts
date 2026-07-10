@@ -19,8 +19,11 @@ interface SettingsState {
   defaultSortDir: SortDir;
   fdaBannerDismissed: boolean;
   favorites: FavoriteFolder[];
+  /** Global search starts in Contents mode (kMDItemTextContent) when true. */
+  searchContentsDefault: boolean;
 
   setShowHidden(v: boolean): void;
+  setSearchContentsDefault(v: boolean): void;
   setViewMode(v: ViewMode): void;
   toggleSidebar(): void;
   setDefaultSort(key: SortKey, dir: SortDir): void;
@@ -44,8 +47,10 @@ export const useSettings = create<SettingsState>()(
       defaultSortDir: "asc",
       fdaBannerDismissed: false,
       favorites: [],
+      searchContentsDefault: false,
 
       setShowHidden: (v) => set({ showHidden: v }),
+      setSearchContentsDefault: (v) => set({ searchContentsDefault: v }),
       setViewMode: (v) => set({ viewMode: v }),
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setDefaultSort: (key, dir) => set({ defaultSortKey: key, defaultSortDir: dir }),

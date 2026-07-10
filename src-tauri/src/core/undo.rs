@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::core::copier;
-use crate::core::walker::{self, DatalessPolicy, SilentSink, Trasher};
+use crate::core::walker::{self, SilentSink, Trasher};
 
 const CAP: usize = 50;
 
@@ -141,6 +141,30 @@ impl UndoStack {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Drop every undo AND redo record that references any of `purged` (the
+    /// path itself or anything under it). Called after Empty Trash with the
+    /// successfully deleted top-level paths — records pointing at deleted
+    /// trash content can only fail or, worse, act on an unrelated file that
+    /// later lands at the same trash path.
+    pub fn purge_records_under(&mut self, purged: &[PathBuf]) {
+        let references = |p: &Path| {
+            purged.iter().any(|root| p == root || p.starts_with(root))
+        };
+        let op_references = |op: &UndoOp| match op {
+            UndoOp::Move { pairs } | UndoOp::Trash { pairs } => {
+                pairs.iter().any(|(a, b)| references(a) || references(b))
+            }
+            UndoOp::Copy { produced } => produced.iter().any(|p| references(p)),
+            UndoOp::Rename { from, to } => references(from) || references(to),
+            UndoOp::NewFolder { path } => references(path),
+            UndoOp::ProducedItems { pairs, .. } => pairs
+                .iter()
+                .any(|(p, t)| references(p) || t.as_deref().is_some_and(references)),
+        };
+        self.undo.retain(|op| !op_references(op));
+        self.redo.retain(|op| !op_references(op));
     }
 }
 
@@ -297,8 +321,11 @@ fn move_back(from: &Path, to: &Path) -> io::Result<()> {
     match copier::rename(from, to) {
         Ok(()) => Ok(()),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            // Dataless content encountered here fails verification below (the
+            // copy is silently missing that file) — the undo errors instead of
+            // deleting a source whose bytes never landed.
             let mut sink = SilentSink;
-            walker::copy_fresh(from, to, &mut sink, DatalessPolicy::Skip)?;
+            walker::copy_fresh(from, to, &mut sink)?;
             let report = walker::verify_tree(from, to, &HashSet::new(), 5_000)?;
             if !report.mismatches.is_empty() {
                 walker::remove_tree_best_effort(to);
@@ -449,6 +476,40 @@ mod tests {
         };
         assert_eq!(op.label(), "Extract of 2 Items");
         assert_eq!(op.kind_wire(), "extract");
+    }
+
+    #[test]
+    fn purge_records_under_clears_both_stacks() {
+        let d = tmp("purge");
+        let trash_root = d.join("Trash");
+        let kept = d.join("kept.txt");
+        fs::create_dir_all(&trash_root).unwrap();
+        fs::write(&kept, b"k").unwrap();
+
+        let mut stack = UndoStack::default();
+        // Undo-stack: a trash record whose landed path is emptied content.
+        stack.push(UndoOp::Trash {
+            pairs: vec![(d.join("doc.txt"), trash_root.join("doc.txt"))],
+        });
+        // Unrelated record that must survive.
+        stack.push(UndoOp::Rename { from: d.join("a"), to: kept.clone() });
+        // Redo-stack: undo a copy so its Trash inverse (landed in trash_root)
+        // sits on the redo stack.
+        let produced = d.join("copy.txt");
+        fs::write(&produced, b"c").unwrap();
+        stack.push(UndoOp::Copy { produced: vec![produced] });
+        let trash = DirTrasher(trash_root.clone());
+        stack.undo(&trash).unwrap().unwrap();
+        assert!(stack.redo_top().is_some());
+
+        // Empty Trash deleted these top-level items.
+        stack.purge_records_under(&[trash_root.join("doc.txt"), trash_root.join("copy.txt")]);
+
+        // Only the unrelated rename survives; the redo record is gone too.
+        assert_eq!(stack.undo.len(), 1);
+        assert!(matches!(stack.undo[0], UndoOp::Rename { .. }));
+        assert!(stack.redo_top().is_none());
+        fs::remove_dir_all(&d).ok();
     }
 
     #[test]

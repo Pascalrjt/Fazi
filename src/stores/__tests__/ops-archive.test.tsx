@@ -31,7 +31,6 @@ vi.mock("../../lib/ipc", () => ({
   respondConflict: () => Promise.resolve(),
   undoLast: () => Promise.resolve(null),
   redoLast: () => Promise.resolve(null),
-  downloadIcloud: () => Promise.resolve(),
 }));
 
 import { useOps } from "../ops";
@@ -69,7 +68,6 @@ describe("archive op cards", () => {
       status: "success",
       errors: [],
       warnings: [],
-      skippedIcloud: [],
       produced: ["/dest/Report.pdf.zip"],
       undoable: true,
     });
@@ -131,7 +129,6 @@ describe("archive op cards", () => {
       status: "failed",
       errors: [{ path: "/src/Folder/locked/secret.txt", message: "permission denied" }],
       warnings: [],
-      skippedIcloud: [],
       produced: [],
       undoable: false,
     });
@@ -153,7 +150,6 @@ describe("archive op cards", () => {
       status: "partial",
       errors: [{ path: "/a/two.zip", message: "ditto failed" }],
       warnings: [],
-      skippedIcloud: [],
       produced: ["/dest/one", "/dest/three"],
       undoable: true,
     });
@@ -174,7 +170,6 @@ describe("archive op cards", () => {
       status: "failed",
       errors: [{ path: "/a/bad.zip", message: "ditto failed" }],
       warnings: [],
-      skippedIcloud: [],
       produced: [],
       undoable: false,
     });

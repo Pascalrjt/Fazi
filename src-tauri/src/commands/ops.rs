@@ -12,7 +12,7 @@ use crate::core::op_queue::{spawn_duplicate, spawn_op, OpArgs, OpEmitter, OpEven
 use crate::core::undo::UndoOp;
 use crate::core::walker::{self, Resolution};
 use crate::error::{Error, Result};
-use crate::macos::trash::trash_path;
+use crate::macos::trash::{self, trash_path};
 use crate::state::AppState;
 
 struct ChannelEmitter(Channel<OpEvent>);
@@ -155,6 +155,78 @@ pub fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()>
     } else {
         Err(Error::msg(errors.join("\n")))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Empty Trash
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "event", rename_all = "camelCase")]
+pub enum EmptyTrashEvent {
+    #[serde(rename_all = "camelCase")]
+    Progress { deleted: u64, total: u64 },
+    #[serde(rename_all = "camelCase")]
+    Done { errors: Vec<crate::core::op_queue::OpError> },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashStats {
+    pub count: u64,
+    pub external_count: u64,
+}
+
+/// Item counts across every user trash dir — the confirm dialog's source of
+/// truth ("N items (M on external volumes)"). The sidebar row only browses
+/// `~/.Trash`; the dialog copy covers the rest.
+#[tauri::command]
+pub fn trash_stats() -> TrashStats {
+    let home_trash = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".Trash"))
+        .unwrap_or_default();
+    let mut count = 0u64;
+    let mut external = 0u64;
+    for dir in trash::user_trash_dirs() {
+        let n = trash::trash_items(&dir).len() as u64;
+        count += n;
+        if dir != home_trash {
+            external += n;
+        }
+    }
+    TrashStats { count, external_count: external }
+}
+
+/// Permanently delete everything in the Trash (all volumes), streaming
+/// progress. Undo/redo records referencing the deleted content are purged —
+/// even on a partial run, for every item that did delete.
+#[tauri::command]
+pub fn empty_trash(state: State<'_, AppState>, channel: Channel<EmptyTrashEvent>) {
+    let engine = state.engine.clone();
+    std::thread::spawn(move || {
+        let dirs = trash::user_trash_dirs();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let outcome = trash::empty_trash_dirs(
+            &dirs,
+            &mut |deleted, total| {
+                let _ = channel.send(EmptyTrashEvent::Progress { deleted, total });
+            },
+            &cancel,
+        );
+        if !outcome.deleted.is_empty() {
+            engine.undo.lock().unwrap().purge_records_under(&outcome.deleted);
+        }
+        let _ = channel.send(EmptyTrashEvent::Done {
+            errors: outcome
+                .errors
+                .iter()
+                .map(|(p, e)| crate::core::op_queue::OpError {
+                    path: p.to_string_lossy().into_owned(),
+                    message: e.to_string(),
+                })
+                .collect(),
+        });
+    });
 }
 
 #[tauri::command]

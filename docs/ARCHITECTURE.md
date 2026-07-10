@@ -46,10 +46,9 @@ A single stat+xattr pass over 100k entries cannot hit a <50 ms first paint.
   hint, dotfile-hidden flag — chunks of ~1000 render immediately in directory
   order. `d_type` is a hint only: network/foreign filesystems return
   `DT_UNKNOWN`, which renders as a neutral row until pass 2 corrects it.
-  iCloud placeholders (`.<name>.icloud`) are merged in with their real names.
 - **Pass 2** hydrates in background batches of ~256: lstat (real type,
-  size/dates/flags), Finder tags, package/alias detection, iCloud status —
-  streamed as `hydrate` delta events over the same channel. Ambiguous
+  size/dates/flags), Finder tags, package/alias detection — streamed as
+  `hydrate` delta events over the same channel. Ambiguous
   package checks (dirs with unknown extensions) batch into one main-thread
   `isFilePackageAtPath:` trip per hydration batch.
 
@@ -152,8 +151,7 @@ The one `unsafe` module is `core/copier.rs`.
 All objc2 calls that require the main thread are confined to
 `src-tauri/src/macos/` and marshaled via `main_thread::on_main` (inline when
 already on main; `run_on_main_thread` + rendezvous otherwise). NSFileManager
-calls (trash, iCloud download) are documented thread-safe and run directly on
-op threads.
+calls (trash) are documented thread-safe and run directly on op threads.
 
 ## Module map
 
@@ -170,7 +168,7 @@ src-tauri/src/
   core/                    # entry, copier (unsafe), walker, op_queue,
                            # journal, undo, watcher, tags
   macos/                   # main_thread, icons, thumbnails, workspace,
-                           # pasteboard, volumes, trash, icloud
+                           # pasteboard, volumes, trash
   search/mdfind.rs
   protocols/               # icon:// thumb:// preview:// token handlers
 ```

@@ -93,11 +93,25 @@ export function dropPaths(e: React.DragEvent, destDir: string): void {
 // Drop-zone registry for Finder drag-in (real screen-coordinate hit tests)
 // ---------------------------------------------------------------------------
 
+/**
+ * What a drop on a zone means. "copyTo" starts a copy into the hit directory;
+ * "trash" dispatches trash_paths — dropping onto the Trash row must keep
+ * Finder Trash semantics (Put Back metadata), never copy into ~/.Trash.
+ */
+export type DropAction = "copyTo" | "trash";
+
 export interface DropZone {
   /** Returns the destination dir for a client point inside this zone, else null. */
   hitTest(clientX: number, clientY: number): string | null;
   /** Larger = tested first (rows beat pane background). */
   priority: number;
+  /** Defaults to "copyTo". */
+  action?: DropAction;
+}
+
+export interface DropHit {
+  destDir: string;
+  action: DropAction;
 }
 
 const dropZones = new Set<DropZone>();
@@ -107,11 +121,11 @@ export function registerDropZone(zone: DropZone): () => void {
   return () => dropZones.delete(zone);
 }
 
-export function hitTestDropZones(clientX: number, clientY: number): string | null {
+export function hitTestDropZones(clientX: number, clientY: number): DropHit | null {
   const sorted = [...dropZones].sort((a, b) => b.priority - a.priority);
   for (const zone of sorted) {
     const dir = zone.hitTest(clientX, clientY);
-    if (dir != null) return dir;
+    if (dir != null) return { destDir: dir, action: zone.action ?? "copyTo" };
   }
   return null;
 }

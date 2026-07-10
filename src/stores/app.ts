@@ -4,6 +4,7 @@ import { immer } from "zustand/middleware/immer";
 import type { SearchEvent } from "../types/ipc";
 import * as ipc from "../lib/ipc";
 import { safeIpc } from "../lib/safeIpc";
+import { useSettings } from "./settings";
 
 export type PaneId = "left" | "right";
 
@@ -165,10 +166,16 @@ export const useApp = create<AppState>()(
     setFdaMissing: (v) => set({ fdaMissing: v }),
 
     openGlobalSearch: (query, scope) => {
+      const activating = !get().globalSearch.active;
       set((s) => {
         s.globalSearch.active = true;
         s.globalSearch.query = query;
         if (scope) s.globalSearch.scope = scope;
+        if (activating) {
+          // Fresh session starts from the user's default mode; the toolbar
+          // pill toggles it per-session from there.
+          s.globalSearch.contents = useSettings.getState().searchContentsDefault;
+        }
       });
     },
 

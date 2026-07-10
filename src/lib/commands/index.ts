@@ -13,6 +13,7 @@ import { useApp } from "../../stores/app";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../../stores/panes";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
+import { useVolumes } from "../../stores/volumes";
 
 let registered = false;
 
@@ -182,6 +183,19 @@ export function registerAllCommands(): void {
       shortcut: "cmd+opt+delete",
       enabled: hasSelection,
       run: () => actions.deleteSelectionPermanently(),
+    },
+    {
+      id: "emptyTrash",
+      title: "Empty Trash…",
+      keywords: "trash empty delete purge",
+      shortcut: "cmd+shift+delete",
+      run: () => actions.confirmEmptyTrash(),
+    },
+    {
+      id: "goTrash",
+      title: "Go to Trash",
+      keywords: "go trash bin",
+      run: () => actions.goTo(useVolumes.getState().folders?.trash),
     },
     {
       id: "copy",
