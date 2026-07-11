@@ -302,40 +302,6 @@ fn apply_inverse(op: &UndoOp, trasher: &dyn Trasher) -> io::Result<UndoOutcome> 
                 },
             })
         }
-        UndoOp::BatchRename { pairs } => {
-            // Validate ALL inverse pairs before any mutation, then run the
-            // same two-phase engine (permutation-safe both directions).
-            let parent = pairs
-                .first()
-                .and_then(|(f, _)| f.parent())
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty batch"))?
-                .to_path_buf();
-            let name_of = |p: &Path| -> io::Result<String> {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid path"))
-            };
-            // Inverse: rename `to` back to `from`.
-            let mut inverse_names: Vec<(String, String)> = Vec::new();
-            for (from, to) in pairs {
-                inverse_names.push((name_of(to)?, name_of(from)?));
-            }
-            batch_rename::validate_batch(&parent, &inverse_names)?;
-            let tag = uuid::Uuid::new_v4().simple().to_string();
-            batch_rename::two_phase_rename(
-                &parent,
-                &inverse_names,
-                &tag,
-                &batch_rename::std_rename,
-            )?;
-            Ok(UndoOutcome {
-                label: op.label(),
-                restored: pairs.iter().map(|(f, _)| f.clone()).collect(),
-                inverse: UndoOp::BatchRename {
-                    pairs: pairs.iter().map(|(f, t)| (t.clone(), f.clone())).collect(),
-                },
-            })
-        }
         UndoOp::ProducedItems { kind, pairs } => {
             let undoing = pairs.iter().all(|(_, trashed)| trashed.is_none());
             if undoing {
