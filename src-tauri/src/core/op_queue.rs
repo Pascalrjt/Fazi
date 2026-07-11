@@ -189,6 +189,10 @@ pub type IconTokenFn = Arc<dyn Fn(&str, &Path) -> String + Send + Sync>;
 /// racing an external file mutation.
 pub type CopyVerifier = Arc<dyn Fn(&Path, &Path, &dyn Fn() -> bool) -> ChecksumReport + Send + Sync>;
 
+/// Marks warm fuzzy indexes containing any of the touched paths stale so
+/// ⌘P never reuses a snapshot the engine just mutated out from under it.
+pub type InvalidateFuzzy = Arc<dyn Fn(&[PathBuf]) + Send + Sync>;
+
 /// Shared engine dependencies (built once at app setup).
 pub struct Engine {
     pub trasher: Arc<dyn Trasher>,
@@ -198,6 +202,7 @@ pub struct Engine {
     pub volume_locks: DashMap<u64, Arc<Mutex<()>>>,
     pub icon_token: IconTokenFn,
     pub verify_copy_contents: CopyVerifier,
+    pub invalidate_fuzzy: InvalidateFuzzy,
 }
 
 impl Engine {
@@ -731,6 +736,9 @@ fn run_op_thread(
     engine.journal.remove(&args.op_id);
     engine.ops.remove(&args.op_id);
 
+    let touched: Vec<PathBuf> = args.sources.iter().chain(produced.iter()).cloned().collect();
+    (engine.invalidate_fuzzy)(&touched);
+
     let status = if cancelled {
         "cancelled"
     } else if sink.errors.is_empty() {
@@ -1117,6 +1125,9 @@ fn run_duplicate_thread(
     }
     engine.journal.remove(&op_id);
     engine.ops.remove(&op_id);
+
+    let touched: Vec<PathBuf> = paths.iter().chain(produced.iter()).cloned().collect();
+    (engine.invalidate_fuzzy)(&touched);
 
     let status = if cancelled {
         "cancelled"

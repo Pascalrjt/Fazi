@@ -81,6 +81,23 @@ impl UndoOp {
             UndoOp::BatchRename { .. } => "batchRename",
         }
     }
+
+    /// Every path this action recorded, both sides of each pair — applying
+    /// the inverse mutates some subset of these (fuzzy-index invalidation).
+    pub fn touched_paths(&self) -> Vec<PathBuf> {
+        match self {
+            UndoOp::Move { pairs } | UndoOp::Trash { pairs } | UndoOp::BatchRename { pairs } => {
+                pairs.iter().flat_map(|(a, b)| [a.clone(), b.clone()]).collect()
+            }
+            UndoOp::Copy { produced } => produced.clone(),
+            UndoOp::Rename { from, to } => vec![from.clone(), to.clone()],
+            UndoOp::NewFolder { path } => vec![path.clone()],
+            UndoOp::ProducedItems { pairs, .. } => pairs
+                .iter()
+                .flat_map(|(p, t)| std::iter::once(p.clone()).chain(t.clone()))
+                .collect(),
+        }
+    }
 }
 
 fn count_label(n: usize) -> String {

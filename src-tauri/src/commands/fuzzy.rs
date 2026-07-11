@@ -48,7 +48,7 @@ pub fn fuzzy_warm(
 
     if force != Some(true) {
         if let Some(existing) = state.fuzzy.get(&root) {
-            if existing.config_hash == hash {
+            if existing.config_hash == hash && !existing.stale.load(Ordering::Relaxed) {
                 return Ok(existing.status());
             }
         }

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use rayon::prelude::*;
@@ -140,6 +141,9 @@ pub struct FuzzyIndex {
     pub indexed: AtomicU64,
     /// Walk hit max_entries — surfaced as "index capped" in the footer.
     pub capped: AtomicBool,
+    /// An engine op / direct command touched a path under this root since the
+    /// build — `fuzzy_warm` rebuilds instead of reusing.
+    pub stale: AtomicBool,
     pub config_hash: u64,
     pub built_at_ms: AtomicU64,
     /// The ⌘P overlay's live query, re-run by the walk thread while indexing.
@@ -158,6 +162,7 @@ impl FuzzyIndex {
             indexing: AtomicBool::new(true),
             indexed: AtomicU64::new(0),
             capped: AtomicBool::new(false),
+            stale: AtomicBool::new(false),
             config_hash,
             built_at_ms: AtomicU64::new(now_ms),
             active: Mutex::new(None),
@@ -199,6 +204,17 @@ impl FuzzyIndex {
 
     pub fn take_owners(&self) -> Vec<String> {
         std::mem::take(&mut *self.owners.lock().unwrap())
+    }
+}
+
+/// Mark every warm index whose root contains one of `touched` as stale —
+/// `fuzzy_warm` rebuilds it instead of reusing (the engine's invalidation
+/// hook after file operations mutate the tree).
+pub fn mark_stale_under(fuzzy: &DashMap<PathBuf, Arc<FuzzyIndex>>, touched: &[PathBuf]) {
+    for index in fuzzy.iter() {
+        if touched.iter().any(|p| p.starts_with(index.key())) {
+            index.stale.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -820,5 +836,29 @@ mod tests {
         assert!(!ex.excluded("LibraryX/Caches", "Caches"), "prefix must stop at a component boundary");
         assert!(!ex.excluded("src/git", "git"));
         assert!(ex.excluded("a/.git", ".git"));
+    }
+
+    #[test]
+    fn mark_stale_under_marks_only_containing_roots() {
+        let fuzzy: DashMap<PathBuf, Arc<FuzzyIndex>> = DashMap::new();
+        let a = PathBuf::from("/tmp/fuzzy-stale/a");
+        let b = PathBuf::from("/tmp/fuzzy-stale/b");
+        fuzzy.insert(a.clone(), FuzzyIndex::new(a.clone(), 0, 0));
+        fuzzy.insert(b.clone(), FuzzyIndex::new(b.clone(), 0, 0));
+
+        // A path under one root marks only that index.
+        mark_stale_under(&fuzzy, &[a.join("sub/file.txt")]);
+        assert!(fuzzy.get(&a).unwrap().stale.load(Ordering::Relaxed));
+        assert!(!fuzzy.get(&b).unwrap().stale.load(Ordering::Relaxed));
+
+        // An unrelated path marks none.
+        let fuzzy2: DashMap<PathBuf, Arc<FuzzyIndex>> = DashMap::new();
+        fuzzy2.insert(a.clone(), FuzzyIndex::new(a.clone(), 0, 0));
+        mark_stale_under(&fuzzy2, &[PathBuf::from("/tmp/elsewhere/x")]);
+        assert!(!fuzzy2.get(&a).unwrap().stale.load(Ordering::Relaxed));
+
+        // The root itself counts as "under".
+        mark_stale_under(&fuzzy2, std::slice::from_ref(&a));
+        assert!(fuzzy2.get(&a).unwrap().stale.load(Ordering::Relaxed));
     }
 }

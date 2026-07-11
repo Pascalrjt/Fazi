@@ -625,6 +625,8 @@ fn run_compress_thread(
         }
         engine.journal.remove(&op_id);
         engine.ops.remove(&op_id);
+        let touched: Vec<PathBuf> = sources.iter().chain(produced.iter()).cloned().collect();
+        (engine.invalidate_fuzzy)(&touched);
         emitter.emit(OpEvent::Done {
             status,
             errors,
@@ -1076,6 +1078,9 @@ fn run_extract_thread(
     }
     engine.journal.remove(&op_id);
     engine.ops.remove(&op_id);
+
+    let touched: Vec<PathBuf> = archives.iter().chain(produced.iter()).cloned().collect();
+    (engine.invalidate_fuzzy)(&touched);
 
     let status = if cancelled {
         "cancelled"

@@ -56,7 +56,8 @@ pub struct AppState {
     /// search id → mdfind child handle.
     pub searches: DashMap<String, Arc<Mutex<Option<Child>>>>,
     /// fuzzy-index root → live index (cap 2, LRU order in fuzzy_lru).
-    pub fuzzy: DashMap<PathBuf, Arc<FuzzyIndex>>,
+    /// Arc-shared with the engine's invalidate_fuzzy closure.
+    pub fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
     /// Least-recently-used order of warm fuzzy roots (front = oldest).
     pub fuzzy_lru: Mutex<Vec<PathBuf>>,
     /// fuzzy query id → cancel flag (the listing-cancel pattern).

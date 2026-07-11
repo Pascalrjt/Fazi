@@ -10,7 +10,7 @@ pub mod protocols;
 pub mod search;
 pub mod state;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -20,6 +20,7 @@ use crate::core::journal::Journal;
 use crate::core::op_queue::Engine;
 use crate::core::undo::UndoStack;
 use crate::macos::trash::SystemTrasher;
+use crate::search::fuzzy::{mark_stale_under, FuzzyIndex};
 use crate::state::{AppState, TokenTable};
 
 pub const VOLUMES_CHANGED: &str = "fazi://volumes-changed";
@@ -44,6 +45,8 @@ pub fn run() {
 
             let tokens = Arc::new(TokenTable::default());
             let engine_tokens = tokens.clone();
+            let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+            let fuzzy_for_ops = fuzzy.clone();
             let engine = Arc::new(Engine {
                 trasher: Arc::new(SystemTrasher),
                 journal,
@@ -56,6 +59,7 @@ pub fn run() {
                 verify_copy_contents: Arc::new(|src, dst, cancelled| {
                     crate::core::verify::checksum_compare(src, dst, cancelled)
                 }),
+                invalidate_fuzzy: Arc::new(move |paths| mark_stale_under(&fuzzy_for_ops, paths)),
             });
 
             let thumb_cache_dir = cache_dir.join("thumbnails");
@@ -71,7 +75,7 @@ pub fn run() {
                 listings: DashMap::new(),
                 watchers: DashMap::new(),
                 searches: DashMap::new(),
-                fuzzy: DashMap::new(),
+                fuzzy,
                 fuzzy_lru: Mutex::new(Vec::new()),
                 fuzzy_queries: DashMap::new(),
                 engine,

@@ -151,7 +151,10 @@ pub fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()>
         }
     }
     if !pairs.is_empty() {
+        let touched: Vec<PathBuf> =
+            pairs.iter().flat_map(|(o, l)| [o.clone(), l.clone()]).collect();
         state.engine.undo.lock().unwrap().push(UndoOp::Trash { pairs });
+        (state.engine.invalidate_fuzzy)(&touched);
     }
     if errors.is_empty() {
         Ok(())
@@ -218,6 +221,7 @@ pub fn empty_trash(state: State<'_, AppState>, channel: Channel<EmptyTrashEvent>
         );
         if !outcome.deleted.is_empty() {
             engine.undo.lock().unwrap().purge_records_under(&outcome.deleted);
+            (engine.invalidate_fuzzy)(&outcome.deleted);
         }
         let _ = channel.send(EmptyTrashEvent::Done {
             errors: outcome
@@ -233,8 +237,9 @@ pub fn empty_trash(state: State<'_, AppState>, channel: Channel<EmptyTrashEvent>
 }
 
 #[tauri::command]
-pub fn delete_permanent(paths: Vec<String>) -> Result<()> {
+pub fn delete_permanent(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
     let mut errors = Vec::new();
+    let mut deleted: Vec<PathBuf> = Vec::new();
     for p in &paths {
         let path = Path::new(p);
         let outcome = match path.symlink_metadata() {
@@ -242,9 +247,13 @@ pub fn delete_permanent(paths: Vec<String>) -> Result<()> {
             Ok(_) => std::fs::remove_file(path),
             Err(e) => Err(e),
         };
-        if let Err(e) = outcome {
-            errors.push(format!("{p}: {e}"));
+        match outcome {
+            Ok(()) => deleted.push(path.to_path_buf()),
+            Err(e) => errors.push(format!("{p}: {e}")),
         }
+    }
+    if !deleted.is_empty() {
+        (state.engine.invalidate_fuzzy)(&deleted);
     }
     if errors.is_empty() {
         Ok(())
@@ -317,12 +326,15 @@ pub fn batch_rename(
         .zip(&finals)
         .map(|((from, _), to)| (parent.join(from), to.clone()))
         .collect();
+    let touched: Vec<PathBuf> =
+        undo_pairs.iter().flat_map(|(f, t)| [f.clone(), t.clone()]).collect();
     state
         .engine
         .undo
         .lock()
         .unwrap()
         .push(UndoOp::BatchRename { pairs: undo_pairs });
+    (state.engine.invalidate_fuzzy)(&touched);
     Ok(finals.iter().map(|p| p.to_string_lossy().into_owned()).collect())
 }
 
@@ -369,6 +381,7 @@ pub fn pb_paste_new_file(
         kind: ProducedKind::Paste,
         pairs: vec![(path.clone(), None)],
     });
+    (state.engine.invalidate_fuzzy)(std::slice::from_ref(&path));
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
@@ -402,6 +415,7 @@ pub fn rename_path(state: State<'_, AppState>, path: String, new_name: String) -
         .lock()
         .unwrap()
         .push(UndoOp::Rename { from: from.clone(), to: to.clone() });
+    (state.engine.invalidate_fuzzy)(&[from, to.clone()]);
     Ok(to.to_string_lossy().into_owned())
 }
 
@@ -419,6 +433,7 @@ pub fn new_folder(state: State<'_, AppState>, parent: String, name: String) -> R
         .lock()
         .unwrap()
         .push(UndoOp::NewFolder { path: path.clone() });
+    (state.engine.invalidate_fuzzy)(std::slice::from_ref(&path));
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -443,13 +458,19 @@ pub struct UndoDescription {
 #[tauri::command]
 pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
-    let outcome = state
-        .engine
-        .undo
-        .lock()
-        .unwrap()
-        .undo(trasher.as_ref())
-        .map_err(|e| Error::msg(format!("Can't undo: {e}")))?;
+    let (outcome, touched) = {
+        let mut stack = state.engine.undo.lock().unwrap();
+        let touched = stack.undo_top().map(UndoOp::touched_paths).unwrap_or_default();
+        let outcome = stack
+            .undo(trasher.as_ref())
+            .map_err(|e| Error::msg(format!("Can't undo: {e}")))?;
+        (outcome, touched)
+    };
+    if let Some(o) = &outcome {
+        let mut touched = touched;
+        touched.extend(o.restored.iter().cloned());
+        (state.engine.invalidate_fuzzy)(&touched);
+    }
     Ok(outcome.map(|o| UndoResult {
         label: o.label,
         restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
@@ -459,13 +480,19 @@ pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
 #[tauri::command]
 pub fn redo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
-    let outcome = state
-        .engine
-        .undo
-        .lock()
-        .unwrap()
-        .redo(trasher.as_ref())
-        .map_err(|e| Error::msg(format!("Can't redo: {e}")))?;
+    let (outcome, touched) = {
+        let mut stack = state.engine.undo.lock().unwrap();
+        let touched = stack.redo_top().map(UndoOp::touched_paths).unwrap_or_default();
+        let outcome = stack
+            .redo(trasher.as_ref())
+            .map_err(|e| Error::msg(format!("Can't redo: {e}")))?;
+        (outcome, touched)
+    };
+    if let Some(o) = &outcome {
+        let mut touched = touched;
+        touched.extend(o.restored.iter().cloned());
+        (state.engine.invalidate_fuzzy)(&touched);
+    }
     Ok(outcome.map(|o| UndoResult {
         label: o.label,
         restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),

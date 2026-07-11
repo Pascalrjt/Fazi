@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use fazi_lib::core::journal::Journal;
 use fazi_lib::core::op_queue::{
-    spawn_duplicate, spawn_op, CopyVerifier, Engine, OpArgs, OpEmitter, OpEvent, OpKind, Policy,
+    spawn_duplicate, spawn_op, CopyVerifier, Engine, InvalidateFuzzy, OpArgs, OpEmitter, OpEvent,
+    OpKind, Policy,
 };
 use fazi_lib::core::undo::UndoStack;
 use fazi_lib::core::verify::ChecksumReport;
@@ -89,6 +90,28 @@ fn env_with_verifier(
     trasher: Option<Arc<dyn Trasher>>,
     verifier: CopyVerifier,
 ) -> Env {
+    env_full(name, trasher, verifier, Arc::new(|_| {}))
+}
+
+/// Like `env`, but with an injected fuzzy invalidator (defaults to a no-op).
+fn env_with_invalidator(name: &str, invalidator: InvalidateFuzzy) -> Env {
+    env_full(
+        name,
+        None,
+        Arc::new(|src, dst, cancelled| {
+            fazi_lib::core::verify::checksum_compare(src, dst, cancelled)
+        }),
+        invalidator,
+    )
+}
+
+/// The single Engine construction point every `env*` builder routes through.
+fn env_full(
+    name: &str,
+    trasher: Option<Arc<dyn Trasher>>,
+    verifier: CopyVerifier,
+    invalidator: InvalidateFuzzy,
+) -> Env {
     let root = std::env::temp_dir().join(format!("fazi-engine-{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -101,6 +124,7 @@ fn env_with_verifier(
         volume_locks: DashMap::new(),
         icon_token: Arc::new(|_, _| String::new()),
         verify_copy_contents: verifier,
+        invalidate_fuzzy: invalidator,
     });
     Env { root, engine, trash_dir }
 }
@@ -1205,5 +1229,49 @@ fn checksum_mismatch_keeps_copy_reports_partial_and_remains_undoable() {
         .unwrap()
         .expect("mismatch copy should be undoable");
     assert!(!dst.join("data.bin").exists());
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+#[test]
+fn streamed_copy_reports_touched_paths_to_fuzzy_invalidator() {
+    let recorded: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = recorded.clone();
+    let env = env_with_invalidator(
+        "fuzzy-invalidate",
+        Arc::new(move |paths: &[PathBuf]| {
+            sink.lock().unwrap().extend(paths.iter().cloned());
+        }),
+    );
+    let src_dir = env.root.join("src");
+    let dst = env.root.join("dst");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    let source = src_dir.join("a.txt");
+    std::fs::write(&source, b"alpha").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-fuzzy-invalidate".into(),
+            kind: OpKind::Copy,
+            sources: vec![source.clone()],
+            dest_dir: dst.clone(),
+            policy: Policy::Ask,
+            verify: false,
+        },
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, _, _) = done_status(&events);
+    assert_eq!(status, "success");
+
+    // The epilogue reported source + produced dest before Done.
+    let touched = recorded.lock().unwrap().clone();
+    assert!(touched.contains(&source), "sources missing from invalidation: {touched:?}");
+    assert!(
+        touched.contains(&dst.join("a.txt")),
+        "produced dest missing from invalidation: {touched:?}"
+    );
     std::fs::remove_dir_all(&env.root).ok();
 }
