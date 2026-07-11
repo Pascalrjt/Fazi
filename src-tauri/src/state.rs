@@ -1,5 +1,6 @@
 //! Shared app state managed by Tauri.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
@@ -18,21 +19,31 @@ use crate::search::fuzzy::FuzzyIndex;
 #[derive(Default)]
 pub struct TokenTable {
     tokens: DashMap<String, PathBuf>,
-    owners: DashMap<String, Vec<String>>,
+    owners: DashMap<String, HashSet<String>>,
 }
 
 impl TokenTable {
-    /// Mint a token for `path`, scoped to `owner` (listing id / search id / op id).
+    /// Mint a token for `path`, scoped to `owner` (listing id / search id /
+    /// op id / fuzzy-index generation).
     pub fn register(&self, owner: &str, path: &Path) -> String {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.tokens.insert(token.clone(), path.to_path_buf());
-        self.owners.entry(owner.to_string()).or_default().push(token.clone());
+        self.owners.entry(owner.to_string()).or_default().insert(token.clone());
         token
     }
 
     /// Unknown token → None → the protocol handler 404s.
     pub fn resolve(&self, token: &str) -> Option<PathBuf> {
         self.tokens.get(token).map(|p| p.clone())
+    }
+
+    /// Revoke ONE token from `owner` (the fuzzy icon-token cache eviction
+    /// path) — every other token in the scope stays valid.
+    pub fn revoke(&self, owner: &str, token: &str) {
+        self.tokens.remove(token);
+        if let Some(mut owned) = self.owners.get_mut(owner) {
+            owned.remove(token);
+        }
     }
 
     /// Drop every token owned by `owner` (listing replaced / search done).

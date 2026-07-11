@@ -107,9 +107,15 @@ pub fn icon_png<R: tauri::Runtime>(
     let p = path.to_path_buf();
     let png = crate::macos::main_thread::on_main(app, move || icon_png_main_thread(&p, size))?;
     let arc = Arc::new(png);
-    // Bound the cache crudely: icons are small, 4096 entries ≈ a few MB.
+    // Bound the cache: icons are small, 4096 entries ≈ a few MB. Evict a
+    // quarter (arbitrary victims) instead of clearing — a full clear made
+    // every visible icon re-rasterize on the main thread at once.
     if cache.len() > 4096 {
-        cache.clear();
+        let victims: Vec<(String, u32)> =
+            cache.iter().take(1024).map(|e| e.key().clone()).collect();
+        for k in victims {
+            cache.remove(&k);
+        }
     }
     cache.insert(key, arc.clone());
     Some(arc)

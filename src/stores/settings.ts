@@ -44,7 +44,13 @@ interface SettingsState {
   /** Fuzzy-index excludes: bare name = component at any depth; with "/" =
    *  root-relative path prefix. */
   fuzzyExcludes: string[];
-  fuzzyIndexMaxEntries: number;
+  /**
+   * ⌘P index entry cap; 0 = no cap (the default — the index must cover the
+   * whole tree, and real home dirs exceed any fixed guess). Replaces the old
+   * `fuzzyIndexMaxEntries` key, whose 2M default silently truncated: old
+   * persisted blobs simply lack this key and pick up the uncapped default.
+   */
+  fuzzyIndexEntryCap: number;
   // Operations
   /** Opt-in BLAKE3 checksum verification for copies. The mandatory
    *  cross-volume move verification is separate and always on. */
@@ -117,7 +123,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   searchContentsDefault: false,
   searchMaxResults: 10_000,
   fuzzyExcludes: [".git", "node_modules", "Library/Caches", ".Trash"],
-  fuzzyIndexMaxEntries: 2_000_000,
+  fuzzyIndexEntryCap: 0,
   verifyCopies: false,
   opCardAutoHideMs: 4000,
   favorites: [],

@@ -402,9 +402,9 @@ export const COMMANDS = {
   search: "search",
   cancelSearch: "cancel_search",
   // fuzzy finder
-  fuzzyWarm: "fuzzy_warm", // (root, excludes, maxEntries?, force?) -> FuzzyIndexStatus
+  fuzzyWarm: "fuzzy_warm", // (root, excludes, maxEntries? 0|absent = uncapped, force?) -> FuzzyIndexStatus
   fuzzyQuery: "fuzzy_query", // (FuzzyQueryArgs, channel FuzzyEvent)
-  fuzzyCancel: "fuzzy_cancel", // (queryId) — also revokes its icon tokens
+  fuzzyCancel: "fuzzy_cancel", // (queryId) — icon tokens stay (index-owned)
   fuzzyDrop: "fuzzy_drop", // (root)
   // macOS integration
   openPaths: "open_paths",

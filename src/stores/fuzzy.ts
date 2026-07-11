@@ -1,10 +1,12 @@
 /**
  * ⌘P fuzzy-finder state: overlay open/close, scope, streamed hits.
  *
- * Query lifecycle: each keystroke supersedes the previous query — the old
- * queryId is cancelled (which also revokes its icon tokens) and stale events
- * are dropped by queryId. The index is a snapshot of the walk moment; ops
- * completing under the root mark it stale so the next open rebuilds.
+ * Query lifecycle: keystrokes are debounced, then each query supersedes the
+ * previous one — the old queryId is cancelled and stale events are dropped by
+ * queryId. Icon tokens are owned by the index generation (not the query), so
+ * cancelling never breaks icons in other live views. The index is a snapshot
+ * of the walk moment; ops completing under the root mark it stale so the next
+ * open rebuilds.
  */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
@@ -18,6 +20,8 @@ import { activePaneTab } from "./panes";
 export type FuzzyScope = "folder" | "home";
 
 const MAX_RESULTS = 100;
+/** Keystroke → query debounce: skip cancel/scan churn for mid-word strokes. */
+const QUERY_DEBOUNCE_MS = 70;
 
 interface FuzzyState {
   open: boolean;
@@ -51,10 +55,19 @@ function scopeRoot(scope: FuzzyScope): string | null {
 
 export const useFuzzy = create<FuzzyState>()(
   immer((set, get) => {
+    let queryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function cancelPendingQuery(): void {
+      if (queryTimer !== null) {
+        clearTimeout(queryTimer);
+        queryTimer = null;
+      }
+    }
+
     function warm(root: string, force: boolean): void {
       const settings = useSettings.getState();
       safeIpc(() =>
-        ipc.fuzzyWarm(root, settings.fuzzyExcludes, settings.fuzzyIndexMaxEntries, force),
+        ipc.fuzzyWarm(root, settings.fuzzyExcludes, settings.fuzzyIndexEntryCap, force),
       )
         .then((status) => {
           if (get().root !== root) return;
@@ -155,8 +168,9 @@ export const useFuzzy = create<FuzzyState>()(
       },
 
       close: () => {
+        cancelPendingQuery();
         const { queryId } = get();
-        if (queryId) void ipc.fuzzyCancel(queryId).catch(() => {}); // revokes tokens
+        if (queryId) void ipc.fuzzyCancel(queryId).catch(() => {});
         set((s) => {
           s.open = false;
           s.queryId = null;
@@ -169,6 +183,7 @@ export const useFuzzy = create<FuzzyState>()(
       setScope: (scope) => {
         const root = scopeRoot(scope);
         if (!root) return;
+        cancelPendingQuery();
         const { queryId } = get();
         if (queryId) void ipc.fuzzyCancel(queryId).catch(() => {});
         set((s) => {
@@ -185,7 +200,12 @@ export const useFuzzy = create<FuzzyState>()(
         set((s) => {
           s.query = query;
         });
-        runQuery(query);
+        // Debounced: mid-word keystrokes shouldn't each cancel + full-scan.
+        cancelPendingQuery();
+        queryTimer = setTimeout(() => {
+          queryTimer = null;
+          runQuery(get().query);
+        }, QUERY_DEBOUNCE_MS);
       },
 
       rebuild: () => {

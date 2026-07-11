@@ -190,7 +190,7 @@ export function FuzzyFinder() {
                 const isSel = vi.index === selected;
                 return (
                   <div
-                    key={vi.index}
+                    key={hit.path}
                     className={clsx(
                       "flex cursor-default items-center gap-2.5 rounded-md px-2.5",
                       isSel ? "bg-accent text-white" : "hover:bg-hov",

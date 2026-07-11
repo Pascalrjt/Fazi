@@ -174,13 +174,16 @@ function SearchPane() {
           onKeyDown={(e) => e.stopPropagation()}
         />
       </SettingRow>
-      <SettingRow label="Fuzzy-index entry cap" hint="The ⌘P index stops walking past this many items.">
+      <SettingRow
+        label="Fuzzy-index entry cap"
+        hint="0 = no cap (index everything). Above 0, the ⌘P index stops walking past this many items and flags itself as capped."
+      >
         <NumberField
-          value={s.fuzzyIndexMaxEntries}
-          min={10_000}
-          max={10_000_000}
+          value={s.fuzzyIndexEntryCap}
+          min={0}
+          max={100_000_000}
           step={100_000}
-          onCommit={(v) => s.patch({ fuzzyIndexMaxEntries: v })}
+          onCommit={(v) => s.patch({ fuzzyIndexEntryCap: v })}
         />
       </SettingRow>
     </>

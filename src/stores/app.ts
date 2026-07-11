@@ -34,7 +34,7 @@ function runFallback(
     });
   };
   safeIpc(() =>
-    ipc.fuzzyWarm(scopePath, settings.fuzzyExcludes, settings.fuzzyIndexMaxEntries),
+    ipc.fuzzyWarm(scopePath, settings.fuzzyExcludes, settings.fuzzyIndexEntryCap),
   )
     .then(() =>
       ipc.fuzzyQuery(

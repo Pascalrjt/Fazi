@@ -4,16 +4,27 @@
 //! 4096-entry blocks locally and appends each under a brief write lock;
 //! queries clone the block list under a read lock (cheap Arc bumps) and scan
 //! lock-free on that snapshot. A `live` query stored in `active` is re-run by
-//! the walk thread every ~150 ms against the grown snapshot, so the overlay
-//! refines while indexing. The index is a snapshot of the walk moment —
-//! watchers are non-recursive, so external deep changes are NOT caught; the
-//! UI shows the index age and offers an explicit Rebuild.
+//! the walk thread against the grown snapshot (on ≥20% growth or ≥500 ms), so
+//! the overlay refines while indexing. The index is a snapshot of the walk
+//! moment — watchers are non-recursive, so external deep changes are NOT
+//! caught; the UI shows the index age and offers an explicit Rebuild.
+//!
+//! Concurrency invariants (the beachball fix — see the concurrency tests):
+//! - the `active` mutex is held only for clone/compare/replace, never across
+//!   a scan; `fuzzy_cancel` must always complete in O(µs);
+//! - the walk runs on its own rayon pool so it cannot starve query scans;
+//! - active-slot mutation is ownership-aware (query seq / exact id) — an old
+//!   refinement or the end-of-walk cleanup can never clear a newer query;
+//! - icon tokens are owned by the index generation and cached (bounded LRU)
+//!   so refine ticks reuse identical icon:// URLs and cancellation never
+//!   revokes a token another live view still shows.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -27,12 +38,42 @@ use crate::core::op_queue::IconTokenFn;
 pub const BLOCK_SIZE: usize = 4096;
 /// Query-cancel check granularity, in items.
 const CANCEL_STRIDE: usize = 4096;
-/// How often the walk thread re-runs the live query.
-const LIVE_REFINE_INTERVAL: Duration = Duration::from_millis(150);
+/// Live-refine pacing: re-run the live query once the index grew ≥20% since
+/// the last refinement, or after this long at the latest — not on a fixed
+/// short interval, which repeats O(N) scans against an ever-growing index.
+const REFINE_MAX_INTERVAL: Duration = Duration::from_millis(500);
+/// Minimum growth (numerator/denominator) that triggers a refinement early.
+const REFINE_GROWTH_NUM: u64 = 6;
+const REFINE_GROWTH_DEN: u64 = 5;
+/// Dedicated walker pool size: the walk must never queue refine/query scans
+/// behind its own tasks on the global rayon pool (the beachball's amplifier).
+/// Candidates 1/2/4/8 — retune with the FAZI_FUZZY_TRACE walk-rate log.
+const WALK_THREADS: usize = 4;
+
+/// `FAZI_WALK_THREADS` overrides the walker pool size (benchmarking knob).
+fn walk_threads() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("FAZI_WALK_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|n| (1..=64).contains(n))
+            .unwrap_or(WALK_THREADS)
+    })
+}
+/// Cap on the per-index icon-token cache; eviction revokes exactly the
+/// evicted token (never a whole owner scope).
+const ICON_TOKEN_CACHE_CAP: usize = 20_000;
 /// Max stats spent on date/size filters per query (overflow → capped).
 const STAT_BUDGET: usize = 50_000;
-pub const DEFAULT_MAX_ENTRIES: u64 = 2_000_000;
 pub const MAX_TOP_K: usize = 10_000;
+
+/// `FAZI_FUZZY_TRACE=1` logs refine tick durations, walk throughput, and
+/// cancel latency to stderr (Verification A instrumentation).
+pub fn trace_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("FAZI_FUZZY_TRACE").is_some())
+}
 
 // ---------------------------------------------------------------------------
 // Wire types (lockstep with src/types/ipc.ts)
@@ -122,18 +163,79 @@ type Block = Box<[IndexedPath]>;
 /// The channel-send closure a query streams `FuzzyEvent`s through.
 pub type SendFn = Arc<dyn Fn(FuzzyEvent) + Send + Sync>;
 
+/// Revoke one token from an owner scope (the icon-token LRU eviction path).
+pub type RevokeTokenFn = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+#[derive(Clone)]
 pub struct ActiveQuery {
     pub query_id: String,
+    /// Monotonic install order (`FuzzyIndex::next_query_seq`) — an older
+    /// query can never replace a newer one in the active slot.
+    pub seq: u64,
     pub pattern: String,
     pub max_results: usize,
     pub filters: FuzzyFilters,
     pub cancel: Arc<AtomicBool>,
+    /// Set once Done has been sent for this query — the final refinement and
+    /// the installing query thread race to finish the stream; exactly one wins.
+    pub done: Arc<AtomicBool>,
     pub send: SendFn,
     pub icon_token: IconTokenFn,
+    pub icon_revoke: RevokeTokenFn,
 }
+
+/// Bounded rel-path → icon-token cache: repeat results keep identical tokens
+/// (stable icon:// URLs, so the WebView HTTP cache absorbs refine ticks)
+/// while the warm-index lifetime stays bounded — `max_results` bounds one
+/// batch, not many distinct queries. Eviction hands back exactly the evicted
+/// token for individual revocation.
+struct TokenLru {
+    cap: usize,
+    by_rel: HashMap<Box<str>, (String, u64)>,
+    by_tick: BTreeMap<u64, Box<str>>,
+    tick: u64,
+}
+
+impl TokenLru {
+    fn new(cap: usize) -> Self {
+        TokenLru { cap: cap.max(1), by_rel: HashMap::new(), by_tick: BTreeMap::new(), tick: 0 }
+    }
+
+    fn len(&self) -> usize {
+        self.by_rel.len()
+    }
+
+    /// Cached token for `rel`, minting on miss. The second value is a token
+    /// evicted to hold the cap — the caller must revoke it.
+    fn get_or_mint(&mut self, rel: &str, mint: impl FnOnce() -> String) -> (String, Option<String>) {
+        self.tick += 1;
+        if let Some((token, tick)) = self.by_rel.get_mut(rel) {
+            let old = std::mem::replace(tick, self.tick);
+            let key = self.by_tick.remove(&old).expect("lru maps in sync");
+            self.by_tick.insert(self.tick, key);
+            return (token.clone(), None);
+        }
+        let token = mint();
+        self.by_rel.insert(rel.into(), (token.clone(), self.tick));
+        self.by_tick.insert(self.tick, rel.into());
+        let evicted = if self.by_rel.len() > self.cap {
+            let (_, oldest) = self.by_tick.pop_first().expect("over cap implies nonempty");
+            self.by_rel.remove(&oldest).map(|(t, _)| t)
+        } else {
+            None
+        };
+        (token, evicted)
+    }
+}
+
+/// Uniquifies token-owner keys across rebuilds of the same root.
+static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct FuzzyIndex {
     pub root: PathBuf,
+    /// Unique per index instance — owner keys must never collide between an
+    /// aborted old index and its replacement for the same root.
+    instance_id: u64,
     blocks: RwLock<Vec<Arc<Block>>>,
     /// Bumped on rebuild/root-switch: aborts the walk and in-flight queries.
     pub generation: AtomicU64,
@@ -146,17 +248,25 @@ pub struct FuzzyIndex {
     pub stale: AtomicBool,
     pub config_hash: u64,
     pub built_at_ms: AtomicU64,
+    /// Live-query install order; assigned on the IPC thread so it follows
+    /// keystroke order.
+    query_seq: AtomicU64,
     /// The ⌘P overlay's live query, re-run by the walk thread while indexing.
-    /// One-shot (live: false) queries never occupy this slot.
+    /// One-shot (live: false) queries never occupy this slot. Held only for
+    /// O(µs) clone/compare/replace — NEVER across a scan (the beachball fix).
     active: Mutex<Option<ActiveQuery>>,
-    /// Live queryId icon-token owner scopes — revoked wholesale on drop/evict.
+    /// Icon-token owner scopes minted from this index (generation keys) —
+    /// revoked wholesale on rebuild/drop/evict.
     pub owners: Mutex<Vec<String>>,
+    /// Lazy stable icon tokens for results served from this index.
+    icon_tokens: Mutex<TokenLru>,
 }
 
 impl FuzzyIndex {
     pub fn new(root: PathBuf, config_hash: u64, now_ms: u64) -> Arc<Self> {
         Arc::new(FuzzyIndex {
             root,
+            instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst),
             blocks: RwLock::new(Vec::new()),
             generation: AtomicU64::new(0),
             indexing: AtomicBool::new(true),
@@ -165,8 +275,10 @@ impl FuzzyIndex {
             stale: AtomicBool::new(false),
             config_hash,
             built_at_ms: AtomicU64::new(now_ms),
+            query_seq: AtomicU64::new(0),
             active: Mutex::new(None),
             owners: Mutex::new(Vec::new()),
+            icon_tokens: Mutex::new(TokenLru::new(ICON_TOKEN_CACHE_CAP)),
         })
     }
 
@@ -183,22 +295,65 @@ impl FuzzyIndex {
         }
     }
 
-    pub fn set_active(&self, q: Option<ActiveQuery>) {
-        *self.active.lock().unwrap() = q;
+    pub fn next_query_seq(&self) -> u64 {
+        self.query_seq.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Clear the active slot iff it belongs to `query_id` (cancel path).
-    pub fn clear_active_if(&self, query_id: &str) {
+    /// Owner scope for icon tokens minted from this index's results. Never a
+    /// queryId: cancelling one query must not 404 icons another live view
+    /// still shows.
+    pub fn token_owner(&self) -> String {
+        format!(
+            "fuzzy-index:{}:{}",
+            self.instance_id,
+            self.generation.load(Ordering::SeqCst)
+        )
+    }
+
+    /// Install `q` unless it was already cancelled or a newer (or the same)
+    /// query holds the slot. Returns whether it was installed.
+    pub fn install_active(&self, q: ActiveQuery) -> bool {
+        if q.cancel.load(Ordering::SeqCst) {
+            return false;
+        }
+        let mut slot = self.active.lock().unwrap();
+        if slot.as_ref().is_some_and(|cur| cur.seq >= q.seq) {
+            return false;
+        }
+        *slot = Some(q);
+        true
+    }
+
+    /// Clear the active slot iff it belongs to `query_id` (cancel path and
+    /// end-of-index cleanup). Returns whether this call cleared it.
+    pub fn clear_active_if(&self, query_id: &str) -> bool {
         let mut slot = self.active.lock().unwrap();
         if slot.as_ref().is_some_and(|q| q.query_id == query_id) {
             *slot = None;
+            true
+        } else {
+            false
         }
     }
 
-    pub fn record_owner(&self, query_id: &str) {
+    #[cfg(test)]
+    pub fn active_query_id(&self) -> Option<String> {
+        self.active.lock().unwrap().as_ref().map(|q| q.query_id.clone())
+    }
+
+    #[cfg(test)]
+    pub fn set_icon_cache_cap(&self, cap: usize) {
+        *self.icon_tokens.lock().unwrap() = TokenLru::new(cap);
+    }
+
+    pub fn icon_cache_len(&self) -> usize {
+        self.icon_tokens.lock().unwrap().len()
+    }
+
+    pub fn record_owner(&self, owner: &str) {
         let mut owners = self.owners.lock().unwrap();
-        if !owners.iter().any(|o| o == query_id) {
-            owners.push(query_id.to_string());
+        if !owners.iter().any(|o| o == owner) {
+            owners.push(owner.to_string());
         }
     }
 
@@ -276,8 +431,12 @@ impl Excludes {
 // ---------------------------------------------------------------------------
 
 /// Walk `index.root` and fill the index. Runs on the caller's thread — spawn
-/// it. Re-runs the live query every ~150 ms and once more (plus Done) at the
-/// end. Aborts when the index generation changes.
+/// it. Re-runs the live query adaptively (≥20% growth or ≥500 ms) and once
+/// more (plus Done) at the end. Aborts when the index generation changes.
+///
+/// The walk runs on its own bounded rayon pool: on the global pool its tasks
+/// starved refine/query scans for seconds, which the beachballed main thread
+/// then waited on.
 pub fn build_index(
     index: Arc<FuzzyIndex>,
     excludes: Excludes,
@@ -290,10 +449,12 @@ pub fn build_index(
     let excludes = Arc::new(excludes);
     let root_for_hook = root.clone();
     let excludes_for_hook = excludes.clone();
+    let walk_start = Instant::now();
 
     let walk = jwalk::WalkDir::new(&root)
         .skip_hidden(false)
         .follow_links(false)
+        .parallelism(jwalk::Parallelism::RayonNewPool(walk_threads()))
         .process_read_dir(move |_depth, dir_path, _state, children| {
             // Prune excluded subtrees here, not post-hoc.
             let rel_dir = dir_path.strip_prefix(&root_for_hook).ok();
@@ -313,6 +474,7 @@ pub fn build_index(
     let mut block: Vec<IndexedPath> = Vec::with_capacity(BLOCK_SIZE);
     let mut total: u64 = 0;
     let mut last_refine = Instant::now();
+    let mut refined_at: u64 = 0;
     let mut aborted = false;
 
     for entry in walk {
@@ -342,8 +504,11 @@ pub fn build_index(
             index.capped.store(true, Ordering::SeqCst);
             break;
         }
-        if last_refine.elapsed() >= LIVE_REFINE_INTERVAL {
+        let grown = total >= refined_at + BLOCK_SIZE as u64
+            && total * REFINE_GROWTH_DEN >= refined_at * REFINE_GROWTH_NUM;
+        if grown || last_refine.elapsed() >= REFINE_MAX_INTERVAL {
             last_refine = Instant::now();
+            refined_at = total;
             if !block.is_empty() {
                 push_block(&index, &mut block);
             }
@@ -354,11 +519,26 @@ pub fn build_index(
         push_block(&index, &mut block);
     }
 
+    if trace_enabled() {
+        let secs = walk_start.elapsed().as_secs_f64();
+        eprintln!(
+            "[fuzzy] walk {} entries in {:.2}s ({:.0}/s, threads={}, aborted={})",
+            total,
+            secs,
+            total as f64 / secs.max(1e-9),
+            walk_threads(),
+            aborted,
+        );
+    }
+
     if !aborted && index.generation.load(Ordering::SeqCst) == generation {
         index.indexing.store(false, Ordering::SeqCst);
-        // Final refinement + Done for the live query, then clear the slot.
-        refine_active(&index, generation, false);
-        index.set_active(None);
+        // Final refinement + Done for the live query, then clear EXACTLY the
+        // query that was refined — a newer query can finish its initial scan
+        // and install itself concurrently, and must not be wiped.
+        if let Some(refined) = refine_active(&index, generation, false) {
+            index.clear_active_if(&refined);
+        }
     }
 }
 
@@ -370,28 +550,54 @@ fn push_block(index: &FuzzyIndex, block: &mut Vec<IndexedPath>) {
     block.reserve(BLOCK_SIZE);
 }
 
-/// Re-run the stored live query against the current snapshot.
-fn refine_active(index: &FuzzyIndex, generation: u64, still_indexing: bool) {
-    let guard = index.active.lock().unwrap();
-    let Some(q) = guard.as_ref() else { return };
+/// Re-run the stored live query against the current snapshot. Returns the id
+/// of the query it refined (for exact end-of-index cleanup).
+///
+/// The `active` lock is held only to clone the query out — never across the
+/// scan. `fuzzy_cancel`'s `clear_active_if` runs on an app thread the UI may
+/// wait on, so any lock hold here must stay O(µs). Because the slot can be
+/// cancelled or replaced while the scan runs unlocked, the cancel flag is
+/// re-checked before every externally visible step.
+fn refine_active(index: &FuzzyIndex, generation: u64, still_indexing: bool) -> Option<String> {
+    let q = {
+        let guard = index.active.lock().unwrap();
+        let q = guard.as_ref()?;
+        if q.cancel.load(Ordering::SeqCst) {
+            return None;
+        }
+        q.clone()
+    };
+    let started = Instant::now();
+    let outcome = run_query(index, &q.pattern, q.max_results, &q.filters, &q.cancel, generation)?;
     if q.cancel.load(Ordering::SeqCst) {
-        return;
+        return None;
     }
-    let outcome = run_query(index, &q.pattern, q.max_results, &q.filters, &q.cancel, generation);
-    let Some(outcome) = outcome else { return };
-    let items = build_items(index, &q.query_id, outcome.hits, &q.icon_token);
+    let items = build_items(index, outcome.hits, &q.icon_token, &q.icon_revoke);
+    if q.cancel.load(Ordering::SeqCst) {
+        return None;
+    }
+    if trace_enabled() {
+        eprintln!(
+            "[fuzzy] refine {} → {} items over {} entries in {:.1}ms",
+            q.query_id,
+            items.len(),
+            index.indexed.load(Ordering::SeqCst),
+            started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
     (q.send)(FuzzyEvent::Results {
         query_id: q.query_id.clone(),
         items,
         indexed: index.indexed.load(Ordering::SeqCst),
         indexing: still_indexing,
     });
-    if !still_indexing {
+    if !still_indexing && !q.cancel.load(Ordering::SeqCst) && !q.done.swap(true, Ordering::SeqCst) {
         (q.send)(FuzzyEvent::Done {
             query_id: q.query_id.clone(),
             capped: index.capped.load(Ordering::SeqCst) || outcome.filters_capped,
         });
     }
+    Some(q.query_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -493,18 +699,35 @@ fn sort_hits(hits: &mut [(u32, Arc<Block>, usize)]) {
     });
 }
 
+/// Resolve hits into wire items. Icon tokens are minted lazily through the
+/// index's bounded token cache under the index-generation owner: unchanged
+/// results keep identical tokens across refine ticks, cancelling a query
+/// never revokes them, and LRU eviction revokes exactly the evicted token.
 pub fn build_items(
     index: &FuzzyIndex,
-    query_id: &str,
     hits: Vec<(u32, Arc<Block>, usize)>,
     icon_token: &IconTokenFn,
+    icon_revoke: &RevokeTokenFn,
 ) -> Vec<FuzzyItem> {
+    if hits.is_empty() {
+        return Vec::new();
+    }
+    let owner = index.token_owner();
+    index.record_owner(&owner);
     hits.into_iter()
         .map(|(score, block, i)| {
             let item = &block[i];
             let abs = index.root.join(&*item.rel);
+            let (token, evicted) = index
+                .icon_tokens
+                .lock()
+                .unwrap()
+                .get_or_mint(&item.rel, || icon_token(&owner, &abs));
+            if let Some(old) = evicted {
+                icon_revoke(&owner, &old);
+            }
             FuzzyItem {
-                icon: icon_token(query_id, &abs),
+                icon: token,
                 path: abs.to_string_lossy().into_owned(),
                 name: item.name().to_string(),
                 is_dir: item.is_dir,
@@ -512,6 +735,100 @@ pub fn build_items(
             }
         })
         .collect()
+}
+
+/// One query's full lifecycle, run on its own thread by the `fuzzy_query`
+/// command (factored out of the command for the concurrency tests).
+pub struct QuerySpec {
+    pub query_id: String,
+    /// From `FuzzyIndex::next_query_seq`, assigned on the IPC thread so seq
+    /// order matches keystroke order.
+    pub seq: u64,
+    pub pattern: String,
+    pub max_results: usize,
+    pub live: bool,
+    pub filters: FuzzyFilters,
+}
+
+pub fn execute_query(
+    index: &Arc<FuzzyIndex>,
+    spec: QuerySpec,
+    cancel: Arc<AtomicBool>,
+    send: SendFn,
+    icon_token: IconTokenFn,
+    icon_revoke: RevokeTokenFn,
+) {
+    let generation = index.generation.load(Ordering::SeqCst);
+    // One-shot queries (the search fallback) want COMPLETE results — wait
+    // out the walk instead of scanning a partial snapshot. Live queries
+    // scan immediately and refine via the active slot.
+    if !spec.live {
+        while index.indexing.load(Ordering::SeqCst) {
+            if cancel.load(Ordering::SeqCst)
+                || index.generation.load(Ordering::SeqCst) != generation
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let indexing = index.indexing.load(Ordering::SeqCst);
+    let Some(outcome) =
+        run_query(index, &spec.pattern, spec.max_results, &spec.filters, &cancel, generation)
+    else {
+        return;
+    };
+    let items = build_items(index, outcome.hits, &icon_token, &icon_revoke);
+    if cancel.load(Ordering::SeqCst) {
+        return;
+    }
+    let done = Arc::new(AtomicBool::new(false));
+    send(FuzzyEvent::Results {
+        query_id: spec.query_id.clone(),
+        items,
+        indexed: index.indexed.load(Ordering::SeqCst),
+        indexing,
+    });
+    if !spec.live || !indexing {
+        if !done.swap(true, Ordering::SeqCst) {
+            send(FuzzyEvent::Done {
+                query_id: spec.query_id.clone(),
+                capped: index.capped.load(Ordering::SeqCst) || outcome.filters_capped,
+            });
+        }
+        return;
+    }
+    // Live query while the walk runs: occupy the active slot for refinement.
+    // install_active is compare/replace — an older query whose scan finished
+    // late can never displace a newer one.
+    let installed = index.install_active(ActiveQuery {
+        query_id: spec.query_id.clone(),
+        seq: spec.seq,
+        pattern: spec.pattern,
+        max_results: spec.max_results,
+        filters: spec.filters,
+        cancel: cancel.clone(),
+        done: done.clone(),
+        send: send.clone(),
+        icon_token,
+        icon_revoke,
+    });
+    if !installed {
+        return;
+    }
+    // Close the install/end-of-walk race: if indexing finished during the
+    // initial scan or install, the final refinement may already have run and
+    // missed this query — pull it back out and finish the stream here. The
+    // `done` flag arbitrates when both sides race to send Done.
+    if !index.indexing.load(Ordering::SeqCst)
+        && index.clear_active_if(&spec.query_id)
+        && !done.swap(true, Ordering::SeqCst)
+    {
+        send(FuzzyEvent::Done {
+            query_id: spec.query_id,
+            capped: index.capped.load(Ordering::SeqCst) || outcome.filters_capped,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +941,25 @@ mod tests {
         Arc::new(|_, _| String::new())
     }
 
+    fn no_revoke() -> RevokeTokenFn {
+        Arc::new(|_, _| {})
+    }
+
+    fn active_query(id: &str, seq: u64, send: SendFn, icon_token: IconTokenFn) -> ActiveQuery {
+        ActiveQuery {
+            query_id: id.to_string(),
+            seq,
+            pattern: String::new(),
+            max_results: 100,
+            filters: FuzzyFilters::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            done: Arc::new(AtomicBool::new(false)),
+            send,
+            icon_token,
+            icon_revoke: no_revoke(),
+        }
+    }
+
     fn warm_sync(root: &Path, excludes: &[String], cap: u64) -> Arc<FuzzyIndex> {
         let idx = FuzzyIndex::new(root.to_path_buf(), config_hash(excludes, cap), 0);
         build_index(idx.clone(), Excludes::parse(excludes), cap, 0);
@@ -640,7 +976,7 @@ mod tests {
             idx.generation.load(Ordering::SeqCst),
         )
         .expect("query not cancelled");
-        build_items(idx, "t", outcome.hits, &no_token())
+        build_items(idx, outcome.hits, &no_token(), &no_revoke())
             .into_iter()
             .map(|i| i.path)
             .collect()
@@ -786,7 +1122,7 @@ mod tests {
             gen,
         )
         .unwrap();
-        let items = build_items(&idx, "t", outcome.hits, &no_token());
+        let items = build_items(&idx, outcome.hits, &no_token(), &no_revoke());
         assert_eq!(items.len(), 1);
         assert!(items[0].path.ends_with("photo.png"));
 
@@ -800,7 +1136,7 @@ mod tests {
             gen,
         )
         .unwrap();
-        let items = build_items(&idx, "t", outcome.hits, &no_token());
+        let items = build_items(&idx, outcome.hits, &no_token(), &no_revoke());
         assert!(items.iter().all(|i| i.is_dir));
 
         // size filter: everything here is 1 byte, so min 10 → nothing
@@ -813,7 +1149,7 @@ mod tests {
             gen,
         )
         .unwrap();
-        let files: Vec<_> = build_items(&idx, "t", outcome.hits, &no_token())
+        let files: Vec<_> = build_items(&idx, outcome.hits, &no_token(), &no_revoke())
             .into_iter()
             .filter(|i| !i.is_dir)
             .collect();
@@ -860,5 +1196,274 @@ mod tests {
         // The root itself counts as "under".
         mark_stale_under(&fuzzy2, std::slice::from_ref(&a));
         assert!(fuzzy2.get(&a).unwrap().stale.load(Ordering::Relaxed));
+    }
+
+    // -----------------------------------------------------------------------
+    // Concurrency regressions (the beachball fix — plan Verification C)
+    // -----------------------------------------------------------------------
+
+    fn collect_events() -> (SendFn, Arc<Mutex<Vec<FuzzyEvent>>>) {
+        let events: Arc<Mutex<Vec<FuzzyEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let send: SendFn = Arc::new(move |e| sink.lock().unwrap().push(e));
+        (send, events)
+    }
+
+    fn done_count(events: &[FuzzyEvent]) -> usize {
+        events.iter().filter(|e| matches!(e, FuzzyEvent::Done { .. })).count()
+    }
+
+    #[test]
+    fn cancel_lock_touch_is_bounded_while_refinement_runs() {
+        // The beachball regression: fuzzy_cancel's clear_active_if must
+        // complete in bounded time while a refinement is mid-flight. The
+        // refinement blocks inside its send — with the old guard-across-scan
+        // code this deadlocks; with clone-out it must return immediately.
+        let d = tmp("cancel-bounded");
+        make_tree(&d);
+        let idx = warm_sync(&d, &[], 1_000_000);
+        let gen = idx.generation.load(Ordering::SeqCst);
+
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let (entered2, release2) = (entered.clone(), release.clone());
+        let send: SendFn = Arc::new(move |_| {
+            entered2.wait();
+            release2.wait();
+        });
+        assert!(idx.install_active(active_query("q1", 1, send, no_token())));
+
+        let idx2 = idx.clone();
+        let refine = std::thread::spawn(move || {
+            refine_active(&idx2, gen, true);
+        });
+        entered.wait(); // the refinement is now mid-send, scan done, unlocked
+        let t0 = Instant::now();
+        idx.clear_active_if("q1");
+        let waited = t0.elapsed();
+        release.wait();
+        refine.join().unwrap();
+        assert!(
+            waited < Duration::from_millis(100),
+            "cancel blocked {waited:?} behind an in-flight refinement"
+        );
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn cancelled_refinement_emits_nothing_and_tokens_stay_index_owned() {
+        // Cancellation lands while the (unlocked) refinement is resolving
+        // items: no event may follow, and any token already minted must be
+        // owned by the index generation — never the query.
+        let d = tmp("cancel-mid-refine");
+        make_tree(&d);
+        let idx = warm_sync(&d, &[], 1_000_000);
+        let gen = idx.generation.load(Ordering::SeqCst);
+
+        let (send, events) = collect_events();
+        let mut q = active_query("q1", 1, send, no_token());
+        let cancel = q.cancel.clone();
+        let minted_owners: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let (owners2, cancel2) = (minted_owners.clone(), cancel.clone());
+        q.icon_token = Arc::new(move |owner, _| {
+            cancel2.store(true, Ordering::SeqCst); // cancel races build_items
+            owners2.lock().unwrap().push(owner.to_string());
+            String::new()
+        });
+        assert!(idx.install_active(q));
+
+        assert!(refine_active(&idx, gen, false).is_none());
+        assert!(events.lock().unwrap().is_empty(), "post-cancel events leaked");
+        let owners = minted_owners.lock().unwrap();
+        assert!(!owners.is_empty(), "test must exercise the minting path");
+        assert!(
+            owners.iter().all(|o| o == &idx.token_owner()),
+            "tokens must be index-generation-owned, got {owners:?}"
+        );
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn older_query_cannot_replace_or_clear_newer() {
+        let d = tmp("seq-order");
+        make_tree(&d);
+        let idx = warm_sync(&d, &[], 1_000_000);
+        let (send, _) = collect_events();
+
+        assert!(idx.install_active(active_query("new", 2, send.clone(), no_token())));
+        // A stale query finishing its scan late must not displace the slot…
+        assert!(!idx.install_active(active_query("old", 1, send.clone(), no_token())));
+        // …nor may equal-seq reinstall (idempotence against double-install).
+        assert!(!idx.install_active(active_query("dup", 2, send, no_token())));
+        // …and clearing by the old id must not touch the newer query.
+        assert!(!idx.clear_active_if("old"));
+        assert_eq!(idx.active_query_id().as_deref(), Some("new"));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn final_index_cleanup_clears_only_the_query_it_refined() {
+        let d = tmp("final-clear");
+        make_tree(&d);
+        let idx = warm_sync(&d, &[], 1_000_000);
+        let gen = idx.generation.load(Ordering::SeqCst);
+        let (send, events) = collect_events();
+
+        assert!(idx.install_active(active_query("a", 1, send.clone(), no_token())));
+        // build_index's tail: final refinement, then clear the refined query…
+        let refined = refine_active(&idx, gen, false).expect("refined the live query");
+        assert_eq!(refined, "a");
+        assert_eq!(done_count(&events.lock().unwrap()), 1, "final refine sends Done");
+        // …but a newer query installed in between must survive the cleanup.
+        assert!(idx.install_active(active_query("b", 2, send, no_token())));
+        assert!(!idx.clear_active_if(&refined));
+        assert_eq!(idx.active_query_id().as_deref(), Some("b"));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn query_crossing_index_completion_sends_done_and_leaves_no_stale_slot() {
+        // The walk finishes while a live query's initial scan resolves items
+        // (after it observed indexing == true). It must still terminate its
+        // event stream with Done and must not occupy the active slot forever.
+        let d = tmp("cross-completion");
+        make_tree(&d);
+        let idx = warm_sync(&d, &[], 1_000_000);
+        idx.indexing.store(true, Ordering::SeqCst); // simulate mid-walk
+        let (send, events) = collect_events();
+
+        let idx_flip = idx.clone();
+        let icon_token: IconTokenFn = Arc::new(move |_, _| {
+            // Fires during build_items — after run_query, before install.
+            idx_flip.indexing.store(false, Ordering::SeqCst);
+            String::new()
+        });
+        execute_query(
+            &idx,
+            QuerySpec {
+                query_id: "q1".into(),
+                seq: idx.next_query_seq(),
+                pattern: String::new(),
+                max_results: 10,
+                live: true,
+                filters: FuzzyFilters::default(),
+            },
+            Arc::new(AtomicBool::new(false)),
+            send,
+            icon_token,
+            no_revoke(),
+        );
+
+        let events = events.lock().unwrap();
+        assert!(
+            events.iter().any(|e| matches!(e, FuzzyEvent::Results { .. })),
+            "initial results missing"
+        );
+        assert_eq!(done_count(&events), 1, "exactly one Done, got {events:?}");
+        assert_eq!(idx.active_query_id(), None, "stale active slot left behind");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn rebuild_revokes_index_generation_tokens() {
+        use crate::state::TokenTable;
+        let d = tmp("owner-revoke");
+        make_tree(&d);
+        let idx = warm_sync(&d, &[], 1_000_000);
+        let gen = idx.generation.load(Ordering::SeqCst);
+
+        let table = Arc::new(TokenTable::default());
+        let t2 = table.clone();
+        let icon_token: IconTokenFn = Arc::new(move |owner, p| t2.register(owner, p));
+        let outcome = run_query(
+            &idx,
+            "",
+            100,
+            &FuzzyFilters::default(),
+            &AtomicBool::new(false),
+            gen,
+        )
+        .unwrap();
+        let items = build_items(&idx, outcome.hits, &icon_token, &no_revoke());
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|i| table.resolve(&i.icon).is_some()));
+
+        // What fuzzy_warm/fuzzy_drop do when the index is replaced/dropped:
+        for owner in idx.take_owners() {
+            table.drop_owner(&owner);
+        }
+        assert!(items.iter().all(|i| table.resolve(&i.icon).is_none()));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn unchanged_results_keep_identical_icon_tokens_across_refines() {
+        let d = tmp("stable-tokens");
+        make_tree(&d);
+        let idx = warm_sync(&d, &[], 1_000_000);
+        let gen = idx.generation.load(Ordering::SeqCst);
+
+        let mints = Arc::new(AtomicUsize::new(0));
+        let m2 = mints.clone();
+        let icon_token: IconTokenFn = Arc::new(move |_, p| {
+            m2.fetch_add(1, Ordering::SeqCst);
+            format!("tok-{}", p.display())
+        });
+        let run = || {
+            let outcome = run_query(
+                &idx,
+                "",
+                100,
+                &FuzzyFilters::default(),
+                &AtomicBool::new(false),
+                gen,
+            )
+            .unwrap();
+            build_items(&idx, outcome.hits, &icon_token, &no_revoke())
+        };
+        let first = run();
+        let minted_once = mints.load(Ordering::SeqCst);
+        let second = run();
+        assert_eq!(
+            first.iter().map(|i| (&i.path, &i.icon)).collect::<Vec<_>>(),
+            second.iter().map(|i| (&i.path, &i.icon)).collect::<Vec<_>>(),
+            "same results must keep identical icon URLs across refine ticks"
+        );
+        assert_eq!(
+            mints.load(Ordering::SeqCst),
+            minted_once,
+            "second tick must be served entirely from the token cache"
+        );
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn token_cache_is_bounded_and_evictions_revoke_individually() {
+        use crate::state::TokenTable;
+        let table = TokenTable::default();
+        let mut lru = TokenLru::new(2);
+        let owner = "fuzzy-index:test:0";
+
+        let mut tokens = Vec::new();
+        for rel in ["a", "b", "c"] {
+            let (token, evicted) =
+                lru.get_or_mint(rel, || table.register(owner, Path::new(rel)));
+            if let Some(old) = evicted {
+                table.revoke(owner, &old);
+            }
+            tokens.push(token);
+        }
+        assert_eq!(lru.len(), 2, "cache exceeded its cap");
+        // "a" was the LRU entry: its token is gone, the survivors still resolve.
+        assert!(table.resolve(&tokens[0]).is_none(), "evicted token must be revoked");
+        assert!(table.resolve(&tokens[1]).is_some());
+        assert!(table.resolve(&tokens[2]).is_some());
+
+        // Touching "b" makes "c" the eviction victim next.
+        let (b_again, evicted) = lru.get_or_mint("b", || unreachable!("b is cached"));
+        assert!(evicted.is_none());
+        assert_eq!(b_again, tokens[1]);
+        let (_, evicted) = lru.get_or_mint("d", || table.register(owner, Path::new("d")));
+        assert_eq!(evicted.as_deref(), Some(tokens[2].as_str()), "LRU order must respect touches");
     }
 }

@@ -46,6 +46,11 @@ async function tick(): Promise<void> {
   await new Promise((r) => setTimeout(r, 0));
 }
 
+/** Outwait the keystroke→query debounce (70 ms; see fuzzy-debounce.test.ts). */
+async function debounce(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 100));
+}
+
 describe("fuzzy store", () => {
   beforeEach(() => {
     mocks.warmCalls.length = 0;
@@ -93,8 +98,9 @@ describe("fuzzy store", () => {
     expect(useFuzzy.getState().hits.map((h) => h.path)).toEqual(["/c"]);
     expect(useFuzzy.getState().indexed).toBe(200);
 
-    // Supersede: a new keystroke cancels the old query…
+    // Supersede: a keystroke (after the debounce) cancels the old query…
     useFuzzy.getState().setQuery("main");
+    await debounce();
     expect(mocks.cancelCalls).toEqual([first.args.queryId]);
     expect(mocks.queryCalls).toHaveLength(2);
     const second = mocks.queryCalls[1];
@@ -122,7 +128,7 @@ describe("fuzzy store", () => {
     expect(useFuzzy.getState().capped).toBe(true);
   });
 
-  it("close cancels the in-flight query (revoking its tokens)", async () => {
+  it("close cancels the in-flight query", async () => {
     useFuzzy.getState().openFinder();
     await tick();
     const qid = mocks.queryCalls[0].args.queryId;
