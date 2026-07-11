@@ -73,8 +73,7 @@ pub fn list_dir(
         // ---- Pass 1: stream what readdir gives nearly free ----
         let mut all: Vec<Entry> = Vec::new();
         let mut chunk: Vec<Entry> = Vec::with_capacity(CHUNK);
-        let mut next_id: u64 = 0;
-        for dirent in read.flatten() {
+        for (next_id, dirent) in read.flatten().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
@@ -87,14 +86,13 @@ pub fn list_dir(
                 Err(_) => EntryKind::Unknown,
             };
             let token = tokens.register(&listing_id, &dirent.path());
-            let entry = pass1_entry(next_id, &dir, &name, kind, token);
-            next_id += 1;
+            let entry = pass1_entry(next_id as u64, &dir, &name, kind, token);
             chunk.push(entry.clone());
             all.push(entry);
-            if chunk.len() >= CHUNK {
-                if channel.send(ListEvent::Chunk { entries: std::mem::take(&mut chunk) }).is_err() {
-                    return;
-                }
+            if chunk.len() >= CHUNK
+                && channel.send(ListEvent::Chunk { entries: std::mem::take(&mut chunk) }).is_err()
+            {
+                return;
             }
         }
         if !chunk.is_empty() {

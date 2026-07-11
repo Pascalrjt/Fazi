@@ -147,10 +147,13 @@ pub struct OpArgs {
     pub verify: bool,
 }
 
+/// A conflict-dialog answer: the chosen resolution + "apply to all".
+type ConflictReply = (Resolution, bool);
+
 /// Per-op handle: cancellation + the conflict-response rendezvous.
 pub struct OpHandle {
     pub cancel: AtomicBool,
-    pending: Mutex<HashMap<u64, SyncSender<(Resolution, bool)>>>,
+    pending: Mutex<HashMap<u64, SyncSender<ConflictReply>>>,
 }
 
 impl OpHandle {
@@ -177,6 +180,9 @@ impl OpHandle {
     }
 }
 
+/// Registers an icon token for conflict-dialog sides (owner = op id).
+pub type IconTokenFn = Arc<dyn Fn(&str, &Path) -> String + Send + Sync>;
+
 /// Shared engine dependencies (built once at app setup).
 pub struct Engine {
     pub trasher: Arc<dyn Trasher>,
@@ -184,8 +190,7 @@ pub struct Engine {
     pub undo: Arc<Mutex<UndoStack>>,
     pub ops: DashMap<String, Arc<OpHandle>>,
     pub volume_locks: DashMap<u64, Arc<Mutex<()>>>,
-    /// Registers an icon token for conflict-dialog sides (owner = op id).
-    pub icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+    pub icon_token: IconTokenFn,
 }
 
 impl Engine {
@@ -223,7 +228,7 @@ struct OpSink {
     emitter: Arc<dyn OpEmitter>,
     handle: Arc<OpHandle>,
     op_id: String,
-    icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+    icon_token: IconTokenFn,
     bytes: u64,
     entries: u64,
     last_emit: Instant,
@@ -242,7 +247,7 @@ impl OpSink {
         emitter: Arc<dyn OpEmitter>,
         handle: Arc<OpHandle>,
         op_id: String,
-        icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+        icon_token: IconTokenFn,
         op_policy: Policy,
         remaining_hint: usize,
     ) -> Self {
@@ -305,7 +310,7 @@ impl OpSink {
     fn ask(&mut self, kind: ConflictKind, src: &Path, dst: &Path) -> (Resolution, bool) {
         self.conflict_seq += 1;
         let id = self.conflict_seq;
-        let (tx, rx): (SyncSender<(Resolution, bool)>, Receiver<(Resolution, bool)>) =
+        let (tx, rx): (SyncSender<ConflictReply>, Receiver<ConflictReply>) =
             std::sync::mpsc::sync_channel(1);
         self.handle.pending.lock().unwrap().insert(id, tx);
         self.emitter.emit(OpEvent::Conflict {

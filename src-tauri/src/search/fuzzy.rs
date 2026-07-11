@@ -11,7 +11,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -20,6 +20,8 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+
+use crate::core::op_queue::IconTokenFn;
 
 pub const BLOCK_SIZE: usize = 4096;
 /// Query-cancel check granularity, in items.
@@ -116,14 +118,17 @@ impl IndexedPath {
 
 type Block = Box<[IndexedPath]>;
 
+/// The channel-send closure a query streams `FuzzyEvent`s through.
+pub type SendFn = Arc<dyn Fn(FuzzyEvent) + Send + Sync>;
+
 pub struct ActiveQuery {
     pub query_id: String,
     pub pattern: String,
     pub max_results: usize,
     pub filters: FuzzyFilters,
     pub cancel: Arc<AtomicBool>,
-    pub send: Arc<dyn Fn(FuzzyEvent) + Send + Sync>,
-    pub icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+    pub send: SendFn,
+    pub icon_token: IconTokenFn,
 }
 
 pub struct FuzzyIndex {
@@ -476,7 +481,7 @@ pub fn build_items(
     index: &FuzzyIndex,
     query_id: &str,
     hits: Vec<(u32, Arc<Block>, usize)>,
-    icon_token: &Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+    icon_token: &IconTokenFn,
 ) -> Vec<FuzzyItem> {
     hits.into_iter()
         .map(|(score, block, i)| {
@@ -590,6 +595,7 @@ fn filter_matches(
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("fazi-fuzzy-{}-{}", name, std::process::id()));
@@ -598,7 +604,7 @@ mod tests {
         d
     }
 
-    fn no_token() -> Arc<dyn Fn(&str, &Path) -> String + Send + Sync> {
+    fn no_token() -> IconTokenFn {
         Arc::new(|_, _| String::new())
     }
 

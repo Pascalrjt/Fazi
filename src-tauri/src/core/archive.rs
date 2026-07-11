@@ -783,7 +783,7 @@ pub fn validate_staging(staging_dir: &Path) -> Result<(), String> {
                 .next()
                 .map(|c| c.as_os_str() == "__MACOSX")
                 .unwrap_or(false);
-            if !in_macosx && !(at_root && is_ignored_root_name(&name)) {
+            if !(in_macosx || at_root && is_ignored_root_name(&name)) {
                 *payload_seen = true;
             }
         }

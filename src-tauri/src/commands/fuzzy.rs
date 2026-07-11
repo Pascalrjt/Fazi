@@ -5,18 +5,18 @@
 //! owned by queryId — a superseded/cancelled query's owner scope is revoked,
 //! and dropping/evicting an index revokes every owner recorded on it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::core::op_queue::now_ms;
+use crate::core::op_queue::{now_ms, IconTokenFn};
 use crate::error::{Error, Result};
 use crate::search::fuzzy::{
     build_index, build_items, config_hash, run_query, ActiveQuery, Excludes, FuzzyEvent,
-    FuzzyFilters, FuzzyIndex, FuzzyIndexStatus, DEFAULT_MAX_ENTRIES,
+    FuzzyFilters, FuzzyIndex, FuzzyIndexStatus, SendFn, DEFAULT_MAX_ENTRIES,
 };
 use crate::state::AppState;
 
@@ -84,6 +84,7 @@ pub fn fuzzy_warm(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // signature mirrors the invoke wire contract
 pub fn fuzzy_query(
     state: State<'_, AppState>,
     root: String,
@@ -110,11 +111,10 @@ pub fn fuzzy_query(
     index.record_owner(&query_id);
 
     let tokens = state.tokens.clone();
-    let icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync> =
-        Arc::new(move |owner, p| tokens.register(owner, p));
+    let icon_token: IconTokenFn = Arc::new(move |owner, p| tokens.register(owner, p));
     let filters = filters.unwrap_or_default();
     let send_channel = channel.clone();
-    let send: Arc<dyn Fn(FuzzyEvent) + Send + Sync> = Arc::new(move |e| {
+    let send: SendFn = Arc::new(move |e| {
         let _ = send_channel.send(e);
     });
 

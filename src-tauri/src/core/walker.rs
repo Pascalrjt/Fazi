@@ -531,7 +531,7 @@ pub fn rescue_leftover(leftover: &Path, op_id: &str, name: &str) -> io::Result<P
     }
     candidates.push(format!(".fazi-leftover-{}-{}", op_id, uuid::Uuid::new_v4().simple()));
 
-    let mut last_err = io::Error::new(io::ErrorKind::Other, "no rescue candidate");
+    let mut last_err = io::Error::other("no rescue candidate");
     for cand in candidates {
         if is_staging_name(&cand, op_id) {
             continue; // paranoia: never rescue INTO a name recovery deletes
@@ -1045,7 +1045,8 @@ mod tests {
 
     #[test]
     fn merge_file_conflict_policies() {
-        let cases: Vec<(Resolution, fn(&Path))> = vec![
+        type DestCheck = fn(&Path);
+        let cases: Vec<(Resolution, DestCheck)> = vec![
             (Resolution::Skip, |dst: &Path| {
                 assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"old");
             }),

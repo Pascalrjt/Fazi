@@ -24,6 +24,7 @@ impl OpEmitter for ChannelEmitter {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // signature mirrors the invoke wire contract
 pub fn run_op(
     state: State<'_, AppState>,
     op_id: String,

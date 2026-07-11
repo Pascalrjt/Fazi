@@ -98,15 +98,10 @@ pub struct UndoOutcome {
     pub inverse: UndoOp,
 }
 
+#[derive(Default)]
 pub struct UndoStack {
     undo: Vec<UndoOp>,
     redo: Vec<UndoOp>,
-}
-
-impl Default for UndoStack {
-    fn default() -> Self {
-        UndoStack { undo: Vec::new(), redo: Vec::new() }
-    }
 }
 
 impl UndoStack {

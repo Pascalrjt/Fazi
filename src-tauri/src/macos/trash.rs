@@ -22,15 +22,13 @@ pub fn trash_path(path: &Path) -> io::Result<PathBuf> {
         Ok(()) => {
             let landed = resulting
                 .and_then(|u| unsafe { u.path() }.map(|p| PathBuf::from(p.to_string())))
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::Other, "trash succeeded but no resulting URL")
-                })?;
+                .ok_or_else(|| io::Error::other("trash succeeded but no resulting URL"))?;
             Ok(landed)
         }
-        Err(e) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("couldn't move to Trash: {}", e.localizedDescription()),
-        )),
+        Err(e) => Err(io::Error::other(format!(
+            "couldn't move to Trash: {}",
+            e.localizedDescription()
+        ))),
     }
 }
 
@@ -191,7 +189,7 @@ mod tests {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
 
         let outcome =
-            empty_trash_dirs(&[t.clone()], &mut |_, _| {}, &AtomicBool::new(false));
+            empty_trash_dirs(std::slice::from_ref(&t), &mut |_, _| {}, &AtomicBool::new(false));
         // Restore perms for cleanup regardless of assertion outcomes.
         let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o755));
 

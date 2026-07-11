@@ -11,6 +11,7 @@ use crate::search::mdfind::{self, SearchEvent, SearchFilters, MAX_RESULTS_CEILIN
 use crate::state::AppState;
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // signature mirrors the invoke wire contract
 pub fn search(
     state: State<'_, AppState>,
     search_id: String,
