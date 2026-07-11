@@ -1,6 +1,11 @@
-/** applyBatchRename spec tables + collision classification. */
+/** applyBatchRename spec tables + name rules + collision classification. */
 import { describe, expect, it } from "vitest";
-import { applyBatchRename, batchCollisions, compileFind } from "../batchRename";
+import {
+  applyBatchRename,
+  batchCollisions,
+  compileFind,
+  nameRuleError,
+} from "../batchRename";
 
 describe("applyBatchRename", () => {
   it("regex find/replace with capture groups, extension preserved", () => {
@@ -54,6 +59,25 @@ describe("applyBatchRename", () => {
   it("dotfiles keep their whole name as the stem", () => {
     const out = applyBatchRename([".gitignore"], { suffix: "-old" });
     expect(out).toEqual([".gitignore-old"]);
+  });
+});
+
+describe("nameRuleError", () => {
+  it("mirrors the backend validate_name rule set", () => {
+    const cases: Array<[string, string | null]> = [
+      ["", "Name can't be empty"],
+      ["a/b", "Name can't contain “/”"],
+      ["a:b", "Name can't contain “:”"],
+      ["a\0b", "Invalid name"],
+      [".", "Invalid name"],
+      ["..", "Invalid name"],
+      ["notes.txt", null],
+      [".gitignore", null],
+      ["...", null],
+    ];
+    for (const [name, expected] of cases) {
+      expect(nameRuleError(name), JSON.stringify(name)).toBe(expected);
+    }
   });
 });
 

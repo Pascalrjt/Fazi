@@ -11,6 +11,7 @@ import {
   applyBatchRename,
   batchCollisions,
   compileFind,
+  nameRuleError,
   type BatchRenameSpec,
 } from "../../lib/batchRename";
 import { useApp, toast } from "../../stores/app";
@@ -72,7 +73,7 @@ export function BatchRenameModal() {
   const siblings = activePaneTab()?.tab.entries.map((e) => e.name) ?? [];
   const collisions = batchCollisions(fromNames, toNames, siblings);
   const invalidRegex = find !== "" && compileFind(spec) === null;
-  const invalidName = toNames.some((n) => n === "" || n.includes("/") || n.includes(":"));
+  const invalidName = toNames.some((n) => nameRuleError(n) !== null);
   const changed = toNames.some((n, i) => n !== fromNames[i]);
   const blocked =
     !changed || invalidRegex || invalidName || collisions.some(Boolean) || applying;

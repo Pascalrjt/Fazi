@@ -6,6 +6,7 @@
 import type { Entry } from "../types/ipc";
 import * as ipc from "./ipc";
 import { basename, dirname, pluralize, splitExt } from "./format";
+import { nameRuleError } from "./batchRename";
 import { isExtractableArchive } from "./fileTypes";
 import { useApp, toast } from "../stores/app";
 import { useSettings } from "../stores/settings";
@@ -339,15 +340,15 @@ export function startRenameSelected(): void {
   useApp.getState().startRename({ paneId: pane.id, tabId: tab.id, entryId: leadId });
 }
 
-/** Illegal in a filename: "/" always; ":" (Finder displays it as "/"). */
+/** Character/shape rules live in nameRuleError (mirrors the backend);
+ *  sibling-collision logic stays local to the rename context. */
 export function renameValidationError(
   name: string,
   siblings: readonly Entry[],
   selfName: string,
 ): string | null {
-  if (name.length === 0) return "Name can't be empty";
-  if (name.includes("/")) return "Name can't contain “/”";
-  if (name.includes(":")) return "Name can't contain “:”";
+  const ruleError = nameRuleError(name);
+  if (ruleError !== null) return ruleError;
   const lower = name.toLowerCase();
   if (lower !== selfName.toLowerCase()) {
     if (siblings.some((e) => e.name.toLowerCase() === lower && e.name !== selfName)) {

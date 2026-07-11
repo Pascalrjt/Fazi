@@ -133,6 +133,22 @@ describe("BatchRenameModal", () => {
     expect((apply as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("a spec producing an illegal name keeps Apply blocked", () => {
+    seedSelection(["a.txt", "b.txt"]);
+    useApp.setState({ batchRenameOpen: true });
+    render(<BatchRenameModal />);
+
+    // ":" passes the old inline check's siblings logic but violates the
+    // shared name rules (Finder displays it as "/").
+    fireEvent.change(screen.getByPlaceholderText(/regex/), { target: { value: "^a" } });
+    fireEvent.change(screen.getByPlaceholderText(/\$1 supported/), {
+      target: { value: "a:" },
+    });
+    expect(screen.getByTestId("preview-0").textContent).toContain("a:.txt");
+    const apply = screen.getByText("Rename", { selector: "button" });
+    expect((apply as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("Apply stays disabled when nothing changes", () => {
     seedSelection(["a.txt", "b.txt"]);
     useApp.setState({ batchRenameOpen: true });

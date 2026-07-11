@@ -66,6 +66,20 @@ export function applyBatchRename(names: string[], spec: BatchRenameSpec): string
 }
 
 /**
+ * The one frontend copy of the backend's `validate_name` rule set
+ * (src-tauri/src/core/batch_rename.rs): empty, "/", ":" (Finder displays it
+ * as "/"), NUL, "." and "..". Returns the user-facing error, or null when
+ * the name is legal.
+ */
+export function nameRuleError(name: string): string | null {
+  if (name.length === 0) return "Name can't be empty";
+  if (name.includes("/")) return "Name can't contain “/”";
+  if (name.includes(":")) return "Name can't contain “:”";
+  if (name.includes("\0") || name === "." || name === "..") return "Invalid name";
+  return null;
+}
+
+/**
  * Collision classes for the preview table: rows whose target duplicates
  * another target (case-insensitive) or collides with a sibling that is not
  * part of the batch.

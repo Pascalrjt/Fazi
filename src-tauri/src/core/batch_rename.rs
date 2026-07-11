@@ -31,6 +31,11 @@ pub fn validate_name(name: &str) -> io::Result<()> {
     if name.contains('/') {
         return bad("name can't contain \"/\"");
     }
+    // Legal at the POSIX layer, but Finder displays ":" as "/" — reject it
+    // so names round-trip cleanly with Finder.
+    if name.contains(':') {
+        return bad("name can't contain \":\"");
+    }
     if name.contains('\0') {
         return bad("invalid name");
     }
@@ -241,8 +246,14 @@ mod tests {
         // Collision with an existing non-batch item.
         let e = validate_batch(&d, &pairs(&[("a.txt", "TAKEN.txt")])).unwrap_err();
         assert!(e.to_string().contains("already exists"), "{e}");
-        // Illegal name.
+        // Illegal names.
         assert!(validate_batch(&d, &pairs(&[("a.txt", "x/y")])).is_err());
+        let e = validate_batch(&d, &pairs(&[("a.txt", "x:y")])).unwrap_err();
+        assert!(e.to_string().contains(":"), "{e}");
+        assert!(validate_batch(&d, &pairs(&[("a.txt", "x\0y")])).is_err());
+        assert!(validate_batch(&d, &pairs(&[("a.txt", "")])).is_err());
+        assert!(validate_batch(&d, &pairs(&[("a.txt", ".")])).is_err());
+        assert!(validate_batch(&d, &pairs(&[("a.txt", "..")])).is_err());
         // Missing source.
         assert!(validate_batch(&d, &pairs(&[("ghost.txt", "g.txt")])).is_err());
         fs::remove_dir_all(&d).ok();
