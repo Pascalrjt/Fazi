@@ -5,10 +5,11 @@
  * `hydrate_paths` patch API, which preserves row ids and icon tokens so
  * responses merge through the standard hydrate path.
  *
- * Concurrency contract: at most 1 viewport-priority request in flight plus
- * at most 1 low-priority background request; batches of ≤128; the whole
- * queue drops on listing change/navigation. Stale responses are discarded
- * by the listingId guard in the store's hydrate merge.
+ * Concurrency contract (per listing): at most 1 viewport-priority request in
+ * flight plus at most 1 low-priority background request; batches of ≤128; a
+ * listing's queue drops on its change/navigation. With dual panes that is up
+ * to 4 requests in flight — intended; `hydrate_paths` is stateless. Stale
+ * responses are discarded by the listingId guard in the store's hydrate merge.
  */
 import * as ipc from "./ipc";
 import type { Entry } from "../types/ipc";
@@ -36,7 +37,7 @@ interface HydratorState {
 
 const BATCH = 128;
 
-let current: HydratorState | null = null;
+const schedulers = new Map<string, HydratorState>();
 
 /** Start (or replace) the scheduler for a listing whose pass 2 was skipped. */
 export function initHydrator(
@@ -47,10 +48,10 @@ export function initHydrator(
 ): void {
   const unhydrated = entries.filter((e) => !e.hydrated);
   if (unhydrated.length === 0) {
-    if (current?.listingId === listingId) current = null;
+    schedulers.delete(listingId);
     return;
   }
-  current = {
+  const state: HydratorState = {
     paneId,
     tabId,
     listingId,
@@ -63,31 +64,38 @@ export function initHydrator(
     viewportInFlight: false,
     backgroundInFlight: false,
   };
-  pump();
+  // Re-init replaces any previous scheduler for this listing; its in-flight
+  // responses become no-ops via the identity checks in run().
+  schedulers.set(listingId, state);
+  pump(state);
 }
 
 /** Drop everything (navigation/listing change). No args = unconditional. */
 export function dropHydrator(listingId?: string): void {
-  if (listingId == null || current?.listingId === listingId) current = null;
+  if (listingId == null) schedulers.clear();
+  else schedulers.delete(listingId);
 }
 
 /** Viewport rows preempt the background trickle. Already-hydrated or unknown
  *  ids are ignored (dedupe by id lives here, not in the hook). */
 export function requestViewportHydration(listingId: string, ids: number[]): void {
-  const c = current;
-  if (!c || c.listingId !== listingId) return;
+  const c = schedulers.get(listingId);
+  if (!c) return;
   for (const id of ids) {
     if (c.itemsById.has(id) && !c.viewportQueued.has(id)) {
       c.viewportQueued.add(id);
       c.viewportQueue.push(id);
     }
   }
-  pump();
+  pump(c);
 }
 
-/** Test hook. */
-export function hydratorPending(): number {
-  return current?.itemsById.size ?? 0;
+/** Test hook. No arg = pending rows across every listing's scheduler. */
+export function hydratorPending(listingId?: string): number {
+  if (listingId != null) return schedulers.get(listingId)?.itemsById.size ?? 0;
+  let n = 0;
+  for (const c of schedulers.values()) n += c.itemsById.size;
+  return n;
 }
 
 function takeBatch(c: HydratorState, queue: number[]): Item[] {
@@ -100,9 +108,7 @@ function takeBatch(c: HydratorState, queue: number[]): Item[] {
   return items;
 }
 
-function pump(): void {
-  const c = current;
-  if (!c) return;
+function pump(c: HydratorState): void {
   if (!c.viewportInFlight && c.viewportQueue.length > 0) {
     const batch = takeBatch(c, c.viewportQueue);
     for (const b of batch) c.viewportQueued.delete(b.id);
@@ -111,7 +117,7 @@ function pump(): void {
       void run(c, batch, "viewport");
     }
   }
-  // Background trickles only while no viewport work is waiting.
+  // Background trickles only while no viewport work is waiting (per listing).
   if (
     !c.backgroundInFlight &&
     c.viewportQueue.length === 0 &&
@@ -132,7 +138,7 @@ async function run(
 ): Promise<void> {
   try {
     const entries = await ipc.hydratePaths(c.listingId, batch);
-    if (current !== c) return; // listing changed mid-flight — discard
+    if (schedulers.get(c.listingId) !== c) return; // listing changed mid-flight — discard
     for (const b of batch) c.itemsById.delete(b.id);
     const patches = entries.filter((e): e is Entry => e != null);
     if (patches.length > 0) {
@@ -144,13 +150,13 @@ async function run(
     }
   } catch {
     // Backend unreachable — drop this scheduler; rows keep their pass-1 data.
-    if (current === c) current = null;
+    if (schedulers.get(c.listingId) === c) schedulers.delete(c.listingId);
     return;
   }
-  if (current === c) {
+  if (schedulers.get(c.listingId) === c) {
     if (lane === "viewport") c.viewportInFlight = false;
     else c.backgroundInFlight = false;
-    if (c.itemsById.size === 0) current = null;
-    else pump();
+    if (c.itemsById.size === 0) schedulers.delete(c.listingId);
+    else pump(c);
   }
 }

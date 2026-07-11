@@ -102,6 +102,46 @@ describe("hydration scheduler", () => {
     expect(mocks.calls[1].ids).toEqual([1]);
   });
 
+  it("dual panes hydrate independently, per listing", async () => {
+    // Two listings — both background lanes fire immediately.
+    initHydrator("left", "t1", "A", [entry(1), entry(2)]);
+    initHydrator("right", "t2", "B", [entry(10), entry(11)]);
+    expect(mocks.calls).toHaveLength(2);
+    expect(mocks.calls[0]).toEqual({ listingId: "A", ids: [1, 2] });
+    expect(mocks.calls[1]).toEqual({ listingId: "B", ids: [10, 11] });
+
+    // Viewport request on A fires A's viewport lane and never touches B.
+    requestViewportHydration("A", [2]);
+    expect(mocks.calls).toHaveLength(3);
+    expect(mocks.calls[2]).toEqual({ listingId: "A", ids: [2] });
+
+    // Dropping A leaves B pumping.
+    const resolveA = mocks.resolvers[0];
+    dropHydrator("A");
+    expect(hydratorPending("A")).toBe(0);
+    expect(hydratorPending("B")).toBe(2);
+    mocks.resolvers[1]([entry(10, true), entry(11, true)]);
+    await tick();
+    expect(hydratorPending("B")).toBe(0);
+
+    // A's orphaned in-flight response is discarded: no merge, no new calls.
+    const applied: unknown[] = [];
+    const prevApply = usePanes.getState().applyListEvent;
+    usePanes.setState({
+      applyListEvent: ((...args: unknown[]) => {
+        applied.push(args);
+      }) as typeof prevApply,
+    });
+    try {
+      resolveA([entry(1, true), entry(2, true)]);
+      await tick();
+      expect(applied).toHaveLength(0);
+      expect(mocks.calls).toHaveLength(3);
+    } finally {
+      usePanes.setState({ applyListEvent: prevApply });
+    }
+  });
+
   it("listing change drops the queue and stale responses are discarded", async () => {
     initHydrator("left", "t1", "L3", [entry(1), entry(2)]);
     expect(mocks.calls).toHaveLength(1);
