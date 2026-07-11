@@ -38,8 +38,15 @@ interface DirSizesState {
 let inFlight = 0;
 const queue: string[] = [];
 const queued = new Set<string>();
-/** Insertion-ordered keys for the LRU cap. */
+/** Recency-ordered keys for the LRU cap (front = least recently used). */
 const order: string[] = [];
+
+/** Move `path` to the most-recently-used end of `order`. */
+function touch(path: string): void {
+  const i = order.indexOf(path);
+  if (i !== -1) order.splice(i, 1);
+  order.push(path);
+}
 
 function isAncestorOrSelf(dir: string, changed: string): boolean {
   return changed === dir || changed.startsWith(`${dir}/`);
@@ -66,6 +73,7 @@ export const useDirSizes = create<DirSizesState>()(
               }
             });
             if (e.done) {
+              touch(path);
               inFlight -= 1;
               pump();
             }
@@ -87,17 +95,18 @@ export const useDirSizes = create<DirSizesState>()(
         const existing = get().sizes[path];
         if (existing) {
           if (existing.computing) return;
-          if (Date.now() - existing.at < TTL_MS) return; // fresh enough
+          if (Date.now() - existing.at < TTL_MS) {
+            touch(path); // fresh enough — but a hit is still a use
+            return;
+          }
         }
         if (queued.has(path)) return;
         set((s) => {
-          // LRU cap — evict oldest completed entries.
-          if (!(path in s.sizes)) {
-            order.push(path);
-            while (order.length > MAX_ENTRIES) {
-              const evict = order.shift() as string;
-              if (evict !== path) delete s.sizes[evict];
-            }
+          // LRU cap — evict least recently used completed entries.
+          touch(path);
+          while (order.length > MAX_ENTRIES) {
+            const evict = order.shift() as string;
+            if (evict !== path) delete s.sizes[evict];
           }
           s.sizes[path] = { bytes: existing?.bytes ?? null, computing: true, at: 0 };
         });
@@ -113,6 +122,10 @@ export const useDirSizes = create<DirSizesState>()(
             if (changedPaths.some((p) => isAncestorOrSelf(dir, p))) {
               delete s.sizes[dir];
               queued.delete(dir);
+              // Keep `order` in sync — stale keys would shrink the
+              // effective LRU capacity.
+              const i = order.indexOf(dir);
+              if (i !== -1) order.splice(i, 1);
             }
           }
         });

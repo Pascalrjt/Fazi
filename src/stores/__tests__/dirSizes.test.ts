@@ -78,4 +78,38 @@ describe("dirSizes store", () => {
     useDirSizes.getState().invalidate(["/root/sub/deep/file.txt"]);
     expect(Object.keys(useDirSizes.getState().sizes).sort()).toEqual(["/other"]);
   });
+
+  it("eviction respects recency: a fresh re-request rescues the oldest entry", () => {
+    const s = useDirSizes.getState();
+    // Fill to capacity (MAX_ENTRIES = 512). /p0 and /p1 go in flight.
+    for (let i = 0; i < 512; i++) s.request(`/p${i}`);
+    expect(Object.keys(useDirSizes.getState().sizes)).toHaveLength(512);
+
+    // Complete /p0 so it's TTL-fresh, then re-request it — an LRU "use".
+    mocks.calls[0].onEvent({ bytes: 1, entries: 1, done: true });
+    s.request("/p0");
+
+    // One past capacity: the least recently used is now /p1, not /p0.
+    s.request("/p512");
+    const sizes = useDirSizes.getState().sizes;
+    expect(Object.keys(sizes)).toHaveLength(512);
+    expect(sizes["/p0"]).toBeDefined();
+    expect(sizes["/p512"]).toBeDefined();
+    expect(sizes["/p1"]).toBeUndefined();
+  });
+
+  it("invalidation keeps the LRU order consistent (no capacity leak)", () => {
+    const s = useDirSizes.getState();
+    for (let i = 0; i < 512; i++) s.request(`/q${i}`);
+
+    // Invalidate one entry, then insert one: back at exactly capacity, so
+    // nothing else may be evicted. A stale order key would push /q0 out.
+    s.invalidate(["/q5"]);
+    expect(useDirSizes.getState().sizes["/q5"]).toBeUndefined();
+    s.request("/q512");
+    const sizes = useDirSizes.getState().sizes;
+    expect(Object.keys(sizes)).toHaveLength(512);
+    expect(sizes["/q0"]).toBeDefined();
+    expect(sizes["/q512"]).toBeDefined();
+  });
 });
