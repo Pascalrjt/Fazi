@@ -11,9 +11,10 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use fazi_lib::core::journal::Journal;
 use fazi_lib::core::op_queue::{
-    spawn_duplicate, spawn_op, Engine, OpArgs, OpEmitter, OpEvent, OpKind, Policy,
+    spawn_duplicate, spawn_op, CopyVerifier, Engine, OpArgs, OpEmitter, OpEvent, OpKind, Policy,
 };
 use fazi_lib::core::undo::UndoStack;
+use fazi_lib::core::verify::ChecksumReport;
 use fazi_lib::core::walker::{is_staging_name, DirTrasher, Resolution, Trasher};
 
 // ---------------------------------------------------------------------------
@@ -72,6 +73,22 @@ fn env(name: &str) -> Env {
 
 /// Like `env`, but with a custom trasher (defaults to `DirTrasher`).
 fn env_with(name: &str, trasher: Option<Arc<dyn Trasher>>) -> Env {
+    env_with_verifier(
+        name,
+        trasher,
+        Arc::new(|src, dst, cancelled| {
+            fazi_lib::core::verify::checksum_compare(src, dst, cancelled)
+        }),
+    )
+}
+
+/// Like `env_with`, but with an injected copy verifier (defaults to the real
+/// `checksum_compare`).
+fn env_with_verifier(
+    name: &str,
+    trasher: Option<Arc<dyn Trasher>>,
+    verifier: CopyVerifier,
+) -> Env {
     let root = std::env::temp_dir().join(format!("fazi-engine-{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -83,6 +100,7 @@ fn env_with(name: &str, trasher: Option<Arc<dyn Trasher>>) -> Env {
         ops: DashMap::new(),
         volume_locks: DashMap::new(),
         icon_token: Arc::new(|_, _| String::new()),
+        verify_copy_contents: verifier,
     });
     Env { root, engine, trash_dir }
 }
@@ -1127,5 +1145,65 @@ fn verified_copy_emits_verifying_phase_and_succeeds_clean() {
     assert!(saw_verifying, "expected a phase=verifying Progress event");
     // And the copy verified clean end-to-end.
     assert_eq!(std::fs::read(dst.join("src/a.txt")).unwrap(), b"alpha");
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+#[test]
+fn checksum_mismatch_keeps_copy_reports_partial_and_remains_undoable() {
+    let env = env_with_verifier(
+        "verify-mismatch",
+        None,
+        Arc::new(|_, _, _| ChecksumReport {
+            mismatches: vec!["data.bin: BLAKE3 checksum differs".into()],
+            cancelled: false,
+        }),
+    );
+    let src_dir = env.root.join("src");
+    let dst = env.root.join("dst");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    let source = src_dir.join("data.bin");
+    std::fs::write(&source, b"content").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-verify-mismatch".into(),
+            kind: OpKind::Copy,
+            sources: vec![source],
+            dest_dir: dst.clone(),
+            policy: Policy::Ask,
+            verify: true,
+        },
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, produced, undoable) = done_status(&events);
+    // A mismatch is a per-item error: op → partial, but the suspect copy
+    // stays on disk AND in `produced`, and the op remains undoable.
+    assert_eq!(status, "partial");
+    assert!(undoable);
+    assert_eq!(produced, vec![dst.join("data.bin").to_string_lossy().into_owned()]);
+    assert!(dst.join("data.bin").exists());
+    let saw_verifying = events.iter().any(|e| {
+        matches!(e, OpEvent::Progress { phase: Some(p), .. } if *p == "verifying")
+    });
+    assert!(saw_verifying, "expected a phase=verifying Progress event");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        OpEvent::ItemError { message, .. }
+            if message.contains("copy kept for inspection; Undo removes it")
+    )));
+
+    // ⌘Z removes the suspect copy.
+    env.engine
+        .undo
+        .lock()
+        .unwrap()
+        .undo(env.engine.trasher.as_ref())
+        .unwrap()
+        .expect("mismatch copy should be undoable");
+    assert!(!dst.join("data.bin").exists());
     std::fs::remove_dir_all(&env.root).ok();
 }

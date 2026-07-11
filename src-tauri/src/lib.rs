@@ -53,6 +53,9 @@ pub fn run() {
                 icon_token: Arc::new(move |owner: &str, path: &Path| {
                     engine_tokens.register(owner, path)
                 }),
+                verify_copy_contents: Arc::new(|src, dst, cancelled| {
+                    crate::core::verify::checksum_compare(src, dst, cancelled)
+                }),
             });
 
             let thumb_cache_dir = cache_dir.join("thumbnails");

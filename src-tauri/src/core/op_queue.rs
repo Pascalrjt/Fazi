@@ -21,6 +21,7 @@ use crate::core::copier;
 use crate::core::entry::is_dataless;
 use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
+use crate::core::verify::ChecksumReport;
 use crate::core::walker::{
     self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, ReplaceOutcome,
     Resolution, Trasher, WalkSink, WarnSeverity,
@@ -183,6 +184,11 @@ impl OpHandle {
 /// Registers an icon token for conflict-dialog sides (owner = op id).
 pub type IconTokenFn = Arc<dyn Fn(&str, &Path) -> String + Send + Sync>;
 
+/// Injectable seam over `verify::checksum_compare(source, dest, cancelled)`
+/// so post-promote mismatch semantics can be exercised in tests without
+/// racing an external file mutation.
+pub type CopyVerifier = Arc<dyn Fn(&Path, &Path, &dyn Fn() -> bool) -> ChecksumReport + Send + Sync>;
+
 /// Shared engine dependencies (built once at app setup).
 pub struct Engine {
     pub trasher: Arc<dyn Trasher>,
@@ -191,6 +197,7 @@ pub struct Engine {
     pub ops: DashMap<String, Arc<OpHandle>>,
     pub volume_locks: DashMap<u64, Arc<Mutex<()>>>,
     pub icon_token: IconTokenFn,
+    pub verify_copy_contents: CopyVerifier,
 }
 
 impl Engine {
@@ -830,7 +837,7 @@ fn transfer_toplevel(
         sink.emit_phase(dest, "verifying");
         let handle = sink.handle.clone();
         let cancelled = move || handle.cancel.load(Ordering::SeqCst);
-        let report = crate::core::verify::checksum_compare(source, dest, &cancelled);
+        let report = (engine.verify_copy_contents)(source, dest, &cancelled);
         for m in &report.mismatches {
             sink.item_error(
                 dest,
