@@ -91,6 +91,8 @@ const ACCENTS: Array<[string, string]> = [
   ["#e56ba5", "Pink"],
 ];
 
+const DEFAULT_ACCENT_PREVIEW = "#4f8ef7";
+
 function AppearancePane() {
   const s = useSettings();
   return (
@@ -116,7 +118,7 @@ function AppearancePane() {
                 "h-5 w-5 cursor-default rounded-full border",
                 s.accent === color ? "border-primary" : "border-edge",
               )}
-              style={{ background: color === "" ? "var(--accent)" : color }}
+              style={{ background: color === "" ? DEFAULT_ACCENT_PREVIEW : color }}
               onClick={() => s.patch({ accent: color })}
             />
           ))}
