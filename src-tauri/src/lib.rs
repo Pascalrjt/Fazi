@@ -175,6 +175,7 @@ pub fn run() {
             commands::macos::open_with_apps,
             commands::macos::share_services,
             commands::macos::share_perform,
+            commands::macos::share_picker,
             commands::macos::reveal_in_finder,
             commands::macos::quicklook_panel,
             commands::macos::get_tags,

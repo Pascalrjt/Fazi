@@ -427,6 +427,7 @@ export const COMMANDS = {
   openWithApps: "open_with_apps", // (path) -> AppCandidate[]
   shareServices: "share_services", // (paths) -> ShareServices
   sharePerform: "share_perform", // (generation, index, paths)
+  sharePicker: "share_picker", // (paths, x, y) — native NSSharingServicePicker at webview coords
   revealInFinder: "reveal_in_finder",
   getTags: "get_tags",
   setTags: "set_tags",

@@ -76,6 +76,25 @@ pub fn share_perform(
 }
 
 #[tauri::command]
+pub fn share_picker(
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+    x: f64,
+    y: f64,
+) -> Result<()> {
+    use tauri::Manager;
+    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let view_ptr = window.ns_view().map_err(|e| Error::msg(e.to_string()))? as usize;
+    // usize round-trip makes the closure Send; the view outlives the call
+    // (the window is alive for the duration of the synchronous on_main).
+    on_main(window.app_handle(), move || {
+        let view = unsafe { &*(view_ptr as *const objc2_app_kit::NSView) };
+        share::share_picker(view, &paths, x, y);
+    });
+    Ok(())
+}
+
+#[tauri::command]
 pub fn reveal_in_finder(app: AppHandle, paths: Vec<String>) {
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     on_main(&app, move || workspace::reveal_in_finder(&paths));

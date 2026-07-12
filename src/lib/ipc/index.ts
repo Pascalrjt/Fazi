@@ -275,6 +275,10 @@ export function sharePerform(
   return invoke(COMMANDS.sharePerform, { generation, index, paths });
 }
 
+export function sharePicker(paths: string[], x: number, y: number): Promise<void> {
+  return invoke(COMMANDS.sharePicker, { paths, x, y });
+}
+
 export function revealInFinder(paths: string[]): Promise<void> {
   return invoke(COMMANDS.revealInFinder, { paths });
 }

@@ -1,6 +1,6 @@
 /** Context-menu builders for file rows and pane empty areas. */
 import type { Entry } from "../../types/ipc";
-import type { MenuItem } from "../../stores/menu";
+import { lastMenuAnchor, type MenuItem } from "../../stores/menu";
 import * as actions from "../../lib/actions";
 import { useApp, toast } from "../../stores/app";
 import { usePanes, selectedEntries } from "../../stores/panes";
@@ -129,11 +129,19 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
     action: () => actions.trashSelection(),
   });
   items.push({ type: "separator" });
-  items.push({
-    type: "item",
-    label: "Share",
-    submenu: actions.shareMenuItems(entry),
-  });
+  if (useSettings.getState().nativeSharePicker) {
+    items.push({
+      type: "item",
+      label: "Share…",
+      action: () => actions.sharePickerAt(targets, lastMenuAnchor()),
+    });
+  } else {
+    items.push({
+      type: "item",
+      label: "Share",
+      submenu: actions.shareMenuItems(entry),
+    });
+  }
   items.push({ type: "item", label: "Tags", submenu: tagsSubmenu(targets) });
   items.push({
     type: "item",

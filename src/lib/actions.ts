@@ -426,9 +426,22 @@ export function shareMenuItems(entry: Entry): () => Promise<MenuItem[]> {
   };
 }
 
+/** Option B: the native NSSharingServicePicker, anchored at webview coords. */
+export function sharePickerAt(entries: Entry[], at: { x: number; y: number }): void {
+  void ipc
+    .sharePicker(entries.map((e) => e.path), at.x, at.y)
+    .catch((err) => {
+      toast(`Couldn't share: ${err}`, { danger: true });
+    });
+}
+
 export function showShareMenuAtCenter(): void {
   const entries = selectedEntries();
   if (entries.length === 0) return;
+  if (useSettings.getState().nativeSharePicker) {
+    sharePickerAt(entries, { x: window.innerWidth / 2, y: window.innerHeight / 3 });
+    return;
+  }
   void shareMenuItems(entries[0])().then((items) => {
     showMenu(window.innerWidth / 2 - 120, window.innerHeight / 3, items);
   });

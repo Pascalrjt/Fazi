@@ -297,6 +297,15 @@ function AdvancedPane() {
       >
         <Toggle checked={s.dragOutEnabled} onChange={(v) => s.setDragOutEnabled(v)} />
       </SettingRow>
+      <SettingRow
+        label="System share menu"
+        hint="Share opens the native macOS share picker instead of the built-in submenu."
+      >
+        <Toggle
+          checked={s.nativeSharePicker}
+          onChange={(v) => s.patch({ nativeSharePicker: v })}
+        />
+      </SettingRow>
       <SettingRow label="Per-directory view settings" hint="Coming later.">
         <Toggle checked={false} onChange={() => {}} disabled />
       </SettingRow>

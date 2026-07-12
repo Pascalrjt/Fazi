@@ -18,8 +18,9 @@ use std::path::PathBuf;
 use base64::Engine;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_app_kit::NSSharingService;
-use objc2_foundation::{NSArray, NSString, NSURL};
+use objc2::AllocAnyThread;
+use objc2_app_kit::{NSSharingService, NSSharingServicePicker, NSView};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSURL};
 use serde::Serialize;
 
 use super::icons::render_image_png;
@@ -84,6 +85,28 @@ pub fn share_services(paths: &[PathBuf]) -> ShareServices {
         c.0
     });
     ShareServices { generation, services }
+}
+
+// The picker must stay retained while its menu is on screen or it never
+// appears; replaced on the next show. Main-thread only, like LAST_SERVICES.
+thread_local! {
+    static LAST_PICKER: RefCell<Option<Retained<NSSharingServicePicker>>> =
+        const { RefCell::new(None) };
+}
+
+/// Show the native NSSharingServicePicker (settings opt-in, and the fallback
+/// if Apple ever breaks `sharingServicesForItems:`). `x`/`y` are CSS points
+/// in the webview (top-left origin); `view` is the window's content view.
+/// MUST run on the main thread.
+pub fn share_picker(view: &NSView, paths: &[PathBuf], x: f64, y: f64) {
+    let items = items_array(paths);
+    let picker =
+        unsafe { NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &items) };
+    let bounds = view.bounds();
+    let vy = if view.isFlipped() { y } else { bounds.size.height - y };
+    let rect = NSRect::new(NSPoint::new(x, vy), NSSize::new(1.0, 1.0));
+    picker.showRelativeToRect_ofView_preferredEdge(rect, view, NSRectEdge::MinY);
+    LAST_PICKER.with(|p| *p.borrow_mut() = Some(picker));
 }
 
 /// MUST run on the main thread. False if `generation` is no longer the

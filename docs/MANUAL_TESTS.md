@@ -138,6 +138,10 @@ phase done. Check items off per release.
       nothing selected; rebinding it in Settings → Keyboard works.
 - [ ] Open Share, dismiss, open again and pick a destination — still works
       (each open re-enumerates; a stale pick shows a toast, never a crash).
+- [ ] Advanced → "System share menu" on: right-click Share… opens the native
+      picker at the click point (correct in a resized window and with the
+      window on a second display); ⌘⇧S opens it centered; sharing works.
+      Toggle off restores the built-in submenu without a relaunch.
 
 ## Perf
 - [ ] 100k-file directory: first rows <50 ms, scrolling never hitches,
