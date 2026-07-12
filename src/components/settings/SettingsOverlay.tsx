@@ -134,6 +134,12 @@ function AppearancePane() {
           onChange={(v) => s.patch({ density: v as Density })}
         />
       </SettingRow>
+      <SettingRow
+        label="Alternating row colors"
+        hint="Stripe list rows to make them easier to follow."
+      >
+        <Toggle checked={s.zebraStripes} onChange={(v) => s.patch({ zebraStripes: v })} />
+      </SettingRow>
     </>
   );
 }

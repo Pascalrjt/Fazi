@@ -35,6 +35,8 @@ interface SettingsState {
   /** Custom accent CSS color; "" = the built-in accent. */
   accent: string;
   density: Density;
+  /** Finder-style alternating row colors in list view and search results. */
+  zebraStripes: boolean;
   // Keyboard
   keybindingOverrides: KeybindingOverrides;
   // Search
@@ -124,6 +126,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   theme: "system",
   accent: "",
   density: "normal",
+  zebraStripes: true,
   keybindingOverrides: {},
   searchContentsDefault: false,
   searchMaxResults: 10_000,
