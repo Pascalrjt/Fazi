@@ -4,9 +4,20 @@
  */
 import { useEffect, useState } from "react";
 import clsx from "clsx";
+import {
+  ArrowRightLeft,
+  Check,
+  Keyboard,
+  Palette,
+  PanelLeft,
+  Search,
+  Settings2,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import { useApp } from "../../stores/app";
 import { useSettings, type Density, type SidebarPosition, type Theme } from "../../stores/settings";
-import { NumberField, Segmented, SettingRow, Toggle } from "./controls";
+import { NumberField, Segmented, SettingRow, SettingsFilterContext, Toggle } from "./controls";
 import { KeyboardPane } from "./KeyboardPane";
 import type { SortDir, SortKey } from "../../lib/sort";
 
@@ -19,14 +30,14 @@ type PaneId =
   | "sidebar"
   | "advanced";
 
-const PANES: Array<[PaneId, string]> = [
-  ["general", "General"],
-  ["appearance", "Appearance"],
-  ["keyboard", "Keyboard"],
-  ["search", "Search"],
-  ["operations", "Operations"],
-  ["sidebar", "Sidebar"],
-  ["advanced", "Advanced"],
+const PANES: Array<[PaneId, string, LucideIcon]> = [
+  ["general", "General", Settings2],
+  ["appearance", "Appearance", Palette],
+  ["keyboard", "Keyboard", Keyboard],
+  ["search", "Search", Search],
+  ["operations", "Operations", ArrowRightLeft],
+  ["sidebar", "Sidebar", PanelLeft],
+  ["advanced", "Advanced", Wrench],
 ];
 
 function GeneralPane() {
@@ -115,12 +126,14 @@ function AppearancePane() {
               key={name}
               title={name}
               className={clsx(
-                "h-5 w-5 cursor-default rounded-full border",
+                "flex h-5 w-5 cursor-default items-center justify-center rounded-full border",
                 s.accent === color ? "border-primary" : "border-edge",
               )}
               style={{ background: color === "" ? DEFAULT_ACCENT_PREVIEW : color }}
               onClick={() => s.patch({ accent: color })}
-            />
+            >
+              {s.accent === color && <Check size={12} strokeWidth={2.5} className="text-white" />}
+            </button>
           ))}
         </div>
       </SettingRow>
@@ -302,10 +315,53 @@ function AdvancedPane() {
   );
 }
 
+/** One search-results group; hidden via CSS when every row filtered out. */
+function SearchSection({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section className="settings-section mb-4">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-tertiary">
+        {label}
+      </div>
+      <div className="divide-y divide-edge">{children}</div>
+    </section>
+  );
+}
+
+/** All SettingRow-based panes stacked; each row filters itself against the
+ *  query from SettingsFilterContext. The Keyboard pane (a recorder, not
+ *  SettingRows) is represented by a pointer row. */
+function SearchResults({ openPane }: { openPane: (pane: PaneId) => void }) {
+  return (
+    <>
+      <SearchSection label="General"><GeneralPane /></SearchSection>
+      <SearchSection label="Appearance"><AppearancePane /></SearchSection>
+      <SearchSection label="Keyboard">
+        <SettingRow label="Keyboard shortcuts" hint="Rebind command shortcuts.">
+          <button
+            className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov"
+            onClick={() => openPane("keyboard")}
+          >
+            Open Keyboard settings
+          </button>
+        </SettingRow>
+      </SearchSection>
+      <SearchSection label="Search"><SearchPane /></SearchSection>
+      <SearchSection label="Operations"><OperationsPane /></SearchSection>
+      <SearchSection label="Sidebar"><SidebarPane /></SearchSection>
+      <SearchSection label="Advanced"><AdvancedPane /></SearchSection>
+      <div className="settings-empty pt-6 text-center text-[12px] text-tertiary">
+        No matching settings
+      </div>
+    </>
+  );
+}
+
 export function SettingsOverlay() {
   const open = useApp((s) => s.settingsOpen);
   const setOpen = useApp((s) => s.setSettingsOpen);
   const [pane, setPane] = useState<PaneId>("general");
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
 
   useEffect(() => {
     if (!open) return;
@@ -313,12 +369,14 @@ export function SettingsOverlay() {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setOpen(false);
+        // Esc clears an active search first; a second press closes.
+        if (query !== "") setQuery("");
+        else setOpen(false);
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, setOpen]);
+  }, [open, setOpen, query]);
 
   if (!open) return null;
 
@@ -335,27 +393,57 @@ export function SettingsOverlay() {
       >
         <div className="w-[160px] shrink-0 border-r border-edge bg-window p-2">
           <div className="px-2 py-1.5 text-[13px] font-semibold text-primary">Settings</div>
-          {PANES.map(([id, label]) => (
+          <div className="mb-2 flex h-7 items-center gap-1.5 rounded-md border border-edge bg-pane px-2">
+            <Search size={12} strokeWidth={1.75} className="shrink-0 text-tertiary" />
+            <input
+              value={query}
+              placeholder="Search"
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              className="w-full bg-transparent text-xs text-primary outline-none placeholder:text-tertiary"
+              spellCheck={false}
+            />
+          </div>
+          {PANES.map(([id, label, Icon]) => (
             <button
               key={id}
               className={clsx(
-                "block w-full cursor-default rounded-md px-2 py-1.5 text-left text-[13px]",
-                pane === id ? "bg-accent-dim text-primary" : "text-secondary hover:bg-hov",
+                "flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]",
+                pane === id && q === ""
+                  ? "bg-accent-dim text-primary"
+                  : "text-secondary hover:bg-hov",
               )}
-              onClick={() => setPane(id)}
+              onClick={() => {
+                setQuery("");
+                setPane(id);
+              }}
             >
+              <Icon size={14} strokeWidth={1.75} className="shrink-0" />
               {label}
             </button>
           ))}
         </div>
-        <div className="min-w-0 flex-1 overflow-y-auto p-5">
-          {pane === "general" && <GeneralPane />}
-          {pane === "appearance" && <AppearancePane />}
-          {pane === "keyboard" && <KeyboardPane />}
-          {pane === "search" && <SearchPane />}
-          {pane === "operations" && <OperationsPane />}
-          {pane === "sidebar" && <SidebarPane />}
-          {pane === "advanced" && <AdvancedPane />}
+        <div className="settings-body min-w-0 flex-1 overflow-y-auto p-5">
+          <SettingsFilterContext.Provider value={q}>
+            {q !== "" ? (
+              <SearchResults
+                openPane={(p) => {
+                  setQuery("");
+                  setPane(p);
+                }}
+              />
+            ) : (
+              <div className="divide-y divide-edge">
+                {pane === "general" && <GeneralPane />}
+                {pane === "appearance" && <AppearancePane />}
+                {pane === "keyboard" && <KeyboardPane />}
+                {pane === "search" && <SearchPane />}
+                {pane === "operations" && <OperationsPane />}
+                {pane === "sidebar" && <SidebarPane />}
+                {pane === "advanced" && <AdvancedPane />}
+              </div>
+            )}
+          </SettingsFilterContext.Provider>
         </div>
       </div>
     </div>

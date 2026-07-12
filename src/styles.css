@@ -359,3 +359,13 @@ textarea {
   outline-offset: -1px;
   border-radius: 5px;
 }
+
+/* Settings search: rows filter themselves (SettingsFilterContext), so hide
+   result sections whose rows all filtered out, and show the "No matching
+   settings" note only when nothing matched anywhere. */
+.settings-section:not(:has(.settings-row)) {
+  display: none;
+}
+.settings-body:has(.settings-row) .settings-empty {
+  display: none;
+}
