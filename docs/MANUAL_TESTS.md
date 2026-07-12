@@ -143,6 +143,22 @@ phase done. Check items off per release.
       window on a second display); ⌘⇧S opens it centered; sharing works.
       Toggle off restores the built-in submenu without a relaunch.
 
+## Open With → Set Default
+- [ ] Right-click a .pdf → Open With: bottom shows "Set Default for .pdf
+      Files…" with the same app list; the current default is disabled.
+      Picking another app toasts, and both a re-opened Open With menu and
+      Finder's Get Info → "Open with" reflect the new default for all PDFs.
+      (Restore your real default afterwards.)
+- [ ] Double-clicking any .pdf (in Fazi and in Finder) now launches the
+      newly chosen app.
+- [ ] Extensionless file with a known content type (e.g. a Makefile): the
+      item reads "Set Default for This File Type…" and works.
+- [ ] Plain folder → Open With has no Set Default section; a package
+      (.app or .rtfd) still shows it.
+- [ ] Pick an app that can't own the type or simulate failure — error
+      surfaces as a "Couldn't change default" toast, never a hang (10 s
+      timeout).
+
 ## Perf
 - [ ] 100k-file directory: first rows <50 ms, scrolling never hitches,
       sort settles once, filter-as-you-type stays instant.

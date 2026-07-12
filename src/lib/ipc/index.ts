@@ -263,6 +263,10 @@ export function openWithApps(path: string): Promise<AppCandidate[]> {
   return invoke(COMMANDS.openWithApps, { path });
 }
 
+export function setDefaultApp(path: string, appPath: string): Promise<void> {
+  return invoke(COMMANDS.setDefaultApp, { path, appPath });
+}
+
 export function shareServices(paths: string[]): Promise<ShareServices> {
   return invoke(COMMANDS.shareServices, { paths });
 }

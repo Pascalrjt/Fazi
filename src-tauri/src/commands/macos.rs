@@ -54,6 +54,19 @@ pub fn open_with_apps(
 }
 
 #[tauri::command]
+pub fn set_default_app(app: AppHandle, path: String, app_path: String) -> Result<()> {
+    let p = PathBuf::from(&path);
+    let target = PathBuf::from(app_path);
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    on_main(&app, move || workspace::set_default_app_for_type(&p, &target, tx));
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(Error::msg(msg)),
+        Err(_) => Err(Error::msg("timed out changing the default app")),
+    }
+}
+
+#[tauri::command]
 pub fn share_services(app: AppHandle, paths: Vec<String>) -> share::ShareServices {
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     on_main(&app, move || share::share_services(&paths))

@@ -381,6 +381,32 @@ export function openWithMenuItems(entry: Entry): () => Promise<MenuItem[]> {
           });
         },
       }));
+      // Per-type default (Finder's "Change All…") makes no sense for plain
+      // folders — public.folder would retarget every folder on the system.
+      if (entry.kind !== "dir" || entry.isPackage) {
+        const typeLabel = entry.ext ? `.${entry.ext} files` : "files of this type";
+        items.push({ type: "separator" });
+        items.push({
+          type: "item",
+          label: `Set Default for ${entry.ext ? `.${entry.ext} Files` : "This File Type"}…`,
+          submenu: apps.map(
+            (app): MenuItem => ({
+              type: "item",
+              label: app.name,
+              icon: iconUrl(app.icon, 32),
+              disabled: app.isDefault,
+              action: () => {
+                void ipc
+                  .setDefaultApp(entry.path, app.path)
+                  .then(() => toast(`${app.name} is now the default for ${typeLabel}`))
+                  .catch((err) => {
+                    toast(`Couldn't change default: ${err}`, { danger: true });
+                  });
+              },
+            }),
+          ),
+        });
+      }
       return items;
     } catch (err) {
       return [{ type: "item", label: `Unavailable: ${err}`, disabled: true }];

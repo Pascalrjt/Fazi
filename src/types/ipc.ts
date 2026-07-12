@@ -425,6 +425,7 @@ export const COMMANDS = {
   openPaths: "open_paths",
   openWith: "open_with", // (paths, appPath)
   openWithApps: "open_with_apps", // (path) -> AppCandidate[]
+  setDefaultApp: "set_default_app", // (path, appPath) — default for path's content type (Finder "Change All…")
   shareServices: "share_services", // (paths) -> ShareServices
   sharePerform: "share_perform", // (generation, index, paths)
   sharePicker: "share_picker", // (paths, x, y) — native NSSharingServicePicker at webview coords

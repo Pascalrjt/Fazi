@@ -173,6 +173,7 @@ pub fn run() {
             commands::macos::open_paths,
             commands::macos::open_with,
             commands::macos::open_with_apps,
+            commands::macos::set_default_app,
             commands::macos::share_services,
             commands::macos::share_perform,
             commands::macos::share_picker,
