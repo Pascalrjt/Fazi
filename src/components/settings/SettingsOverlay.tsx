@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { useApp } from "../../stores/app";
-import { useSettings, type Density, type Theme } from "../../stores/settings";
+import { useSettings, type Density, type SidebarPosition, type Theme } from "../../stores/settings";
 import { NumberField, Segmented, SettingRow, Toggle } from "./controls";
 import { KeyboardPane } from "./KeyboardPane";
 import type { SortDir, SortKey } from "../../lib/sort";
@@ -91,6 +91,8 @@ const ACCENTS: Array<[string, string]> = [
   ["#e56ba5", "Pink"],
 ];
 
+const DEFAULT_ACCENT_PREVIEW = "#4f8ef7";
+
 function AppearancePane() {
   const s = useSettings();
   return (
@@ -116,7 +118,7 @@ function AppearancePane() {
                 "h-5 w-5 cursor-default rounded-full border",
                 s.accent === color ? "border-primary" : "border-edge",
               )}
-              style={{ background: color === "" ? "var(--accent)" : color }}
+              style={{ background: color === "" ? DEFAULT_ACCENT_PREVIEW : color }}
               onClick={() => s.patch({ accent: color })}
             />
           ))}
@@ -217,6 +219,16 @@ function SidebarPane() {
   const s = useSettings();
   return (
     <>
+      <SettingRow label="Position" hint="Which edge of the window the sidebar docks to.">
+        <Segmented
+          value={s.sidebarPosition}
+          options={[
+            ["left", "Left"],
+            ["right", "Right"],
+          ]}
+          onChange={(v) => s.patch({ sidebarPosition: v as SidebarPosition })}
+        />
+      </SettingRow>
       <SettingRow label="Show Trash in sidebar">
         <Toggle checked={s.showTrashInSidebar} onChange={(v) => s.patch({ showTrashInSidebar: v })} />
       </SettingRow>

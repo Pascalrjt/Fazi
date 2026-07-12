@@ -139,6 +139,9 @@ body {
   color: var(--text-primary);
   background: transparent; /* window may be transparent; app root paints */
   -webkit-font-smoothing: antialiased;
+  /* WKWebView needs the -webkit- prefix; the dev server does not
+     auto-prefix (only the production Lightning CSS pass does). */
+  -webkit-user-select: none;
   user-select: none;
   cursor: default;
 }
@@ -169,6 +172,7 @@ body {
 
 input,
 textarea {
+  -webkit-user-select: text;
   user-select: text;
 }
 

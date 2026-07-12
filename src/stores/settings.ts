@@ -6,6 +6,7 @@ import type { SortDir, SortKey } from "../lib/sort";
 export type ViewMode = "list" | "grid";
 export type Theme = "system" | "light" | "dark";
 export type Density = "normal" | "compact";
+export type SidebarPosition = "left" | "right";
 
 /** A user-pinned sidebar folder (defaults live in useVolumes, not here). */
 export interface FavoriteFolder {
@@ -59,6 +60,8 @@ interface SettingsState {
   // Sidebar
   favorites: FavoriteFolder[];
   showTrashInSidebar: boolean;
+  /** Which edge of the window the sidebar docks to. */
+  sidebarPosition: SidebarPosition;
   // Advanced
   /** Lazy folder sizes in list view (M7) — explicitly approximate. */
   showFolderSizes: boolean;
@@ -81,9 +84,11 @@ interface SettingsState {
   resetToDefaults(): void;
   /**
    * Pin folders, skipping paths already pinned or matching a default sidebar
-   * row (`defaultPaths`). Returns how many were actually added.
+   * row (`defaultPaths`) — duplicates are skipped, never moved. `atIndex`
+   * inserts the fresh items there (clamped; omitted = append). Returns how
+   * many were actually added.
    */
-  addFavorites(items: FavoriteFolder[], defaultPaths: string[]): number;
+  addFavorites(items: FavoriteFolder[], defaultPaths: string[], atIndex?: number): number;
   removeFavorite(path: string): void;
   moveFavorite(path: string, toIndex: number): void;
 }
@@ -128,6 +133,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   opCardAutoHideMs: 4000,
   favorites: [],
   showTrashInSidebar: true,
+  sidebarPosition: "left",
   showFolderSizes: false,
   dragOutEnabled: true,
 };
@@ -167,7 +173,7 @@ export const useSettings = create<SettingsState>()(
         set({ ...SETTINGS_DEFAULTS, favorites });
       },
 
-      addFavorites: (items, defaultPaths) => {
+      addFavorites: (items, defaultPaths, atIndex) => {
         const taken = new Set([
           ...get().favorites.map((f) => f.path),
           ...defaultPaths,
@@ -179,7 +185,17 @@ export const useSettings = create<SettingsState>()(
           fresh.push(item);
         }
         if (fresh.length > 0) {
-          set((s) => ({ favorites: [...s.favorites, ...fresh] }));
+          set((s) => {
+            // The index was captured at drop time but resolution is async
+            // (statPath) — the list may have changed by now, so clamp.
+            const at =
+              atIndex == null
+                ? s.favorites.length
+                : Math.max(0, Math.min(atIndex, s.favorites.length));
+            const next = [...s.favorites];
+            next.splice(at, 0, ...fresh);
+            return { favorites: next };
+          });
         }
         return fresh.length;
       },

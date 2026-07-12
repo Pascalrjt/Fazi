@@ -1,4 +1,5 @@
 /** Designed pane states: empty folder, permission denied, error, loading. */
+import { Lock, TriangleAlert } from "lucide-react";
 import type { ListErrorCode } from "../../types/ipc";
 import * as ipc from "../../lib/ipc";
 import { newFolderInActive, pasteIntoActive } from "../../lib/actions";
@@ -56,7 +57,7 @@ export function ListingError({
   if (code === "permissionDenied") {
     return (
       <Shell>
-        <div className="text-3xl text-tertiary">🔒</div>
+        <Lock size={30} strokeWidth={1.5} className="text-tertiary" aria-hidden />
         <div className="text-[13px] font-medium text-primary">You don't have permission to see this folder</div>
         <div className="max-w-[360px] text-xs text-secondary">
           Grant Fazi Full Disk Access in System Settings to browse protected locations.
@@ -79,7 +80,7 @@ export function ListingError({
   }
   return (
     <Shell>
-      <div className="text-3xl text-danger">⚠</div>
+      <TriangleAlert size={30} strokeWidth={1.5} className="text-danger" aria-hidden />
       <div className="text-[13px] font-medium text-primary">Couldn't open this folder</div>
       <div className="max-w-[360px] break-all text-xs text-secondary">{message}</div>
     </Shell>

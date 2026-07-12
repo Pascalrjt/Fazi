@@ -4,7 +4,8 @@
  * and tauri-plugin-drag starts native drag-OUT sessions.
  *
  * Drag-in (Finder → Fazi): drops are hit-tested against the DropZone
- * registry; files are copied (or trashed, for the Trash zone).
+ * registry; files are copied (or trashed for the Trash zone, or pinned to
+ * Favorites for pin zones). Enter/over events feed pin-hover feedback.
  *
  * Drag-out (Fazi → anywhere): rows start a native session via startDrag.
  * A session dropped back on our own window (self-drop) becomes an internal
@@ -22,14 +23,17 @@ import {
   beginNativeDragState,
   dispatchNativeSelfDrop,
   dragImageDataUrl,
+  emitPinHover,
   endNativeDragState,
   hitTestDropZones,
+  htmlDragInFlight,
   markNativeDropHandled,
   nativeDragPathsNow,
   wasNativeDropHandled,
 } from "../dnd";
 import { useOps } from "../../stores/ops";
 import { trashPathsWithUndo } from "../actions";
+import { pinFolders } from "../pin";
 
 /**
  * Start listening for files dropped onto the window — from Finder (or any
@@ -40,10 +44,25 @@ export async function setupFinderDragIn(): Promise<() => void> {
   try {
     const webview = getCurrentWebview();
     return await webview.onDragDropEvent((event) => {
+      const scale = window.devicePixelRatio || 1;
+      // "enter" and "over" both carry a position — handle them identically
+      // so the pin insertion line appears the moment the drag enters the
+      // window, not on the first subsequent move.
+      if (event.payload.type === "enter" || event.payload.type === "over") {
+        if (htmlDragInFlight()) return; // HTML5 drags own their own feedback
+        const { position } = event.payload;
+        const hover = hitTestDropZones(position.x / scale, position.y / scale);
+        emitPinHover(hover?.action === "pin" ? hover.index : null);
+        return;
+      }
+      if (event.payload.type === "leave") {
+        emitPinHover(null);
+        return;
+      }
       if (event.payload.type !== "drop") return;
+      emitPinHover(null);
       const { paths, position } = event.payload;
       if (paths.length === 0) return;
-      const scale = window.devicePixelRatio || 1;
       const clientX = position.x / scale;
       const clientY = position.y / scale;
       const hit = hitTestDropZones(clientX, clientY);
@@ -57,6 +76,11 @@ export async function setupFinderDragIn(): Promise<() => void> {
         return;
       }
 
+      if (hit.action === "pin") {
+        // Folders dragged in from Finder pin at the hovered slot.
+        void pinFolders(paths, hit.index);
+        return;
+      }
       if (hit.action === "trash") {
         // Trash drops are a special action, never a copy into ~/.Trash.
         trashPathsWithUndo(paths);

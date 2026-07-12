@@ -195,10 +195,11 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         if (!el) return null;
         const r = el.getBoundingClientRect();
         if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
-        return (
-          usePanes.getState().panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId)
-            ?.path ?? null
-        );
+        const dest = usePanes
+          .getState()
+          .panes.find((p) => p.id === paneId)
+          ?.tabs.find((t) => t.id === tabId)?.path;
+        return dest != null ? { action: "copyTo", destDir: dest } : null;
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

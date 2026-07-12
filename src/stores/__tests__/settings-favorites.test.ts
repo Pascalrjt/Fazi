@@ -65,6 +65,54 @@ describe("addFavorites", () => {
   });
 });
 
+describe("addFavorites at index", () => {
+  beforeEach(() => {
+    useSettings.getState().addFavorites(
+      [
+        { path: "/p/A", name: "A" },
+        { path: "/p/B", name: "B" },
+      ],
+      [],
+    );
+  });
+
+  it("inserts at 0 (prepend)", () => {
+    useSettings.getState().addFavorites([{ path: "/p/X", name: "X" }], [], 0);
+    expect(paths()).toEqual(["/p/X", "/p/A", "/p/B"]);
+  });
+
+  it("inserts at a middle index", () => {
+    useSettings.getState().addFavorites([{ path: "/p/X", name: "X" }], [], 1);
+    expect(paths()).toEqual(["/p/A", "/p/X", "/p/B"]);
+  });
+
+  it("clamps out-of-range and negative indices", () => {
+    useSettings.getState().addFavorites([{ path: "/p/X", name: "X" }], [], 99);
+    expect(paths()).toEqual(["/p/A", "/p/B", "/p/X"]);
+    useSettings.getState().addFavorites([{ path: "/p/Y", name: "Y" }], [], -5);
+    expect(paths()).toEqual(["/p/Y", "/p/A", "/p/B", "/p/X"]);
+  });
+
+  it("skips dupes (never moves them) and inserts fresh items contiguously", () => {
+    const added = useSettings.getState().addFavorites(
+      [
+        { path: "/p/B", name: "B" }, // already pinned — stays at its slot
+        { path: "/p/X", name: "X" },
+        { path: "/p/Y", name: "Y" },
+      ],
+      [],
+      1,
+    );
+    expect(added).toBe(2);
+    expect(paths()).toEqual(["/p/A", "/p/X", "/p/Y", "/p/B"]);
+  });
+
+  it("omitted index appends", () => {
+    useSettings.getState().addFavorites([{ path: "/p/X", name: "X" }], []);
+    expect(paths()).toEqual(["/p/A", "/p/B", "/p/X"]);
+  });
+});
+
 describe("removeFavorite", () => {
   it("removes by path", () => {
     useSettings.getState().addFavorites(
