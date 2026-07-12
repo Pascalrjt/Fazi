@@ -25,8 +25,9 @@ real progress and kill-safety.
 - **Multi-select as a first-class citizen** — click/⇧/⌘/marquee/type-ahead;
   every operation takes the whole selection
 - Tabs + dual pane, spacebar previews (Quick Look's renderer), streamed
-  mdfind search, Finder tags, Open With, real pasteboard interop both
-  directions, iCloud awareness, live FSEvents updates
+  mdfind search (filename or contents), Finder tags, Open With, real
+  pasteboard interop both directions, Trash with Empty Trash, live FSEvents
+  updates
 - **100k-entry directories** — two-stage streamed listing, first paint <50 ms
 
 ## Development
@@ -35,7 +36,7 @@ real progress and kill-safety.
 npm install
 npm run tauri dev      # run the app
 npm test               # frontend tests (vitest)
-cargo test             # Rust tests, in src-tauri/ (46 tests incl. ops engine)
+cargo test             # Rust tests, in src-tauri/ (incl. ops-engine e2e)
 npm run tauri build    # release build (DMG)
 ```
 
@@ -47,7 +48,7 @@ signing identity.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — process split, IPC
   contract, ops engine design, webview threat model
 - [`docs/MACOS_NOTES.md`](docs/MACOS_NOTES.md) — TCC, packages, aliases,
-  iCloud, case-insensitivity, known infeasibilities
+  dataless files, case-insensitivity, known infeasibilities
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — phases and open items
 - [`docs/MANUAL_TESTS.md`](docs/MANUAL_TESTS.md) — real-device checklist
 

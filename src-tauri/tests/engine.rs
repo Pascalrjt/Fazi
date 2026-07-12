@@ -11,9 +11,11 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use fazi_lib::core::journal::Journal;
 use fazi_lib::core::op_queue::{
-    spawn_duplicate, spawn_op, Engine, OpArgs, OpEmitter, OpEvent, OpKind, Policy,
+    spawn_duplicate, spawn_op, CopyVerifier, Engine, InvalidateFuzzy, OpArgs, OpEmitter, OpEvent,
+    OpKind, Policy,
 };
 use fazi_lib::core::undo::UndoStack;
+use fazi_lib::core::verify::ChecksumReport;
 use fazi_lib::core::walker::{is_staging_name, DirTrasher, Resolution, Trasher};
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,44 @@ fn env(name: &str) -> Env {
 
 /// Like `env`, but with a custom trasher (defaults to `DirTrasher`).
 fn env_with(name: &str, trasher: Option<Arc<dyn Trasher>>) -> Env {
+    env_with_verifier(
+        name,
+        trasher,
+        Arc::new(|src, dst, cancelled| {
+            fazi_lib::core::verify::checksum_compare(src, dst, cancelled)
+        }),
+    )
+}
+
+/// Like `env_with`, but with an injected copy verifier (defaults to the real
+/// `checksum_compare`).
+fn env_with_verifier(
+    name: &str,
+    trasher: Option<Arc<dyn Trasher>>,
+    verifier: CopyVerifier,
+) -> Env {
+    env_full(name, trasher, verifier, Arc::new(|_| {}))
+}
+
+/// Like `env`, but with an injected fuzzy invalidator (defaults to a no-op).
+fn env_with_invalidator(name: &str, invalidator: InvalidateFuzzy) -> Env {
+    env_full(
+        name,
+        None,
+        Arc::new(|src, dst, cancelled| {
+            fazi_lib::core::verify::checksum_compare(src, dst, cancelled)
+        }),
+        invalidator,
+    )
+}
+
+/// The single Engine construction point every `env*` builder routes through.
+fn env_full(
+    name: &str,
+    trasher: Option<Arc<dyn Trasher>>,
+    verifier: CopyVerifier,
+    invalidator: InvalidateFuzzy,
+) -> Env {
     let root = std::env::temp_dir().join(format!("fazi-engine-{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -83,6 +123,8 @@ fn env_with(name: &str, trasher: Option<Arc<dyn Trasher>>) -> Env {
         ops: DashMap::new(),
         volume_locks: DashMap::new(),
         icon_token: Arc::new(|_, _| String::new()),
+        verify_copy_contents: verifier,
+        invalidate_fuzzy: invalidator,
     });
     Env { root, engine, trash_dir }
 }
@@ -220,6 +262,7 @@ fn copy_folder_preserves_content_metadata_and_reports() {
             sources: vec![src.clone()],
             dest_dir: dst.clone(),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -272,6 +315,7 @@ fn same_volume_move_is_instant_rename() {
             sources: vec![src.clone()],
             dest_dir: dst.clone(),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -304,6 +348,7 @@ fn undo_inversion_restores_tree() {
             sources: vec![src.clone()],
             dest_dir: dst.clone(),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -351,6 +396,7 @@ fn conflict_ask_keep_both_and_apply_to_all() {
             sources: vec![srcdir.join("a.txt"), srcdir.join("b.txt")],
             dest_dir: dst.clone(),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -405,6 +451,7 @@ fn replace_policy_trashes_original_and_is_not_undoable() {
             sources: vec![srcdir.join("doc.txt")],
             dest_dir: dst.clone(),
             policy: Policy::Replace,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -442,6 +489,7 @@ fn dir_merge_combines_and_prompts_file_level_lazily() {
             sources: vec![srcdir.join("Project")],
             dest_dir: dst.clone(),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -509,6 +557,7 @@ fn case_insensitive_collision_detected() {
             sources: vec![srcdir.join("README.txt")],
             dest_dir: dst.clone(),
             policy: Policy::Skip, // collision must be detected → skipped
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -549,6 +598,7 @@ fn cancel_mid_op_leaves_no_staging_and_source_untouched() {
             sources: vec![src.join("collide.txt"), bulk.clone()],
             dest_dir: dst.clone(),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -648,6 +698,7 @@ fn partial_batch_failure_continues_and_undo_covers_only_successes() {
             sources: vec![missing.clone(), srcdir.join("good.txt")],
             dest_dir: dst.clone(),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -730,6 +781,7 @@ fn move_replace_same_volume_never_registers_source_in_staging() {
             sources: vec![srcdir.join("doc.txt")],
             dest_dir: dst.clone(),
             policy: Policy::Replace,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -827,6 +879,7 @@ fn post_swap_trash_failure_replaces_and_strands_old_original() {
                 sources: vec![srcdir.join("doc.txt")],
                 dest_dir: dst.clone(),
                 policy: Policy::Replace,
+            verify: false,
             },
             Arc::new(emitter.clone()),
         );
@@ -874,6 +927,7 @@ fn post_swap_trash_failure_replaces_and_strands_old_original() {
                 sources: vec![srcdir.join("doc.txt")],
                 dest_dir: dst.clone(),
                 policy: Policy::Replace,
+            verify: false,
             },
             Arc::new(emitter.clone()),
         );
@@ -914,6 +968,7 @@ fn staged_trash_failure_moves_leftover_out_of_staging() {
             sources: vec![srcdir.join("doc.txt")],
             dest_dir: dst.clone(),
             policy: Policy::Replace,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -989,6 +1044,7 @@ fn journal_write_failure_aborts_before_any_fs_mutation() {
                 sources: vec![src.clone()],
                 dest_dir: dst.clone(),
                 policy: Policy::Ask,
+            verify: false,
             },
             Arc::new(emitter.clone()),
         );
@@ -1065,6 +1121,7 @@ fn move_into_itself_is_rejected_per_item() {
             sources: vec![src.clone()],
             dest_dir: src.join("inner"),
             policy: Policy::Ask,
+            verify: false,
         },
         Arc::new(emitter.clone()),
     );
@@ -1073,5 +1130,148 @@ fn move_into_itself_is_rejected_per_item() {
     assert_eq!(status, "failed");
     assert!(produced.is_empty());
     assert!(src.exists());
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+#[test]
+fn verified_copy_emits_verifying_phase_and_succeeds_clean() {
+    let env = env("verifycopy");
+    let src = env.root.join("src");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("a.txt"), b"alpha").unwrap();
+    std::fs::write(src.join("sub/b.bin"), vec![9u8; 64 * 1024]).unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("link")).unwrap();
+    let dst = env.root.join("dst");
+    std::fs::create_dir_all(&dst).unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-verify".into(),
+            kind: OpKind::Copy,
+            sources: vec![src.clone()],
+            dest_dir: dst.clone(),
+            policy: Policy::Ask,
+            verify: true,
+        },
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, produced, undoable) = done_status(&events);
+    assert_eq!(status, "success");
+    assert_eq!(produced.len(), 1);
+    assert!(undoable);
+    // The wire-level phase announced the checksum pass.
+    let saw_verifying = events.iter().any(|e| {
+        matches!(e, OpEvent::Progress { phase: Some(p), .. } if *p == "verifying")
+    });
+    assert!(saw_verifying, "expected a phase=verifying Progress event");
+    // And the copy verified clean end-to-end.
+    assert_eq!(std::fs::read(dst.join("src/a.txt")).unwrap(), b"alpha");
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+#[test]
+fn checksum_mismatch_keeps_copy_reports_partial_and_remains_undoable() {
+    let env = env_with_verifier(
+        "verify-mismatch",
+        None,
+        Arc::new(|_, _, _| ChecksumReport {
+            mismatches: vec!["data.bin: BLAKE3 checksum differs".into()],
+            cancelled: false,
+        }),
+    );
+    let src_dir = env.root.join("src");
+    let dst = env.root.join("dst");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    let source = src_dir.join("data.bin");
+    std::fs::write(&source, b"content").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-verify-mismatch".into(),
+            kind: OpKind::Copy,
+            sources: vec![source],
+            dest_dir: dst.clone(),
+            policy: Policy::Ask,
+            verify: true,
+        },
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, produced, undoable) = done_status(&events);
+    // A mismatch is a per-item error: op → partial, but the suspect copy
+    // stays on disk AND in `produced`, and the op remains undoable.
+    assert_eq!(status, "partial");
+    assert!(undoable);
+    assert_eq!(produced, vec![dst.join("data.bin").to_string_lossy().into_owned()]);
+    assert!(dst.join("data.bin").exists());
+    let saw_verifying = events.iter().any(|e| {
+        matches!(e, OpEvent::Progress { phase: Some(p), .. } if *p == "verifying")
+    });
+    assert!(saw_verifying, "expected a phase=verifying Progress event");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        OpEvent::ItemError { message, .. }
+            if message.contains("copy kept for inspection; Undo removes it")
+    )));
+
+    // ⌘Z removes the suspect copy.
+    env.engine
+        .undo
+        .lock()
+        .unwrap()
+        .undo(env.engine.trasher.as_ref())
+        .unwrap()
+        .expect("mismatch copy should be undoable");
+    assert!(!dst.join("data.bin").exists());
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+#[test]
+fn streamed_copy_reports_touched_paths_to_fuzzy_invalidator() {
+    let recorded: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = recorded.clone();
+    let env = env_with_invalidator(
+        "fuzzy-invalidate",
+        Arc::new(move |paths: &[PathBuf]| {
+            sink.lock().unwrap().extend(paths.iter().cloned());
+        }),
+    );
+    let src_dir = env.root.join("src");
+    let dst = env.root.join("dst");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    let source = src_dir.join("a.txt");
+    std::fs::write(&source, b"alpha").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-fuzzy-invalidate".into(),
+            kind: OpKind::Copy,
+            sources: vec![source.clone()],
+            dest_dir: dst.clone(),
+            policy: Policy::Ask,
+            verify: false,
+        },
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, _, _) = done_status(&events);
+    assert_eq!(status, "success");
+
+    // The epilogue reported source + produced dest before Done.
+    let touched = recorded.lock().unwrap().clone();
+    assert!(touched.contains(&source), "sources missing from invalidation: {touched:?}");
+    assert!(
+        touched.contains(&dst.join("a.txt")),
+        "produced dest missing from invalidation: {touched:?}"
+    );
     std::fs::remove_dir_all(&env.root).ok();
 }

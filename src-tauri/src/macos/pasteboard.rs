@@ -88,3 +88,33 @@ pub fn existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .filter(|p: &PathBuf| Path::new(p).symlink_metadata().is_ok())
         .collect()
 }
+
+/// Read an image off the general pasteboard as PNG bytes: native PNG data if
+/// present, else TIFF re-encoded through NSBitmapImageRep. Main thread only.
+pub fn read_image_png() -> Option<Vec<u8>> {
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSPasteboardTypePNG, NSPasteboardTypeTIFF,
+    };
+    let pb = unsafe { NSPasteboard::generalPasteboard() };
+    if let Some(png) = unsafe { pb.dataForType(NSPasteboardTypePNG) } {
+        return Some(png.to_vec());
+    }
+    let tiff = unsafe { pb.dataForType(NSPasteboardTypeTIFF) }?;
+    let rep = NSBitmapImageRep::imageRepWithData(&tiff)?;
+    let props = NSDictionary::new();
+    let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props) }?;
+    Some(png.to_vec())
+}
+
+/// Read plain text off the general pasteboard. Main thread only.
+pub fn read_string() -> Option<String> {
+    use objc2_app_kit::NSPasteboardTypeString;
+    let pb = unsafe { NSPasteboard::generalPasteboard() };
+    let s = unsafe { pb.stringForType(NSPasteboardTypeString) }?;
+    let text = s.to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}

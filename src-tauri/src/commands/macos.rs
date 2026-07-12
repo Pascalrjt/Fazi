@@ -1,5 +1,5 @@
 //! macOS-integration commands: open/Open With/reveal, tags, Get Info,
-//! volumes, pasteboard, Quick Look escape hatch, previews, iCloud, FDA.
+//! volumes, pasteboard, Quick Look escape hatch, previews, FDA.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use tauri::{AppHandle, State};
 use crate::core::tags::{read_tags, write_tags, FinderTag};
 use crate::error::{Error, Result};
 use crate::macos::main_thread::on_main;
-use crate::macos::{icloud, pasteboard, volumes, workspace};
+use crate::macos::{pasteboard, volumes, workspace};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -218,7 +218,6 @@ pub struct DefaultFolders {
     pub music: String,
     pub movies: String,
     pub applications: String,
-    pub icloud_drive: Option<String>,
     pub trash: String,
 }
 
@@ -233,7 +232,6 @@ pub fn default_folders() -> DefaultFolders {
         music: format!("{home}/Music"),
         movies: format!("{home}/Movies"),
         applications: "/Applications".into(),
-        icloud_drive: icloud::icloud_drive_path(),
         trash: format!("{home}/.Trash"),
         home,
     }
@@ -341,23 +339,4 @@ pub fn read_text_head(path: String, max_bytes: u64) -> Result<TextPreview> {
         truncated: (buf.len() as u64) < total,
         total_bytes: total,
     })
-}
-
-// ---------------------------------------------------------------------------
-// iCloud
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub fn download_icloud(paths: Vec<String>) -> Result<()> {
-    let mut errors = Vec::new();
-    for p in &paths {
-        if let Err(e) = icloud::start_download(Path::new(p)) {
-            errors.push(format!("{p}: {e}"));
-        }
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::msg(errors.join("\n")))
-    }
 }

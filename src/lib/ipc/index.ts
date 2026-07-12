@@ -11,16 +11,23 @@ import {
   type ConflictPolicy,
   type DefaultFolders,
   type DirSizeEvent,
+  type EmptyTrashEvent,
   type Entry,
   type FinderTag,
+  type FuzzyEvent,
+  type FuzzyIndexStatus,
+  type FuzzyQueryArgs,
   type GetInfoResult,
+  type HydrateItem,
   type InterruptedOp,
   type ListEvent,
   type OpEvent,
   type PasteboardContents,
   type ConflictResponse,
+  type SearchArgs,
   type SearchEvent,
   type TextPreview,
+  type TrashStats,
   type UndoDescription,
   type UndoResult,
   type Volume,
@@ -47,6 +54,17 @@ export function cancelListing(listingId: string): Promise<void> {
 
 export function statPath(path: string, listingId: string): Promise<Entry | null> {
   return invoke(COMMANDS.statPath, { path, listingId });
+}
+
+export function statPaths(owner: string, paths: string[]): Promise<(Entry | null)[]> {
+  return invoke(COMMANDS.statPaths, { owner, paths });
+}
+
+export function hydratePaths(
+  listingId: string,
+  items: HydrateItem[],
+): Promise<(Entry | null)[]> {
+  return invoke(COMMANDS.hydratePaths, { listingId, items });
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +96,7 @@ export function runOp(
     sources: string[];
     destDir: string;
     policy: ConflictPolicy;
+    verify?: boolean;
   },
   onEvent: (e: OpEvent) => void,
 ): Promise<void> {
@@ -103,12 +122,28 @@ export function trashPaths(paths: string[]): Promise<void> {
   return invoke(COMMANDS.trashPaths, { paths });
 }
 
+export function trashStats(): Promise<TrashStats> {
+  return invoke(COMMANDS.trashStats);
+}
+
+export function emptyTrash(onEvent: (e: EmptyTrashEvent) => void): Promise<void> {
+  const channel = new Channel<EmptyTrashEvent>();
+  channel.onmessage = onEvent;
+  return invoke(COMMANDS.emptyTrash, { channel });
+}
+
 export function deletePermanent(paths: string[]): Promise<void> {
   return invoke(COMMANDS.deletePermanent, { paths });
 }
 
 export function renamePath(path: string, newName: string): Promise<string> {
   return invoke(COMMANDS.renamePath, { path, newName });
+}
+
+export function batchRename(
+  renames: Array<{ from: string; toName: string }>,
+): Promise<string[]> {
+  return invoke(COMMANDS.batchRename, { renames });
 }
 
 export function newFolder(parent: string, name: string): Promise<string> {
@@ -171,10 +206,7 @@ export function interruptedOps(): Promise<InterruptedOp[]> {
 // Search
 // ---------------------------------------------------------------------------
 
-export function search(
-  args: { searchId: string; query: string; scope: string | null; contents: boolean },
-  onEvent: (e: SearchEvent) => void,
-): Promise<void> {
+export function search(args: SearchArgs, onEvent: (e: SearchEvent) => void): Promise<void> {
   const channel = new Channel<SearchEvent>();
   channel.onmessage = onEvent;
   return invoke(COMMANDS.search, { ...args, channel });
@@ -182,6 +214,36 @@ export function search(
 
 export function cancelSearch(searchId: string): Promise<void> {
   return invoke(COMMANDS.cancelSearch, { searchId });
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzy finder
+// ---------------------------------------------------------------------------
+
+export function fuzzyWarm(
+  root: string,
+  excludes: string[],
+  maxEntries?: number,
+  force?: boolean,
+): Promise<FuzzyIndexStatus> {
+  return invoke(COMMANDS.fuzzyWarm, { root, excludes, maxEntries, force });
+}
+
+export function fuzzyQuery(
+  args: FuzzyQueryArgs,
+  onEvent: (e: FuzzyEvent) => void,
+): Promise<void> {
+  const channel = new Channel<FuzzyEvent>();
+  channel.onmessage = onEvent;
+  return invoke(COMMANDS.fuzzyQuery, { ...args, channel });
+}
+
+export function fuzzyCancel(queryId: string): Promise<void> {
+  return invoke(COMMANDS.fuzzyCancel, { queryId });
+}
+
+export function fuzzyDrop(root: string): Promise<void> {
+  return invoke(COMMANDS.fuzzyDrop, { root });
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +316,10 @@ export function pbWriteText(text: string): Promise<void> {
   return invoke(COMMANDS.pbWriteText, { text });
 }
 
+export function pbPasteNewFile(destDir: string): Promise<string | null> {
+  return invoke(COMMANDS.pbPasteNewFile, { destDir });
+}
+
 export function quicklookPanel(paths: string[]): Promise<void> {
   return invoke(COMMANDS.quicklookPanel, { paths });
 }
@@ -268,10 +334,6 @@ export function registerPreview(path: string): Promise<string> {
 
 export function revokePreview(token: string): Promise<void> {
   return invoke(COMMANDS.revokePreview, { token });
-}
-
-export function downloadIcloud(paths: string[]): Promise<void> {
-  return invoke(COMMANDS.downloadIcloud, { paths });
 }
 
 // ---------------------------------------------------------------------------

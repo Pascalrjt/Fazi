@@ -29,7 +29,8 @@
         "media-src": "'self' preview: http://preview.localhost",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",
-        "connect-src": "'self' ipc: http://ipc.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost preview: http://preview.localhost",
+        "worker-src": "'self' blob:",
         "object-src": "'none'",
         "frame-src": "'none'"
       },

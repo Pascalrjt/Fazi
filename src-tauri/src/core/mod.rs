@@ -1,9 +1,11 @@
 pub mod archive;
+pub mod batch_rename;
 pub mod copier;
 pub mod entry;
 pub mod journal;
 pub mod op_queue;
 pub mod tags;
 pub mod undo;
+pub mod verify;
 pub mod walker;
 pub mod watcher;

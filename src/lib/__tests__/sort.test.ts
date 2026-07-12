@@ -19,7 +19,6 @@ function entry(partial: Partial<Entry> & { name: string }): Entry {
     isAlias: false,
     linkTarget: null,
     tags: [],
-    icloud: "none",
     noAccess: false,
     ...partial,
   };

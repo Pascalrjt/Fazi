@@ -6,8 +6,10 @@
 import type { Entry } from "../types/ipc";
 import * as ipc from "./ipc";
 import { basename, dirname, pluralize, splitExt } from "./format";
+import { nameRuleError } from "./batchRename";
 import { isExtractableArchive } from "./fileTypes";
 import { useApp, toast } from "../stores/app";
+import { useSettings } from "../stores/settings";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
 import { useOps } from "../stores/ops";
 import { useVolumes } from "../stores/volumes";
@@ -69,7 +71,12 @@ export function pasteInto(destDir: string, forceMove = false): void {
   ipc
     .pbReadFiles()
     .then((contents) => {
-      if (!contents || contents.paths.length === 0) return;
+      if (!contents || contents.paths.length === 0) {
+        // Plain ⌘V only: no file paths on the pasteboard → paste clipboard
+        // image/text as a new file. ⌘⌥V ("Move Items Here") stays a no-op.
+        if (!forceMove) pasteClipboardAsFile(destDir);
+        return;
+      }
       const kind = forceMove || contents.isCut ? "move" : "copy";
       // pasting into the folder the items already live in → duplicate semantics for copy
       const allSameDir = contents.paths.every((p) => dirname(p) === destDir);
@@ -91,6 +98,40 @@ export function pasteIntoActive(forceMove = false): void {
   if (at) pasteInto(at.tab.path, forceMove);
 }
 
+/** Clipboard image/text → a new file in destDir (image wins). */
+function pasteClipboardAsFile(destDir: string): void {
+  ipc
+    .pbPasteNewFile(destDir)
+    .then(async (path) => {
+      if (path == null) return; // nothing usable on the pasteboard
+      toast(`Pasted “${basename(path)}”`);
+      const at = activePaneTab();
+      if (!at || at.tab.path !== destDir) return;
+      // Pull the fresh entry in and select it.
+      try {
+        const entry = await ipc.statPath(path, at.tab.listingId);
+        if (entry) {
+          usePanes.getState().upsertEntryNow(at.pane.id, at.tab.id, entry);
+          const fresh = usePanes
+            .getState()
+            .panes.find((p) => p.id === at.pane.id)
+            ?.tabs.find((t) => t.id === at.tab.id)
+            ?.entries.find((e) => e.name === entry.name);
+          if (fresh) {
+            usePanes.getState().setSelection(at.pane.id, at.tab.id, {
+              selected: new Set([fresh.id]),
+              anchor: fresh.id,
+              lead: fresh.id,
+            });
+          }
+        }
+      } catch {
+        usePanes.getState().addGhosts(destDir, [path]);
+      }
+    })
+    .catch((err) => toast(`Paste failed: ${err}`, { danger: true }));
+}
+
 export function copyPathnames(): void {
   const entries = selectedEntries();
   const at = activePaneTab();
@@ -106,9 +147,10 @@ export function copyPathnames(): void {
 // trash / delete / duplicate
 // ---------------------------------------------------------------------------
 
-export function trashEntries(entries: Entry[]): void {
-  if (entries.length === 0) return;
-  const paths = entries.map((e) => e.path);
+/** Trash by path with the undo toast — shared by selection ops and drops
+ *  onto the sidebar Trash row (internal drags and the Finder drag-in bridge). */
+export function trashPathsWithUndo(paths: string[]): void {
+  if (paths.length === 0) return;
   // optimistic instant removal; watcher confirms
   usePanes.getState().removeEntriesByPath(paths);
   ipc
@@ -126,13 +168,77 @@ export function trashEntries(entries: Entry[]): void {
     });
 }
 
+export function trashEntries(entries: Entry[]): void {
+  trashPathsWithUndo(entries.map((e) => e.path));
+}
+
 export function trashSelection(): void {
   trashEntries(selectedEntries());
+}
+
+/** Confirm-and-run Empty Trash: totals across every user trash dir (the
+ *  browsed listing shows only ~/.Trash — the dialog copy is authoritative). */
+export function confirmEmptyTrash(): void {
+  ipc
+    .trashStats()
+    .then((stats) => {
+      if (stats.count === 0) {
+        toast("The Trash is empty");
+        return;
+      }
+      const runEmpty = () => {
+        void ipc
+          .emptyTrash((e) => {
+            if (e.event !== "done") return;
+            if (e.errors.length === 0) {
+              toast("Trash emptied");
+            } else {
+              toast(
+                `${pluralize(e.errors.length, "item")} couldn't be deleted from the Trash`,
+                { danger: true },
+              );
+            }
+            const s = usePanes.getState();
+            for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+          })
+          .catch((err) => toast(`Empty Trash failed: ${err}`, { danger: true }));
+      };
+      if (!useSettings.getState().confirmEmptyTrash) {
+        runEmpty();
+        return;
+      }
+      const external =
+        stats.externalCount > 0 ? ` (${stats.externalCount} on external volumes)` : "";
+      useApp.getState().showConfirm({
+        title: "Empty Trash?",
+        message: `${pluralize(stats.count, "item")}${external} will be permanently deleted. You can't undo this action.`,
+        confirmLabel: "Empty Trash",
+        danger: true,
+        onConfirm: runEmpty,
+      });
+    })
+    .catch((err) => toast(`Couldn't read the Trash: ${err}`, { danger: true }));
 }
 
 export function deleteSelectionPermanently(): void {
   const entries = selectedEntries();
   if (entries.length === 0) return;
+  const runDelete = () => {
+    const paths = entries.map((e) => e.path);
+    usePanes.getState().removeEntriesByPath(paths);
+    ipc
+      .deletePermanent(paths)
+      .then(() => toast(`Deleted ${pluralize(paths.length, "item")}`))
+      .catch((err) => {
+        const s = usePanes.getState();
+        for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+        toast(`Delete failed: ${err}`, { danger: true });
+      });
+  };
+  if (!useSettings.getState().confirmPermanentDelete) {
+    runDelete();
+    return;
+  }
   const label =
     entries.length === 1 ? `“${entries[0].name}”` : pluralize(entries.length, "item");
   useApp.getState().showConfirm({
@@ -140,18 +246,7 @@ export function deleteSelectionPermanently(): void {
     message: "This item will be deleted immediately. You can't undo this action.",
     confirmLabel: "Delete",
     danger: true,
-    onConfirm: () => {
-      const paths = entries.map((e) => e.path);
-      usePanes.getState().removeEntriesByPath(paths);
-      ipc
-        .deletePermanent(paths)
-        .then(() => toast(`Deleted ${pluralize(paths.length, "item")}`))
-        .catch((err) => {
-          const s = usePanes.getState();
-          for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
-          toast(`Delete failed: ${err}`, { danger: true });
-        });
-    },
+    onConfirm: runDelete,
   });
 }
 
@@ -245,15 +340,15 @@ export function startRenameSelected(): void {
   useApp.getState().startRename({ paneId: pane.id, tabId: tab.id, entryId: leadId });
 }
 
-/** Illegal in a filename: "/" always; ":" (Finder displays it as "/"). */
+/** Character/shape rules live in nameRuleError (mirrors the backend);
+ *  sibling-collision logic stays local to the rename context. */
 export function renameValidationError(
   name: string,
   siblings: readonly Entry[],
   selfName: string,
 ): string | null {
-  if (name.length === 0) return "Name can't be empty";
-  if (name.includes("/")) return "Name can't contain “/”";
-  if (name.includes(":")) return "Name can't contain “:”";
+  const ruleError = nameRuleError(name);
+  if (ruleError !== null) return ruleError;
   const lower = name.toLowerCase();
   if (lower !== selfName.toLowerCase()) {
     if (siblings.some((e) => e.name.toLowerCase() === lower && e.name !== selfName)) {

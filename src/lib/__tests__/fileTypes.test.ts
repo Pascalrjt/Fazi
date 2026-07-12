@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { isExtractableArchive } from "../fileTypes";
+import { isExtractableArchive, previewModeFor } from "../fileTypes";
+
+describe("previewModeFor", () => {
+  it("routes pdf files to the pdf renderer", () => {
+    expect(previewModeFor("pdf", "file")).toBe("pdf");
+    // dirs never hit the pdf path even with a weird extension
+    expect(previewModeFor("pdf", "dir")).toBe("thumbnail");
+  });
+
+  it("keeps the existing routes", () => {
+    expect(previewModeFor("png", "file")).toBe("image");
+    expect(previewModeFor("mp4", "file")).toBe("video");
+    expect(previewModeFor("mp3", "file")).toBe("audio");
+    expect(previewModeFor("ts", "file")).toBe("text");
+    expect(previewModeFor("sketch", "file")).toBe("thumbnail");
+  });
+});
 
 describe("isExtractableArchive", () => {
   it("accepts zip and the tar family", () => {

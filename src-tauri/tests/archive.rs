@@ -78,6 +78,10 @@ fn env(name: &str) -> Env {
         ops: DashMap::new(),
         volume_locks: DashMap::new(),
         icon_token: Arc::new(|_, _| String::new()),
+        verify_copy_contents: Arc::new(|src, dst, cancelled| {
+            fazi_lib::core::verify::checksum_compare(src, dst, cancelled)
+        }),
+        invalidate_fuzzy: Arc::new(|_| {}),
     });
     Env { root, engine, trash_dir }
 }

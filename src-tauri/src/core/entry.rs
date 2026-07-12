@@ -21,14 +21,6 @@ pub enum EntryKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ICloudState {
-    None,
-    Placeholder,
-    Local,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -49,7 +41,6 @@ pub struct Entry {
     pub is_alias: bool,
     pub link_target: Option<String>,
     pub tags: Vec<FinderTag>,
-    pub icloud: ICloudState,
     pub no_access: bool,
 }
 
@@ -72,37 +63,9 @@ pub fn is_package_ext(ext: &str) -> bool {
     PACKAGE_EXTS.contains(&ext)
 }
 
-/// iCloud placeholder files are named `.<realname>.icloud` and contain a
-/// binary plist with the real metadata. Returns the real display name.
-pub fn icloud_placeholder_name(file_name: &str) -> Option<&str> {
-    file_name.strip_prefix('.').and_then(|s| s.strip_suffix(".icloud"))
-}
-
 /// Build a pass-1 entry from what readdir gives us for free.
 /// `d_kind` is the d_type hint (Unknown on network/foreign filesystems).
 pub fn pass1_entry(id: u64, dir: &Path, file_name: &str, d_kind: EntryKind, token: String) -> Entry {
-    // Merge iCloud placeholders: show the real name with a cloud badge.
-    if let Some(real) = icloud_placeholder_name(file_name) {
-        return Entry {
-            id,
-            name: real.to_string(),
-            path: dir.join(file_name).to_string_lossy().into_owned(),
-            kind: EntryKind::File,
-            hidden: real.starts_with('.'),
-            icon: token,
-            ext: ext_of(real),
-            hydrated: false,
-            size: None,
-            mtime: None,
-            btime: None,
-            is_package: false,
-            is_alias: false,
-            link_target: None,
-            tags: Vec::new(),
-            icloud: ICloudState::Placeholder,
-            no_access: false,
-        };
-    }
     let ext = ext_of(file_name);
     Entry {
         id,
@@ -120,7 +83,6 @@ pub fn pass1_entry(id: u64, dir: &Path, file_name: &str, d_kind: EntryKind, toke
         is_alias: false,
         link_target: None,
         tags: Vec::new(),
-        icloud: ICloudState::None,
         no_access: false,
     }
 }
@@ -146,13 +108,6 @@ pub fn has_custom_icon(path: &Path) -> bool {
 /// Returns true when the dir needs an NSWorkspace `isFilePackageAtPath` check.
 pub fn hydrate(entry: &mut Entry) -> bool {
     let path = PathBuf::from(&entry.path);
-
-    // iCloud placeholders: metadata comes from the placeholder plist.
-    if entry.icloud == ICloudState::Placeholder {
-        hydrate_placeholder(entry, &path);
-        entry.hydrated = true;
-        return false;
-    }
 
     let meta = match std::fs::symlink_metadata(&path) {
         Ok(m) => m,
@@ -193,13 +148,6 @@ pub fn hydrate(entry: &mut Entry) -> bool {
 
     entry.tags = read_tags(&path);
 
-    // Dataless = evicted iCloud/file-provider content.
-    if flags & SF_DATALESS != 0 {
-        entry.icloud = ICloudState::Placeholder;
-    } else if entry.icloud == ICloudState::None && is_in_icloud(&entry.path) {
-        entry.icloud = ICloudState::Local;
-    }
-
     let mut needs_pkg_check = false;
     if entry.kind == EntryKind::Dir {
         if is_package_ext(&entry.ext) {
@@ -223,32 +171,8 @@ fn is_readable_dir(path: &Path) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::R_OK | libc::X_OK) == 0 }
 }
 
-fn is_in_icloud(path: &str) -> bool {
-    path.contains("/Library/Mobile Documents/")
-}
-
-fn hydrate_placeholder(entry: &mut Entry, placeholder_path: &Path) {
-    #[derive(Deserialize)]
-    struct PlaceholderPlist {
-        #[serde(rename = "NSURLFileSizeKey")]
-        size: Option<u64>,
-        #[serde(rename = "NSURLNameKey")]
-        name: Option<String>,
-    }
-    if let Ok(p) = plist::from_file::<_, PlaceholderPlist>(placeholder_path) {
-        entry.size = p.size;
-        if let Some(n) = p.name {
-            entry.ext = ext_of(&n);
-            entry.name = n;
-        }
-    }
-    if let Ok(meta) = std::fs::symlink_metadata(placeholder_path) {
-        entry.mtime = Some(meta.mtime() * 1000);
-        entry.btime = Some(meta.st_birthtime() * 1000);
-    }
-}
-
-/// Check whether a file is dataless (content not local) — ops skip these.
+/// Check whether a file is dataless (content not local, e.g. evicted by a
+/// file provider) — copying one yields a per-item error.
 pub fn is_dataless(meta: &std::fs::Metadata) -> bool {
     meta.st_flags() & SF_DATALESS != 0
 }
@@ -264,13 +188,6 @@ mod tests {
         assert_eq!(ext_of(".hidden"), ""); // dotfile, not an extension
         assert_eq!(ext_of("noext"), "");
         assert_eq!(ext_of(".config.json"), "json");
-    }
-
-    #[test]
-    fn icloud_placeholder_names() {
-        assert_eq!(icloud_placeholder_name(".photo.jpg.icloud"), Some("photo.jpg"));
-        assert_eq!(icloud_placeholder_name("photo.jpg"), None);
-        assert_eq!(icloud_placeholder_name(".photo.jpg"), None);
     }
 
     #[test]

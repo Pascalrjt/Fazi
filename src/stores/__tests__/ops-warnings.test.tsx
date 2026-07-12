@@ -23,7 +23,6 @@ vi.mock("../../lib/ipc", () => ({
   respondConflict: () => Promise.resolve(),
   undoLast: () => Promise.resolve(null),
   redoLast: () => Promise.resolve(null),
-  downloadIcloud: () => Promise.resolve(),
 }));
 
 import { useOps } from "../ops";
@@ -64,7 +63,6 @@ describe("success with warnings", () => {
           severity: "warning",
         },
       ],
-      skippedIcloud: [],
       produced: [],
       undoable: false,
     });

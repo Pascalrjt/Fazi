@@ -41,11 +41,19 @@ import {
   isInvalidDrop,
   registerDropZone,
 } from "../../lib/dnd";
+import { startNativeDrag } from "../../lib/ipc/dnd";
+import { useSettings } from "../../stores/settings";
+import { useDirSizes } from "../../stores/dirSizes";
+import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { tagCss } from "../../lib/tags";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
-const ROW_H = 28;
 const SPRING_LOAD_MS = 600;
+
+/** Row height by density (Settings → Appearance). */
+export function rowHeight(density: "normal" | "compact"): number {
+  return density === "compact" ? 24 : 28;
+}
 
 interface ColWidths {
   kind: number;
@@ -159,6 +167,25 @@ function RenameInput({
 }
 
 // ---------------------------------------------------------------------------
+// Folder-size cell (lazy, cached, opt-in — explicitly approximate)
+// ---------------------------------------------------------------------------
+
+function DirSizeCell({ path }: { path: string }) {
+  const enabled = useSettings((s) => s.showFolderSizes);
+  const entry = useDirSizes(useCallback((s) => s.sizes[path], [path]));
+
+  // Viewport-triggered: rows are virtualized, so mounting = visible.
+  useEffect(() => {
+    if (enabled) useDirSizes.getState().request(path);
+  }, [enabled, path]);
+
+  if (!enabled) return <>—</>;
+  if (!entry) return <>…</>;
+  if (entry.computing && entry.bytes == null) return <>…</>;
+  return <span title="Approximate — computed lazily">{formatBytes(entry.bytes)}</span>;
+}
+
+// ---------------------------------------------------------------------------
 // Row
 // ---------------------------------------------------------------------------
 
@@ -235,6 +262,13 @@ const FileRow = memo(function FileRow({
         const paths = tab.selection.selected.has(entry.id)
           ? tab.entries.filter((en) => tab.selection.selected.has(en.id)).map((en) => en.path)
           : [entry.path];
+        if (useSettings.getState().dragOutEnabled) {
+          // Native drag: reaches Finder/Mail/…; self-drops come back through
+          // the bridge as internal moves. Kill-switch reverts to HTML5-only.
+          e.preventDefault();
+          startNativeDrag(paths, e.altKey);
+          return;
+        }
         beginInternalDrag(e, paths);
       }}
       onDragEnd={endInternalDrag}
@@ -285,7 +319,6 @@ const FileRow = memo(function FileRow({
       <span className="flex shrink-0 items-center gap-1 text-[11px] text-tertiary">
         {entry.kind === "symlink" && <span title={entry.linkTarget ?? "Symbolic link"}>⤳</span>}
         {entry.isAlias && <span title="Alias">↪</span>}
-        {entry.icloud === "placeholder" && <span title="Not downloaded from iCloud">☁</span>}
         {entry.noAccess && <span title="No access">🔒</span>}
       </span>
       <span className="shrink-0 truncate text-xs text-secondary" style={{ width: cols.kind }}>
@@ -295,7 +328,7 @@ const FileRow = memo(function FileRow({
       </span>
       <span className="tnum shrink-0 text-right text-xs text-secondary" style={{ width: cols.size }}>
         {entry.kind === "dir" && !entry.isPackage ? (
-          "—"
+          <DirSizeCell path={entry.path} />
         ) : entry.hydrated ? (
           formatBytes(entry.size)
         ) : (
@@ -413,6 +446,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const [cols, setCols] = useState<ColWidths>(loadCols);
   const [marquee, setMarquee] = useState<Rect | null>(null);
   const restoredListing = useRef<string>("");
+  const density = useSettings((s) => s.density);
+  const ROW_H = rowHeight(density);
 
   const visible = useMemo(
     () =>
@@ -430,6 +465,21 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     estimateSize: () => ROW_H,
     overscan: 12,
   });
+
+  // Re-measure rows when density flips.
+  useEffect(() => {
+    virtualizer.measure();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ROW_H]);
+
+  // Viewport-priority hydration for big listings (pass 2 skipped).
+  const vItems = virtualizer.getVirtualItems();
+  useViewportHydration(
+    tab?.listingId,
+    visible,
+    vItems[0]?.index ?? 0,
+    vItems[vItems.length - 1]?.index ?? -1,
+  );
 
   // scroll restore once per listing settle
   useEffect(() => {
@@ -490,7 +540,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     });
     return unregister;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paneId, tabId, tab != null]);
+  }, [paneId, tabId, tab != null, ROW_H]);
 
   const setSelection = usePanes((s) => s.setSelection);
   const openEntry = usePanes((s) => s.openEntry);

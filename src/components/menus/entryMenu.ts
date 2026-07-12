@@ -2,7 +2,6 @@
 import type { Entry } from "../../types/ipc";
 import type { MenuItem } from "../../stores/menu";
 import * as actions from "../../lib/actions";
-import * as ipc from "../../lib/ipc";
 import { useApp, toast } from "../../stores/app";
 import { usePanes, selectedEntries } from "../../stores/panes";
 import type { PaneId } from "../../stores/app";
@@ -76,6 +75,13 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
       label: "Rename",
       shortcut: "enter",
       action: () => useApp.getState().startRename({ paneId, tabId, entryId: entry.id }),
+    });
+  } else {
+    items.push({
+      type: "item",
+      label: `Rename ${pluralize(n, "item")}…`,
+      shortcut: "cmd+shift+r",
+      action: () => useApp.getState().setBatchRenameOpen(true),
     });
   }
   items.push({
@@ -156,19 +162,6 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
         );
         if (added === 0) toast("Already in the sidebar");
         else toast(`Added ${pluralize(added, "folder")} to the sidebar`);
-      },
-    });
-  }
-  if (entry.icloud === "placeholder") {
-    items.push({ type: "separator" });
-    items.push({
-      type: "item",
-      label: countLabel("Download from iCloud", n),
-      action: () => {
-        void ipc
-          .downloadIcloud(targets.map((t) => t.path))
-          .then(() => toast("Downloading from iCloud…"))
-          .catch((err) => toast(`Download failed: ${err}`, { danger: true }));
       },
     });
   }

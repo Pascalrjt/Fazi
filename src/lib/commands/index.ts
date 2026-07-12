@@ -1,8 +1,17 @@
 /**
- * All Fazi commands, registered once at boot. Single source of truth for
- * keyboard shortcuts AND the command palette.
+ * All Fazi commands, registered at boot (and re-registered when keybinding
+ * overrides change). Single source of truth for keyboard shortcuts AND the
+ * command palette.
  */
-import { registerCommands } from "./registry";
+import {
+  clearRegistry,
+  findShortcutConflicts,
+  registerCommands,
+  type CommandSpec,
+  type RegisteredCommand,
+} from "./registry";
+import { parseShortcut } from "../keyboard";
+import type { KeybindingOverrides } from "../../stores/settings";
 import {
   arrowMove,
   shiftArrowExtend,
@@ -11,8 +20,10 @@ import * as actions from "../actions";
 import { isExtractableArchive } from "../fileTypes";
 import { useApp } from "../../stores/app";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../../stores/panes";
+import { useFuzzy } from "../../stores/fuzzy";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
+import { useVolumes } from "../../stores/volumes";
 
 let registered = false;
 
@@ -42,11 +53,93 @@ function hasSelection(): boolean {
   return selectedEntries().length > 0;
 }
 
-export function registerAllCommands(): void {
+/**
+ * Drop invalid overrides before they reach registration: unknown commandIds,
+ * non-array/non-null values, and unparseable shortcut strings all fall away —
+ * corrupt localStorage must never prevent startup.
+ */
+export function sanitizeOverrides(raw: unknown): KeybindingOverrides {
+  const out: KeybindingOverrides = {};
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const known = new Set(buildCommandSpecs().map((c) => c.id));
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!known.has(id)) continue;
+    if (value === null) {
+      out[id] = null; // explicit unbind
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const valid = value.filter(
+        (v): v is string => typeof v === "string" && parseShortcut(v) !== null,
+      );
+      if (valid.length > 0) out[id] = valid;
+    }
+  }
+  return out;
+}
+
+/** Apply overrides to specs BEFORE registration parses them — palette
+ *  labels, menus, and dispatch all read the same spec. */
+function applyOverrides(
+  specs: CommandSpec[],
+  overrides: KeybindingOverrides,
+): CommandSpec[] {
+  return specs.map((spec) => {
+    if (!(spec.id in overrides)) return spec;
+    const o = overrides[spec.id];
+    if (o === null) return { ...spec, shortcut: undefined, extraShortcuts: undefined };
+    return { ...spec, shortcut: o[0], extraShortcuts: o.slice(1) };
+  });
+}
+
+/** Prospective conflict check for the keybindings editor — never touches the
+ *  live registry. */
+export function conflictsForOverrides(overrides: KeybindingOverrides): string[] {
+  const specs = applyOverrides(buildCommandSpecs(), sanitizeOverrides(overrides));
+  const prospective = specs.map((spec) => {
+    const shortcuts = [
+      ...(spec.shortcut ? [spec.shortcut] : []),
+      ...(spec.extraShortcuts ?? []),
+    ];
+    return {
+      ...spec,
+      contexts: spec.context ?? ["browse"],
+      bindings: shortcuts
+        .map(parseShortcut)
+        .filter((b): b is NonNullable<typeof b> => b !== null),
+    } as RegisteredCommand;
+  });
+  return findShortcutConflicts(prospective);
+}
+
+export function registerAllCommands(overrides?: KeybindingOverrides): void {
   if (registered) return;
   registered = true;
+  const sanitized = sanitizeOverrides(overrides ?? {});
+  registerCommands(applyOverrides(buildCommandSpecs(), sanitized));
+}
 
-  registerCommands([
+/**
+ * Tear down and re-register with new overrides. `clearRegistry()` alone only
+ * empties the array — the module-level `registered` guard MUST also reset or
+ * override changes silently no-op. Safe to run at any time: command `run`
+ * closures resolve state via getState().
+ */
+export function rebuildRegistry(overrides?: KeybindingOverrides): void {
+  registered = false;
+  clearRegistry();
+  try {
+    registerAllCommands(overrides);
+  } catch {
+    // Corrupt overrides must never prevent startup — fall back to defaults.
+    registered = false;
+    clearRegistry();
+    registerAllCommands();
+  }
+}
+
+function buildCommandSpecs(): CommandSpec[] {
+  return [
     // -----------------------------------------------------------------------
     // Open / navigate
     // -----------------------------------------------------------------------
@@ -168,6 +261,14 @@ export function registerAllCommands(): void {
       run: () => actions.startRenameSelected(),
     },
     {
+      id: "batchRename",
+      title: "Rename Multiple Items…",
+      keywords: "batch rename regex numbering",
+      shortcut: "cmd+shift+r",
+      enabled: () => selectedEntries().length > 1,
+      run: () => useApp.getState().setBatchRenameOpen(true),
+    },
+    {
       id: "trash",
       title: "Move to Trash",
       keywords: "delete remove",
@@ -182,6 +283,19 @@ export function registerAllCommands(): void {
       shortcut: "cmd+opt+delete",
       enabled: hasSelection,
       run: () => actions.deleteSelectionPermanently(),
+    },
+    {
+      id: "emptyTrash",
+      title: "Empty Trash…",
+      keywords: "trash empty delete purge",
+      shortcut: "cmd+shift+delete",
+      run: () => actions.confirmEmptyTrash(),
+    },
+    {
+      id: "goTrash",
+      title: "Go to Trash",
+      keywords: "go trash bin",
+      run: () => actions.goTo(useVolumes.getState().folders?.trash),
     },
     {
       id: "copy",
@@ -444,6 +558,14 @@ export function registerAllCommands(): void {
       run: () => useApp.getState().requestSearchFocus(),
     },
     {
+      id: "fuzzyFinder",
+      title: "Go to File…",
+      keywords: "fuzzy jump quick open anything",
+      shortcut: "cmd+p",
+      context: ["browse", "search"],
+      run: () => useFuzzy.getState().openFinder(),
+    },
+    {
       id: "globalSearch",
       title: "Search Everywhere",
       keywords: "find global spotlight mdfind",
@@ -454,6 +576,14 @@ export function registerAllCommands(): void {
         app.openGlobalSearch(app.globalSearch.query, "mac");
         app.requestSearchFocus();
       },
+    },
+    {
+      id: "settings",
+      title: "Settings…",
+      keywords: "preferences options configure",
+      shortcut: "cmd+,",
+      context: ["browse", "search", "preview", "palette"],
+      run: () => useApp.getState().setSettingsOpen(true),
     },
     {
       id: "getInfo",
@@ -500,5 +630,5 @@ export function registerAllCommands(): void {
         if (at) usePanes.getState().refresh(at.pane.id, at.tab.id);
       },
     },
-  ]);
+  ];
 }

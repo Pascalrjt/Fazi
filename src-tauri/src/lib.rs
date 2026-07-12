@@ -10,7 +10,7 @@ pub mod protocols;
 pub mod search;
 pub mod state;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -20,6 +20,7 @@ use crate::core::journal::Journal;
 use crate::core::op_queue::Engine;
 use crate::core::undo::UndoStack;
 use crate::macos::trash::SystemTrasher;
+use crate::search::fuzzy::{mark_stale_under, FuzzyIndex};
 use crate::state::{AppState, TokenTable};
 
 pub const VOLUMES_CHANGED: &str = "fazi://volumes-changed";
@@ -31,6 +32,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let cache_dir = app.path().app_cache_dir()?;
@@ -43,6 +45,8 @@ pub fn run() {
 
             let tokens = Arc::new(TokenTable::default());
             let engine_tokens = tokens.clone();
+            let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+            let fuzzy_for_ops = fuzzy.clone();
             let engine = Arc::new(Engine {
                 trasher: Arc::new(SystemTrasher),
                 journal,
@@ -52,10 +56,16 @@ pub fn run() {
                 icon_token: Arc::new(move |owner: &str, path: &Path| {
                     engine_tokens.register(owner, path)
                 }),
+                verify_copy_contents: Arc::new(|src, dst, cancelled| {
+                    crate::core::verify::checksum_compare(src, dst, cancelled)
+                }),
+                invalidate_fuzzy: Arc::new(move |paths| mark_stale_under(&fuzzy_for_ops, paths)),
             });
 
             let thumb_cache_dir = cache_dir.join("thumbnails");
             std::fs::create_dir_all(&thumb_cache_dir)?;
+            let fuzzy_cache_dir = cache_dir.join("fuzzy-index");
+            std::fs::create_dir_all(&fuzzy_cache_dir)?;
             {
                 let dir = thumb_cache_dir.clone();
                 std::thread::spawn(move || macos::thumbnails::prune_cache(&dir));
@@ -67,12 +77,31 @@ pub fn run() {
                 listings: DashMap::new(),
                 watchers: DashMap::new(),
                 searches: DashMap::new(),
+                fuzzy,
+                fuzzy_lru: Mutex::new(Vec::new()),
+                fuzzy_queries: DashMap::new(),
+                fuzzy_pending: Arc::new(DashMap::new()),
+                fuzzy_cache_dir,
                 engine,
                 icon_cache: Arc::new(DashMap::new()),
                 thumb_cache_dir,
                 interrupted,
                 pb_mark: Mutex::new(None),
             });
+
+            // Pre-warm the extension-shared icon PNGs so the first ⌘P result
+            // burst doesn't rasterize dozens of type icons on the AppKit main
+            // thread at once (measured 1-17 ms per cold render). Delayed and
+            // paced so first paint and early navigation always win.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let state = handle.state::<AppState>();
+                    let cache = state.icon_cache.clone();
+                    macos::icons::prewarm_common(&handle, &cache);
+                });
+            }
 
             // Volume mount/unmount: 2 s poll of the mounted-path set.
             {
@@ -113,6 +142,8 @@ pub fn run() {
             commands::listing::list_dir,
             commands::listing::cancel_listing,
             commands::listing::stat_path,
+            commands::listing::stat_paths,
+            commands::listing::hydrate_paths,
             commands::watch::watch_dir,
             commands::watch::unwatch,
             commands::ops::run_op,
@@ -122,8 +153,11 @@ pub fn run() {
             commands::ops::cancel_op,
             commands::ops::respond_conflict,
             commands::ops::trash_paths,
+            commands::ops::trash_stats,
+            commands::ops::empty_trash,
             commands::ops::delete_permanent,
             commands::ops::rename_path,
+            commands::ops::batch_rename,
             commands::ops::new_folder,
             commands::ops::undo_last,
             commands::ops::redo_last,
@@ -132,6 +166,10 @@ pub fn run() {
             commands::ops::interrupted_ops,
             commands::search::search,
             commands::search::cancel_search,
+            commands::fuzzy::fuzzy_warm,
+            commands::fuzzy::fuzzy_query,
+            commands::fuzzy::fuzzy_cancel,
+            commands::fuzzy::fuzzy_drop,
             commands::macos::open_paths,
             commands::macos::open_with,
             commands::macos::open_with_apps,
@@ -149,10 +187,10 @@ pub fn run() {
             commands::macos::pb_write_files,
             commands::macos::pb_read_files,
             commands::macos::pb_write_text,
+            commands::ops::pb_paste_new_file,
             commands::macos::register_preview,
             commands::macos::revoke_preview,
             commands::macos::read_text_head,
-            commands::macos::download_icloud,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

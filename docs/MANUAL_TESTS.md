@@ -42,6 +42,14 @@ phase done. Check items off per release.
 ## Trash & undo
 - [ ] ⌘⌫ → toast with Undo; item appears in Finder's Trash with working
       "Put Back".
+- [ ] Sidebar Trash row navigates to ~/.Trash; the banner shows the item
+      count; dragging items onto the row trashes them (Put Back still works).
+- [ ] Empty Trash… (banner button / palette / row context menu): confirm
+      dialog totals items across volumes ("N items (M on external volumes)"
+      with a seeded external-volume .Trashes fixture); after emptying, ⌘Z has
+      nothing referencing the emptied content (purged undo history).
+- [ ] Empty Trash with an undeletable item (chmod 555 dir) reports the error
+      and still deletes the rest.
 - [ ] ⌘Z after trash restores to the original folder.
 - [ ] ⌘Z after a move returns items; ⌘⇧Z re-applies.
 - [ ] Replace in a conflict: old file is in Trash; ⌘Z does NOT undo the
@@ -57,11 +65,15 @@ phase done. Check items off per release.
 - [ ] Case-only rename `foo` → `Foo` works; `foo` → existing `BAR` variant
       `bar` is a collision.
 
-## iCloud
-- [ ] iCloud Drive shows placeholders with cloud badges and real names/sizes.
-- [ ] Opening a placeholder triggers download.
-- [ ] Copying a folder containing non-downloaded items skips them and the op
-      card offers "Download & retry skipped".
+## Dataless (evicted cloud) files
+- [ ] Copying a dataless file ("Remove Download" in Finder first) fails that
+      item with "content not downloaded (dataless); can't be copied" — the op
+      is partial, other items succeed.
+- [ ] Same-volume move/rename of a folder containing dataless descendants
+      succeeds instantly (fast rename never touches file content; the
+      descendants stay dataless and intact).
+- [ ] Cross-volume move of a folder containing a dataless descendant fails
+      that top-level item (verification) and the source is left untouched.
 
 ## Volumes
 - [ ] Plugging a USB disk adds it to the sidebar ≤2 s; eject button works;
@@ -69,11 +81,41 @@ phase done. Check items off per release.
 - [ ] SMB share: browse (DT_UNKNOWN pass-1 rows hydrate correctly), copy to
       and from, search shows the unindexed-volume notice.
 
+## Search
+- [ ] Filename/Contents pill: switching to Contents re-runs the query and
+      returns kMDItemTextContent hits; the results header notes "matching
+      file contents".
+- [ ] Predicates: `kind:image`, `date:7d`, `size:>10mb` narrow results;
+      the "?" popover lists the syntax; unparseable values search as text.
+- [ ] A query with >2,000 matches renders past the old cap (default 10,000)
+      with a "showing the first N results" note when truncated; scrolling a
+      10k-hit list stays smooth (batched updates).
+- [ ] Unindexed volume (mdutil -i off on a test stick): searching This Folder
+      on it auto-falls back to the walker with the "searched by walking"
+      caption; predicates still apply; This Mac scope and Contents mode show
+      their explanatory notices instead of falling back.
+
+## Fuzzy finder (⌘P)
+- [ ] ⌘P on a ~100k-file tree: overlay opens instantly, results refine live
+      while the footer counts up "indexing… N items"; typing mid-index keeps
+      refining without stalls.
+- [ ] Tab toggles This Folder ↔ Home; the old scope's in-flight query is
+      cancelled (no stale rows flash in).
+- [ ] Enter opens the hit; ⌘Enter navigates to its parent with the hit
+      selected; Esc closes and ⌘P over a previously-warm root reuses the
+      index (footer shows its age).
+- [ ] Rebuild (footer button / ⌘R) re-walks; after a copy INTO the indexed
+      root completes, reopening ⌘P rebuilds automatically (stale marking).
+- [ ] With fuzzyIndexMaxEntries lowered, the footer shows "index capped".
+
 ## Previews
-- [ ] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3, PDF
-      (page thumbnail render), .txt/.rs/.ts (text with line numbers), .docx /
-      .sketch (QL thumbnail render), a 0-byte file, a broken symlink (no
-      crash).
+- [ ] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3,
+      .txt/.rs/.ts (text with line numbers), .docx / .sketch (QL thumbnail
+      render), a 0-byte file, a broken symlink (no crash).
+- [ ] PDF: multi-page renders via pdf.js; PageUp/PageDown and the on-screen
+      arrows page; ←/→ still walk file-to-file; a >100 MB PDF falls back to
+      the thumbnail. Verify in `tauri dev` AND the bundled app (worker URL
+      forms differ dev vs prod).
 - [ ] ←/→ walks the selection; title shows "n of m"; Esc and Space close.
 - [ ] ⌘Y opens qlmanage for anything exotic.
 
@@ -88,8 +130,47 @@ phase done. Check items off per release.
 ## Perf
 - [ ] 100k-file directory: first rows <50 ms, scrolling never hitches,
       sort settles once, filter-as-you-type stays instant.
+- [ ] 100k-file directory hydrates from the viewport outward: visible rows
+      lose their shimmer first (even after jumping to the middle), the rest
+      trickles in the background, and navigating away mid-hydration leaves
+      no stray updates in the next folder.
+- [ ] Folder sizes (Advanced → on): list-view dirs show "…" then the value
+      as rows scroll into view (max 2 computing at once); copying INTO a
+      cached folder refreshes its size; values recompute after ~5 min TTL.
 - [ ] Open a dir on a slow SMB share: thin indeterminate bar, pane stays
       interactive, no blank white pane.
+
+## Settings (⌘,)
+- [ ] ⌘, opens the overlay; browse shortcuts don't fire underneath; Esc
+      closes. Theme Light/Dark/System applies live (System follows the OS);
+      accent swatches recolor selection/focus; Compact density tightens list
+      rows without breaking marquee selection.
+- [ ] Operations → Verify copies: a large copy shows "Verifying…" after the
+      bytes land; flip a byte in the source mid-copy is impractical — instead
+      verify a normal copy passes clean, and confirm cross-volume moves still
+      verify with the toggle OFF (mandatory gate unaffected).
+- [ ] Keyboard pane: Record ⌘⇧M for New Folder → palette label updates, old
+      binding dead, new one fires; recording ⌘D (Duplicate's) is blocked with
+      "unbind the other command"; Unbind removes a shortcut; Reset restores
+      the default; all of it survives relaunch.
+- [ ] Corrupt-blob recovery: hand-edit localStorage fazi-settings
+      keybindingOverrides to garbage → app still boots with default
+      shortcuts.
+- [ ] Confirm toggles: disabling "Confirm permanent delete" / "Confirm Empty
+      Trash" skips those dialogs; Reset-to-defaults restores everything but
+      keeps pinned folders and column widths.
+
+## Batch rename & paste-as-file
+- [ ] Select 5 files → ⌘⇧R: live preview updates per keystroke; a colliding
+      target flags its row and disables Rename; regex capture groups and
+      numbering work; Apply renames all 5 and ONE ⌘Z restores every name.
+- [ ] Permutation: select 1.jpg + 2.jpg, rename to each other's names →
+      contents swap correctly; ⌘Z swaps back.
+- [ ] Copy an image in Preview.app → ⌘V in Fazi creates "Pasted Image.png"
+      (selected); copy text → "Pasted Text.txt"; ⌘V again uniquifies
+      ("Pasted Image 2.png"). ⌘Z trashes it; ⌘⇧Z restores it from the Trash.
+- [ ] ⌘⌥V with no file paths on the pasteboard stays a no-op (never creates
+      a clipboard file).
 
 ## Keyboard sweep
 - [ ] ⏎ rename (stem preselected), Tab serial-rename, Esc cancels.
@@ -105,6 +186,21 @@ phase done. Check items off per release.
 - [ ] Within Fazi: drag to folder rows, breadcrumbs, sidebar, other pane;
       spring-loaded folders open after ~600 ms hover; ⌥ shows copy behavior.
 
+## Drag-out (native)
+- [ ] Drag a file from Fazi into Finder → copies there; into Mail → attaches;
+      into Slack/a browser upload field → uploads. Multi-select shows the
+      count badge on the drag image.
+- [ ] Self-drop: drag a row onto another Fazi folder row → internal MOVE
+      (not copy); ⌥ during the drag → copy. Drop onto the sidebar Trash row →
+      trashed with Put Back intact.
+- [ ] Self-drop onto the row's own parent folder is a no-op (no duplicate).
+- [ ] A cancelled native drag (Esc / drop on nothing) leaves the next
+      Finder→Fazi drag-in a COPY (the self-drop flag cleared).
+- [ ] Kill-switch: Advanced → disable drag-out → rows drag HTML5-only again
+      (internal DnD works, Finder drop does nothing).
+- [ ] Sidebar favorite reorder still works with drag-out enabled (stays
+      HTML5).
+
 ## Archives
 - [ ] Compress a large folder and cancel mid-way → op card disappears, no
       `.fazi-partial-*` leftovers in the destination, no zip produced.
@@ -113,10 +209,9 @@ phase done. Check items off per release.
 - [ ] Finder opens the produced zip and shows the expected layout: single
       file → the file at zip root; single folder → one top-level folder;
       multi-select → all items at zip root (named `Archive.zip`).
-- [ ] Multi-select compress including an evicted iCloud file ("Remove
-      Download" in Finder first) → compress waits for materialization and the
-      zip contains the full file, never a placeholder; cancel during the wait
-      takes effect at the next entry/chunk boundary.
+- [ ] Multi-select compress including a dataless file ("Remove Download" in
+      Finder first) → the op fails all-or-nothing with the dataless item
+      error; no zip is produced.
 - [ ] Extract a `.tar.gz` → contents promoted next to the archive; a
       single-root tarball promotes under the inner name (no `X/X` nesting).
 - [ ] ⌘Z after compress trashes the zip; Edit menu reads "Undo Compress of

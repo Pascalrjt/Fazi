@@ -37,13 +37,14 @@ export function isExtractableArchive(name: string, ext: string): boolean {
   return lower.endsWith(".tar.gz") || lower.endsWith(".tar.bz2") || lower.endsWith(".tar.xz");
 }
 
-export type PreviewMode = "image" | "video" | "audio" | "text" | "thumbnail";
+export type PreviewMode = "image" | "video" | "audio" | "text" | "pdf" | "thumbnail";
 
 export function previewModeFor(ext: string, kind: string): PreviewMode {
   if (kind === "dir") return "thumbnail";
   if (IMAGE_EXTS.has(ext)) return "image";
   if (VIDEO_EXTS.has(ext)) return "video";
   if (AUDIO_EXTS.has(ext)) return "audio";
+  if (ext === "pdf") return "pdf";
   if (CODE_EXTS.has(ext) || TEXT_EXTS.has(ext)) return "text";
   return "thumbnail";
 }

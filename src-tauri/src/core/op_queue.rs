@@ -21,9 +21,10 @@ use crate::core::copier;
 use crate::core::entry::is_dataless;
 use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
+use crate::core::verify::ChecksumReport;
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, DatalessPolicy, MergeCtx, Outcome,
-    ReplaceOutcome, Resolution, Trasher, WalkSink, WarnSeverity,
+    self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, ReplaceOutcome,
+    Resolution, Trasher, WalkSink, WarnSeverity,
 };
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,10 @@ pub enum OpEvent {
         entries_done: u64,
         current_path: String,
         cloned: bool,
+        /// Additive wire extension: absent = copying. "verifying" while the
+        /// opt-in post-promote checksum pass runs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<&'static str>,
     },
     #[serde(rename_all = "camelCase")]
     Conflict {
@@ -88,13 +93,10 @@ pub enum OpEvent {
         severity: WarnSeverity,
     },
     #[serde(rename_all = "camelCase")]
-    SkippedIcloud { paths: Vec<String> },
-    #[serde(rename_all = "camelCase")]
     Done {
         status: &'static str,
         errors: Vec<OpError>,
         warnings: Vec<OpWarning>,
-        skipped_icloud: Vec<String>,
         produced: Vec<String>,
         undoable: bool,
     },
@@ -141,12 +143,18 @@ pub struct OpArgs {
     pub sources: Vec<PathBuf>,
     pub dest_dir: PathBuf,
     pub policy: Policy,
+    /// Opt-in BLAKE3 checksum verification for copies (verifyCopies setting).
+    /// The mandatory cross-volume move gate is separate and unconditional.
+    pub verify: bool,
 }
+
+/// A conflict-dialog answer: the chosen resolution + "apply to all".
+type ConflictReply = (Resolution, bool);
 
 /// Per-op handle: cancellation + the conflict-response rendezvous.
 pub struct OpHandle {
     pub cancel: AtomicBool,
-    pending: Mutex<HashMap<u64, SyncSender<(Resolution, bool)>>>,
+    pending: Mutex<HashMap<u64, SyncSender<ConflictReply>>>,
 }
 
 impl OpHandle {
@@ -173,6 +181,18 @@ impl OpHandle {
     }
 }
 
+/// Registers an icon token for conflict-dialog sides (owner = op id).
+pub type IconTokenFn = Arc<dyn Fn(&str, &Path) -> String + Send + Sync>;
+
+/// Injectable seam over `verify::checksum_compare(source, dest, cancelled)`
+/// so post-promote mismatch semantics can be exercised in tests without
+/// racing an external file mutation.
+pub type CopyVerifier = Arc<dyn Fn(&Path, &Path, &dyn Fn() -> bool) -> ChecksumReport + Send + Sync>;
+
+/// Marks warm fuzzy indexes containing any of the touched paths stale so
+/// ⌘P never reuses a snapshot the engine just mutated out from under it.
+pub type InvalidateFuzzy = Arc<dyn Fn(&[PathBuf]) + Send + Sync>;
+
 /// Shared engine dependencies (built once at app setup).
 pub struct Engine {
     pub trasher: Arc<dyn Trasher>,
@@ -180,8 +200,9 @@ pub struct Engine {
     pub undo: Arc<Mutex<UndoStack>>,
     pub ops: DashMap<String, Arc<OpHandle>>,
     pub volume_locks: DashMap<u64, Arc<Mutex<()>>>,
-    /// Registers an icon token for conflict-dialog sides (owner = op id).
-    pub icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+    pub icon_token: IconTokenFn,
+    pub verify_copy_contents: CopyVerifier,
+    pub invalidate_fuzzy: InvalidateFuzzy,
 }
 
 impl Engine {
@@ -219,14 +240,13 @@ struct OpSink {
     emitter: Arc<dyn OpEmitter>,
     handle: Arc<OpHandle>,
     op_id: String,
-    icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+    icon_token: IconTokenFn,
     bytes: u64,
     entries: u64,
     last_emit: Instant,
     any_clone: bool,
     errors: Vec<OpError>,
     warnings: Vec<OpWarning>,
-    skipped: Vec<PathBuf>,
     op_policy: Policy,
     file_policy: Option<Resolution>,
     dir_policy: Option<Resolution>,
@@ -239,7 +259,7 @@ impl OpSink {
         emitter: Arc<dyn OpEmitter>,
         handle: Arc<OpHandle>,
         op_id: String,
-        icon_token: Arc<dyn Fn(&str, &Path) -> String + Send + Sync>,
+        icon_token: IconTokenFn,
         op_policy: Policy,
         remaining_hint: usize,
     ) -> Self {
@@ -254,13 +274,23 @@ impl OpSink {
             any_clone: false,
             errors: Vec::new(),
             warnings: Vec::new(),
-            skipped: Vec::new(),
             op_policy,
             file_policy: None,
             dir_policy: None,
             conflict_seq: 0,
             remaining_hint,
         }
+    }
+
+    fn emit_phase(&mut self, current: &Path, phase: &'static str) {
+        self.last_emit = Instant::now();
+        self.emitter.emit(OpEvent::Progress {
+            bytes_done: self.bytes,
+            entries_done: self.entries,
+            current_path: current.to_string_lossy().into_owned(),
+            cloned: self.any_clone,
+            phase: Some(phase),
+        });
     }
 
     fn emit_progress(&mut self, current: &Path, force: bool) {
@@ -271,6 +301,7 @@ impl OpSink {
                 entries_done: self.entries,
                 current_path: current.to_string_lossy().into_owned(),
                 cloned: self.any_clone,
+                phase: None,
             });
         }
     }
@@ -291,7 +322,7 @@ impl OpSink {
     fn ask(&mut self, kind: ConflictKind, src: &Path, dst: &Path) -> (Resolution, bool) {
         self.conflict_seq += 1;
         let id = self.conflict_seq;
-        let (tx, rx): (SyncSender<(Resolution, bool)>, Receiver<(Resolution, bool)>) =
+        let (tx, rx): (SyncSender<ConflictReply>, Receiver<ConflictReply>) =
             std::sync::mpsc::sync_channel(1);
         self.handle.pending.lock().unwrap().insert(id, tx);
         self.emitter.emit(OpEvent::Conflict {
@@ -353,10 +384,6 @@ impl WalkSink for OpSink {
             severity: w.severity,
         });
         self.warnings.push(w);
-    }
-
-    fn skipped_dataless(&mut self, path: &Path) {
-        self.skipped.push(path.to_path_buf());
     }
 
     fn resolve(&mut self, kind: ConflictKind, src: &Path, dst: &Path) -> Resolution {
@@ -498,7 +525,6 @@ fn run_op_thread(
                 message: format!("couldn't write the crash-safety journal: {}", e),
             }],
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: Vec::new(),
             undoable: false,
         });
@@ -580,7 +606,7 @@ fn run_op_thread(
             continue; // already there
         }
         if smeta.file_type().is_file() && is_dataless(&smeta) {
-            sink.skipped_dataless(source);
+            sink.item_error(source, &walker::dataless_error());
             continue;
         }
 
@@ -710,28 +736,22 @@ fn run_op_thread(
     engine.journal.remove(&args.op_id);
     engine.ops.remove(&args.op_id);
 
-    let skipped: Vec<String> = sink
-        .skipped
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    let touched: Vec<PathBuf> = args.sources.iter().chain(produced.iter()).cloned().collect();
+    (engine.invalidate_fuzzy)(&touched);
+
     let status = if cancelled {
         "cancelled"
-    } else if sink.errors.is_empty() && skipped.is_empty() {
+    } else if sink.errors.is_empty() {
         "success"
-    } else if produced.is_empty() && !sink.errors.is_empty() {
+    } else if produced.is_empty() {
         "failed"
     } else {
         "partial"
     };
-    if !skipped.is_empty() {
-        emitter.emit(OpEvent::SkippedIcloud { paths: skipped.clone() });
-    }
     emitter.emit(OpEvent::Done {
         status,
         errors: sink.errors.clone(),
         warnings: sink.warnings.clone(),
-        skipped_icloud: skipped,
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         undoable,
     });
@@ -778,7 +798,7 @@ fn transfer_toplevel(
         ));
     }
 
-    let outcome = walker::copy_fresh(source, &stage, sink, DatalessPolicy::Skip)?;
+    let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
         walker::remove_tree_best_effort(&stage);
         pop_staging(journal_entry, &stage);
@@ -788,9 +808,10 @@ fn transfer_toplevel(
 
     if args.kind == OpKind::Move {
         // Verify before deleting the source — that item is deleted only after
-        // *it* verifies; a crash mid-move never loses data.
-        let skipped: HashSet<PathBuf> = sink.skipped.iter().cloned().collect();
-        let report = walker::verify_tree(source, &stage, &skipped, tol_ms)?;
+        // *it* verifies; a crash mid-move never loses data. A dataless
+        // descendant surfaced as an item error above is missing from the
+        // stage, so verification fails and the source is preserved.
+        let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
             walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);
@@ -815,6 +836,28 @@ fn transfer_toplevel(
 
     if args.kind == OpKind::Move {
         walker::remove_tree_best_effort(source);
+    }
+
+    // Opt-in checksum verification, post-promote, copies only. A mismatch is
+    // a per-item error (op → partial) but the copy stays in place AND in
+    // `produced` — the op remains undoable and ⌘Z removes the suspect file.
+    if args.verify && args.kind == OpKind::Copy {
+        sink.emit_phase(dest, "verifying");
+        let handle = sink.handle.clone();
+        let cancelled = move || handle.cancel.load(Ordering::SeqCst);
+        let report = (engine.verify_copy_contents)(source, dest, &cancelled);
+        for m in &report.mismatches {
+            sink.item_error(
+                dest,
+                &io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{} — copy kept for inspection; Undo removes it",
+                        m
+                    ),
+                ),
+            );
+        }
     }
     Ok(true)
 }
@@ -877,7 +920,7 @@ fn replace_item(
         ));
     }
 
-    let outcome = walker::copy_fresh(source, &stage, sink, DatalessPolicy::Skip)?;
+    let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
         walker::remove_tree_best_effort(&stage);
         pop_staging(journal_entry, &stage);
@@ -885,8 +928,7 @@ fn replace_item(
         return Ok(false);
     }
     if args.kind == OpKind::Move {
-        let skipped: HashSet<PathBuf> = sink.skipped.iter().cloned().collect();
-        let report = walker::verify_tree(source, &stage, &skipped, tol_ms)?;
+        let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
             walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);
@@ -991,7 +1033,6 @@ fn run_duplicate_thread(
                 message: format!("couldn't write the crash-safety journal: {}", e),
             }],
             warnings: Vec::new(),
-            skipped_icloud: Vec::new(),
             produced: Vec::new(),
             undoable: false,
         });
@@ -1051,7 +1092,7 @@ fn run_duplicate_thread(
             continue;
         }
 
-        match walker::copy_fresh(source, &stage, &mut sink, DatalessPolicy::Skip) {
+        match walker::copy_fresh(source, &stage, &mut sink) {
             Ok(Outcome::Done) => match copier::rename_excl(&stage, &dest) {
                 Ok(()) => {
                     pop_staging(&mut journal_entry, &stage);
@@ -1085,6 +1126,9 @@ fn run_duplicate_thread(
     engine.journal.remove(&op_id);
     engine.ops.remove(&op_id);
 
+    let touched: Vec<PathBuf> = paths.iter().chain(produced.iter()).cloned().collect();
+    (engine.invalidate_fuzzy)(&touched);
+
     let status = if cancelled {
         "cancelled"
     } else if sink.errors.is_empty() {
@@ -1098,7 +1142,6 @@ fn run_duplicate_thread(
         status,
         errors: sink.errors.clone(),
         warnings: sink.warnings.clone(),
-        skipped_icloud: Vec::new(),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         undoable: !produced.is_empty(),
     });

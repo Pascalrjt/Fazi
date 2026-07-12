@@ -12,7 +12,5 @@
   <string>Fazi needs access to removable volumes to browse and manage files on external disks.</string>
   <key>NSNetworkVolumesUsageDescription</key>
   <string>Fazi needs access to network volumes to browse and manage files on network shares.</string>
-  <key>NSFileProviderDomainUsageDescription</key>
-  <string>Fazi shows iCloud Drive and other cloud files alongside local files.</string>
 </dict>
 </plist>

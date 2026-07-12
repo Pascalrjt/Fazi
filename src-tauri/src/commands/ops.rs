@@ -12,7 +12,7 @@ use crate::core::op_queue::{spawn_duplicate, spawn_op, OpArgs, OpEmitter, OpEven
 use crate::core::undo::UndoOp;
 use crate::core::walker::{self, Resolution};
 use crate::error::{Error, Result};
-use crate::macos::trash::trash_path;
+use crate::macos::trash::{self, trash_path};
 use crate::state::AppState;
 
 struct ChannelEmitter(Channel<OpEvent>);
@@ -24,6 +24,7 @@ impl OpEmitter for ChannelEmitter {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // signature mirrors the invoke wire contract
 pub fn run_op(
     state: State<'_, AppState>,
     op_id: String,
@@ -31,6 +32,7 @@ pub fn run_op(
     sources: Vec<String>,
     dest_dir: String,
     policy: String,
+    verify: Option<bool>,
     channel: Channel<OpEvent>,
 ) -> Result<()> {
     let kind = match kind.as_str() {
@@ -48,6 +50,7 @@ pub fn run_op(
         sources: sources.iter().map(PathBuf::from).collect(),
         dest_dir: dest,
         policy: Policy::from_wire(&policy),
+        verify: verify.unwrap_or(false),
     };
     spawn_op(state.engine.clone(), args, Arc::new(ChannelEmitter(channel)));
     Ok(())
@@ -148,7 +151,10 @@ pub fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()>
         }
     }
     if !pairs.is_empty() {
+        let touched: Vec<PathBuf> =
+            pairs.iter().flat_map(|(o, l)| [o.clone(), l.clone()]).collect();
         state.engine.undo.lock().unwrap().push(UndoOp::Trash { pairs });
+        (state.engine.invalidate_fuzzy)(&touched);
     }
     if errors.is_empty() {
         Ok(())
@@ -157,9 +163,83 @@ pub fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()>
     }
 }
 
+// ---------------------------------------------------------------------------
+// Empty Trash
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "event", rename_all = "camelCase")]
+pub enum EmptyTrashEvent {
+    #[serde(rename_all = "camelCase")]
+    Progress { deleted: u64, total: u64 },
+    #[serde(rename_all = "camelCase")]
+    Done { errors: Vec<crate::core::op_queue::OpError> },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashStats {
+    pub count: u64,
+    pub external_count: u64,
+}
+
+/// Item counts across every user trash dir — the confirm dialog's source of
+/// truth ("N items (M on external volumes)"). The sidebar row only browses
+/// `~/.Trash`; the dialog copy covers the rest.
 #[tauri::command]
-pub fn delete_permanent(paths: Vec<String>) -> Result<()> {
+pub fn trash_stats() -> TrashStats {
+    let home_trash = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".Trash"))
+        .unwrap_or_default();
+    let mut count = 0u64;
+    let mut external = 0u64;
+    for dir in trash::user_trash_dirs() {
+        let n = trash::trash_items(&dir).len() as u64;
+        count += n;
+        if dir != home_trash {
+            external += n;
+        }
+    }
+    TrashStats { count, external_count: external }
+}
+
+/// Permanently delete everything in the Trash (all volumes), streaming
+/// progress. Undo/redo records referencing the deleted content are purged —
+/// even on a partial run, for every item that did delete.
+#[tauri::command]
+pub fn empty_trash(state: State<'_, AppState>, channel: Channel<EmptyTrashEvent>) {
+    let engine = state.engine.clone();
+    std::thread::spawn(move || {
+        let dirs = trash::user_trash_dirs();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let outcome = trash::empty_trash_dirs(
+            &dirs,
+            &mut |deleted, total| {
+                let _ = channel.send(EmptyTrashEvent::Progress { deleted, total });
+            },
+            &cancel,
+        );
+        if !outcome.deleted.is_empty() {
+            engine.undo.lock().unwrap().purge_records_under(&outcome.deleted);
+            (engine.invalidate_fuzzy)(&outcome.deleted);
+        }
+        let _ = channel.send(EmptyTrashEvent::Done {
+            errors: outcome
+                .errors
+                .iter()
+                .map(|(p, e)| crate::core::op_queue::OpError {
+                    path: p.to_string_lossy().into_owned(),
+                    message: e.to_string(),
+                })
+                .collect(),
+        });
+    });
+}
+
+#[tauri::command]
+pub fn delete_permanent(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
     let mut errors = Vec::new();
+    let mut deleted: Vec<PathBuf> = Vec::new();
     for p in &paths {
         let path = Path::new(p);
         let outcome = match path.symlink_metadata() {
@@ -167,9 +247,13 @@ pub fn delete_permanent(paths: Vec<String>) -> Result<()> {
             Ok(_) => std::fs::remove_file(path),
             Err(e) => Err(e),
         };
-        if let Err(e) = outcome {
-            errors.push(format!("{p}: {e}"));
+        match outcome {
+            Ok(()) => deleted.push(path.to_path_buf()),
+            Err(e) => errors.push(format!("{p}: {e}")),
         }
+    }
+    if !deleted.is_empty() {
+        (state.engine.invalidate_fuzzy)(&deleted);
     }
     if errors.is_empty() {
         Ok(())
@@ -180,19 +264,125 @@ pub fn delete_permanent(paths: Vec<String>) -> Result<()> {
 
 /// Illegal characters in a macOS file name (POSIX layer).
 fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::msg("name can't be empty"));
+    crate::core::batch_rename::validate_name(name).map_err(Error::Io)
+}
+
+// ---------------------------------------------------------------------------
+// Batch rename
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRenameItem {
+    pub from: String,
+    pub to_name: String,
+}
+
+/// All-or-nothing two-phase batch rename. Every `from` must share ONE parent
+/// directory — enforced here at the boundary, not just by UI construction.
+/// Returns the new absolute paths (same order); records a single undo entry.
+#[tauri::command]
+pub fn batch_rename(
+    state: State<'_, AppState>,
+    renames: Vec<BatchRenameItem>,
+) -> Result<Vec<String>> {
+    use crate::core::batch_rename::{std_rename, two_phase_rename, validate_batch};
+    if renames.is_empty() {
+        return Err(Error::msg("nothing to rename"));
     }
-    if name.contains('/') {
-        return Err(Error::msg("name can't contain \"/\""));
+    let mut parent: Option<PathBuf> = None;
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for item in &renames {
+        let from = PathBuf::from(&item.from);
+        let dir = from
+            .parent()
+            .ok_or_else(|| Error::msg("can't rename this item"))?
+            .to_path_buf();
+        match &parent {
+            None => parent = Some(dir),
+            Some(p) if *p == dir => {}
+            Some(_) => return Err(Error::msg("all items must be in the same folder")),
+        }
+        let from_name = from
+            .file_name()
+            .ok_or_else(|| Error::msg("can't rename this item"))?
+            .to_string_lossy()
+            .into_owned();
+        pairs.push((from_name, item.to_name.clone()));
     }
-    if name.contains('\0') {
-        return Err(Error::msg("invalid name"));
+    let parent = parent.expect("non-empty batch has a parent");
+    // Skip no-op pairs (name unchanged) — they'd trip the collision check.
+    pairs.retain(|(f, t)| f != t);
+    if pairs.is_empty() {
+        return Ok(renames.iter().map(|r| r.from.clone()).collect());
     }
-    if name == "." || name == ".." {
-        return Err(Error::msg("invalid name"));
+
+    validate_batch(&parent, &pairs).map_err(Error::Io)?;
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let finals = two_phase_rename(&parent, &pairs, &tag, &std_rename).map_err(Error::Io)?;
+
+    let undo_pairs: Vec<(PathBuf, PathBuf)> = pairs
+        .iter()
+        .zip(&finals)
+        .map(|((from, _), to)| (parent.join(from), to.clone()))
+        .collect();
+    let touched: Vec<PathBuf> =
+        undo_pairs.iter().flat_map(|(f, t)| [f.clone(), t.clone()]).collect();
+    state
+        .engine
+        .undo
+        .lock()
+        .unwrap()
+        .push(UndoOp::BatchRename { pairs: undo_pairs });
+    (state.engine.invalidate_fuzzy)(&touched);
+    Ok(finals.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Paste clipboard content as a new file
+// ---------------------------------------------------------------------------
+
+/// Create a new file in `dest_dir` from the clipboard: an image wins over
+/// text; returns None when the pasteboard holds neither. Undo trashes the
+/// created file and records the landed path, so redo restores it from the
+/// Trash (the ProducedItems round-trip).
+#[tauri::command]
+pub fn pb_paste_new_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    dest_dir: String,
+) -> Result<Option<String>> {
+    use crate::core::undo::ProducedKind;
+    use crate::core::walker::{exists_ci, keep_both_name};
+    use crate::macos::main_thread::on_main;
+    use crate::macos::pasteboard;
+
+    let dest = PathBuf::from(&dest_dir);
+    if !dest.is_dir() {
+        return Err(Error::msg("destination is not a directory"));
     }
-    Ok(())
+    let (bytes, base_name): (Vec<u8>, &str) =
+        if let Some(png) = on_main(&app, pasteboard::read_image_png) {
+            (png, "Pasted Image.png")
+        } else if let Some(text) = on_main(&app, pasteboard::read_string) {
+            (text.into_bytes(), "Pasted Text.txt")
+        } else {
+            return Ok(None);
+        };
+
+    let name = if exists_ci(&dest, base_name) {
+        keep_both_name(&dest, base_name)
+    } else {
+        base_name.to_string()
+    };
+    let path = dest.join(&name);
+    std::fs::write(&path, &bytes)?;
+    state.engine.undo.lock().unwrap().push(UndoOp::ProducedItems {
+        kind: ProducedKind::Paste,
+        pairs: vec![(path.clone(), None)],
+    });
+    (state.engine.invalidate_fuzzy)(std::slice::from_ref(&path));
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -225,6 +415,7 @@ pub fn rename_path(state: State<'_, AppState>, path: String, new_name: String) -
         .lock()
         .unwrap()
         .push(UndoOp::Rename { from: from.clone(), to: to.clone() });
+    (state.engine.invalidate_fuzzy)(&[from, to.clone()]);
     Ok(to.to_string_lossy().into_owned())
 }
 
@@ -242,6 +433,7 @@ pub fn new_folder(state: State<'_, AppState>, parent: String, name: String) -> R
         .lock()
         .unwrap()
         .push(UndoOp::NewFolder { path: path.clone() });
+    (state.engine.invalidate_fuzzy)(std::slice::from_ref(&path));
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -266,13 +458,19 @@ pub struct UndoDescription {
 #[tauri::command]
 pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
-    let outcome = state
-        .engine
-        .undo
-        .lock()
-        .unwrap()
-        .undo(trasher.as_ref())
-        .map_err(|e| Error::msg(format!("Can't undo: {e}")))?;
+    let (outcome, touched) = {
+        let mut stack = state.engine.undo.lock().unwrap();
+        let touched = stack.undo_top().map(UndoOp::touched_paths).unwrap_or_default();
+        let outcome = stack
+            .undo(trasher.as_ref())
+            .map_err(|e| Error::msg(format!("Can't undo: {e}")))?;
+        (outcome, touched)
+    };
+    if let Some(o) = &outcome {
+        let mut touched = touched;
+        touched.extend(o.restored.iter().cloned());
+        (state.engine.invalidate_fuzzy)(&touched);
+    }
     Ok(outcome.map(|o| UndoResult {
         label: o.label,
         restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
@@ -282,13 +480,19 @@ pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
 #[tauri::command]
 pub fn redo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
-    let outcome = state
-        .engine
-        .undo
-        .lock()
-        .unwrap()
-        .redo(trasher.as_ref())
-        .map_err(|e| Error::msg(format!("Can't redo: {e}")))?;
+    let (outcome, touched) = {
+        let mut stack = state.engine.undo.lock().unwrap();
+        let touched = stack.redo_top().map(UndoOp::touched_paths).unwrap_or_default();
+        let outcome = stack
+            .redo(trasher.as_ref())
+            .map_err(|e| Error::msg(format!("Can't redo: {e}")))?;
+        (outcome, touched)
+    };
+    if let Some(o) = &outcome {
+        let mut touched = touched;
+        touched.extend(o.restored.iter().cloned());
+        (state.engine.invalidate_fuzzy)(&touched);
+    }
     Ok(outcome.map(|o| UndoResult {
         label: o.label,
         restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),

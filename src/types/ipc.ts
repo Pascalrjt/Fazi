@@ -13,8 +13,6 @@
 
 export type EntryKind = "file" | "dir" | "symlink" | "unknown";
 
-export type ICloudState = "none" | "placeholder" | "local";
-
 export interface FinderTag {
   name: string;
   /** Finder label color 0–7: 0 none, 1 gray, 2 green, 3 purple, 4 blue, 5 yellow, 6 red, 7 orange */
@@ -50,7 +48,6 @@ export interface Entry {
   /** Resolved symlink target path, if kind === "symlink". */
   linkTarget: string | null;
   tags: FinderTag[];
-  icloud: ICloudState;
   /** True if the current user lacks read permission (renders lock badge). */
   noAccess: boolean;
 }
@@ -69,6 +66,14 @@ export type ListErrorCode =
   | "permissionDenied"
   | "cancelled"
   | "io";
+
+/** Row identity handed back to hydrate_paths so responses keep the original
+ *  id and icon token (no TokenTable growth on rehydrate). */
+export interface HydrateItem {
+  id: number;
+  path: string;
+  icon: string;
+}
 
 export interface ListDirArgs {
   path: string;
@@ -97,7 +102,7 @@ export type WatchEvent =
 // File operations
 // ---------------------------------------------------------------------------
 
-export type OpKind = "copy" | "move" | "trash" | "restoreTrash" | "delete" | "rename" | "newFolder" | "duplicate" | "compress" | "extract";
+export type OpKind = "copy" | "move" | "trash" | "restoreTrash" | "delete" | "rename" | "newFolder" | "duplicate" | "compress" | "extract" | "batchRename" | "paste";
 
 export type ConflictPolicy = "ask" | "keepBoth" | "replace" | "skip";
 
@@ -108,6 +113,8 @@ export interface RunOpArgs {
   destDir: string;
   /** Initial policy; "ask" surfaces conflicts over the channel. */
   policy: ConflictPolicy;
+  /** Opt-in BLAKE3 checksum verification (copies only). */
+  verify?: boolean;
 }
 
 export interface ConflictSide {
@@ -149,6 +156,8 @@ export type OpEvent =
       currentPath: string;
       /** True while the fast clone path is active (progress is entry-based). */
       cloned: boolean;
+      /** Additive: absent = copying; "verifying" during the opt-in checksum pass. */
+      phase?: "copying" | "verifying";
     }
   | {
       event: "conflict";
@@ -160,14 +169,12 @@ export type OpEvent =
     }
   | { event: "itemError"; path: string; message: string }
   | { event: "warning"; path: string; message: string; severity: "warning" | "critical" }
-  | { event: "skippedIcloud"; paths: string[] }
   | {
       event: "done";
       status: OpStatus;
       errors: OpError[];
       /** Complete, authoritative list — overwrites live-collected warnings. */
       warnings: OpWarning[];
-      skippedIcloud: string[];
       /** Destination paths of top-level items that were produced (for selection/ghost rows). */
       produced: string[];
       undoable: boolean;
@@ -195,6 +202,18 @@ export interface UndoResult {
   restored: string[];
 }
 
+/** Streamed over the Channel passed to `empty_trash`. */
+export type EmptyTrashEvent =
+  | { event: "progress"; deleted: number; total: number }
+  | { event: "done"; errors: OpError[] };
+
+/** Item counts across every user Trash dir (confirm-dialog copy). */
+export interface TrashStats {
+  count: number;
+  /** Items living in per-volume `.Trashes` (external disks). */
+  externalCount: number;
+}
+
 export interface InterruptedOp {
   opId: string;
   kind: string;
@@ -215,12 +234,72 @@ export interface SearchArgs {
   scope: string | null;
   /** Also match file contents (kMDItemTextContent). */
   contents: boolean;
+  /** Predicate filters compiled to raw kMDItem* comparisons. */
+  filters?: FuzzyFilters;
+  /** Result cap; clamped server-side to 1..=10,000. */
+  maxResults?: number;
 }
 
 export type SearchEvent =
   | { event: "hit"; path: string; name: string; isDir: boolean; icon: string }
-  | { event: "done"; total: number }
+  | {
+      event: "done";
+      total: number;
+      /** The cap truncated the stream — more matches exist. */
+      capped: boolean;
+      /** Spotlight indexing enabled on the scope's volume (always true for This Mac). */
+      indexed: boolean;
+    }
   | { event: "error"; message: string };
+
+// ---------------------------------------------------------------------------
+// Fuzzy finder (⌘P)
+// ---------------------------------------------------------------------------
+
+export interface FuzzyItem {
+  path: string;
+  name: string;
+  isDir: boolean;
+  icon: string;
+  score: number;
+}
+
+/** Streamed over the Channel passed to `fuzzy_query`. Live queries emit
+ *  multiple `results` batches (replace, don't append) while indexing;
+ *  refinement ticks whose top-K is unchanged send `progress` instead (only
+ *  the indexed counter moved — the list must stay as-is). */
+export type FuzzyEvent =
+  | { event: "results"; queryId: string; items: FuzzyItem[]; indexed: number; indexing: boolean }
+  | { event: "done"; queryId: string; capped: boolean }
+  | { event: "progress"; queryId: string; indexed: number };
+
+export interface FuzzyIndexStatus {
+  indexed: number;
+  indexing: boolean;
+  /** The walk hit the entry cap — the index is incomplete. */
+  capped: boolean;
+  builtAtMs: number;
+}
+
+/** Predicate filters applied in Rust before top-K selection (M4 fallback). */
+export interface FuzzyFilters {
+  kind?: string;
+  dateFromMs?: number;
+  dateToMs?: number;
+  sizeMin?: number;
+  sizeMax?: number;
+}
+
+export interface FuzzyQueryArgs {
+  root: string;
+  query: string;
+  queryId: string;
+  maxResults: number;
+  /** true = the ⌘P overlay (occupies the live-refinement slot); false =
+   *  one-shot scan (search fallback) that never evicts the live query. */
+  live: boolean;
+  filters?: FuzzyFilters;
+}
 
 // ---------------------------------------------------------------------------
 // Volumes & sidebar
@@ -245,7 +324,6 @@ export interface DefaultFolders {
   music: string;
   movies: string;
   applications: string;
-  icloudDrive: string | null;
   trash: string;
 }
 
@@ -299,6 +377,8 @@ export const COMMANDS = {
   listDir: "list_dir",
   cancelListing: "cancel_listing",
   statPath: "stat_path", // (path, listingId) -> Entry | null
+  statPaths: "stat_paths", // (owner, paths) -> (Entry | null)[] — bulk, owner scopes the icon tokens
+  hydratePaths: "hydrate_paths", // (listingId, {id,path,icon}[]) -> (Entry|null)[] — keeps caller ids/tokens
   // watching
   watchDir: "watch_dir", // (path, watchId, channel)
   unwatch: "unwatch",
@@ -307,8 +387,11 @@ export const COMMANDS = {
   cancelOp: "cancel_op",
   respondConflict: "respond_conflict",
   trashPaths: "trash_paths", // (paths) -> void (undoable)
+  trashStats: "trash_stats", // () -> TrashStats
+  emptyTrash: "empty_trash", // (channel EmptyTrashEvent) — permanent, purges undo history
   deletePermanent: "delete_permanent", // (paths) -> void
   renamePath: "rename_path", // (path, newName) -> newPath
+  batchRename: "batch_rename", // (renames: {from, toName}[]) -> newPaths (all-or-nothing, one undo entry)
   newFolder: "new_folder", // (parent, name) -> path
   duplicatePaths: "duplicate_paths", // (paths, channel opEvent) — keep-both copy in place
   compressPaths: "compress_paths", // (opId, sources, destDir, channel opEvent) — ditto zip
@@ -321,6 +404,11 @@ export const COMMANDS = {
   // search
   search: "search",
   cancelSearch: "cancel_search",
+  // fuzzy finder
+  fuzzyWarm: "fuzzy_warm", // (root, excludes, maxEntries? 0|absent = uncapped, force?) -> FuzzyIndexStatus
+  fuzzyQuery: "fuzzy_query", // (FuzzyQueryArgs, channel FuzzyEvent)
+  fuzzyCancel: "fuzzy_cancel", // (queryId) — icon tokens stay (index-owned)
+  fuzzyDrop: "fuzzy_drop", // (root)
   // macOS integration
   openPaths: "open_paths",
   openWith: "open_with", // (paths, appPath)
@@ -338,11 +426,11 @@ export const COMMANDS = {
   pbWriteFiles: "pb_write_files", // (paths, isCut)
   pbReadFiles: "pb_read_files", // () -> PasteboardContents | null
   pbWriteText: "pb_write_text",
+  pbPasteNewFile: "pb_paste_new_file", // (destDir) -> path | null — clipboard image/text as a new file
   quicklookPanel: "quicklook_panel", // (paths) — qlmanage -p escape hatch
   readTextHead: "read_text_head", // (path, maxBytes) -> TextPreview
   registerPreview: "register_preview", // (path) -> token for preview://
   revokePreview: "revoke_preview", // (token)
-  downloadIcloud: "download_icloud", // (paths)
 } as const;
 
 /** Global broadcast events (tauri emit). */
