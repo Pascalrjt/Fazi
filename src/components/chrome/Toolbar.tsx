@@ -5,6 +5,16 @@
  */
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Ellipsis,
+  LayoutGrid,
+  List,
+  Search,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useApp, type SearchScope } from "../../stores/app";
 import { usePanes, activeTabOf } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
@@ -17,12 +27,12 @@ import { showMenu, type MenuItem } from "../../stores/menu";
 const SEARCH_DEBOUNCE_MS = 250;
 
 function NavButton({
-  label,
+  icon: Icon,
   title,
   disabled,
   onClick,
 }: {
-  label: string;
+  icon: LucideIcon;
   title: string;
   disabled?: boolean;
   onClick: () => void;
@@ -33,11 +43,11 @@ function NavButton({
       disabled={disabled}
       onClick={onClick}
       className={clsx(
-        "focusable flex h-7 w-7 cursor-default items-center justify-center rounded-md text-[15px]",
+        "focusable flex h-7 w-7 cursor-default items-center justify-center rounded-md",
         disabled ? "text-tertiary" : "text-secondary hover:bg-hov hover:text-primary",
       )}
     >
-      {label}
+      <Icon size={15} strokeWidth={1.75} />
     </button>
   );
 }
@@ -203,7 +213,7 @@ function SearchField() {
           globalSearch.active ? "border-accent" : "border-edge",
         )}
       >
-        <span className="text-xs text-tertiary">⌕</span>
+        <Search size={12} strokeWidth={1.75} className="shrink-0 text-tertiary" />
         <input
           ref={inputRef}
           value={value}
@@ -225,8 +235,12 @@ function SearchField() {
           spellCheck={false}
         />
         {value !== "" && (
-          <button className="cursor-default text-[10px] text-tertiary hover:text-secondary" onClick={clear}>
-            ✕
+          <button
+            className="flex shrink-0 cursor-default items-center text-tertiary hover:text-secondary"
+            onClick={clear}
+            aria-label="Clear search"
+          >
+            <X size={11} strokeWidth={1.75} />
           </button>
         )}
         {globalSearch.active && (
@@ -359,13 +373,13 @@ export function Toolbar() {
       {loading && <div className="loading-bar" />}
       <div className="flex shrink-0 items-center">
         <NavButton
-          label="‹"
+          icon={ChevronLeft}
           title="Back (⌘[)"
           disabled={!tab || tab.back.length === 0}
           onClick={() => pane && tab && back(pane.id, tab.id)}
         />
         <NavButton
-          label="›"
+          icon={ChevronRight}
           title="Forward (⌘])"
           disabled={!tab || tab.forward.length === 0}
           onClick={() => pane && tab && forward(pane.id, tab.id)}
@@ -377,33 +391,33 @@ export function Toolbar() {
         <button
           title="List view (⌘1)"
           className={clsx(
-            "cursor-default rounded px-1.5 py-0.5 text-[11px]",
+            "flex cursor-default items-center rounded px-1.5 py-0.5",
             viewMode === "list" ? "bg-raised text-primary" : "text-tertiary hover:text-secondary",
           )}
           onClick={() => setViewMode("list")}
         >
-          ☰
+          <List size={13} strokeWidth={1.75} />
         </button>
         <button
           title="Icon view (⌘2)"
           className={clsx(
-            "cursor-default rounded px-1.5 py-0.5 text-[11px]",
+            "flex cursor-default items-center rounded px-1.5 py-0.5",
             viewMode === "grid" ? "bg-raised text-primary" : "text-tertiary hover:text-secondary",
           )}
           onClick={() => setViewMode("grid")}
         >
-          ⊞
+          <LayoutGrid size={13} strokeWidth={1.75} />
         </button>
       </div>
       <button
         title="Menu"
         className="focusable flex h-7 w-7 shrink-0 cursor-default items-center justify-center rounded-md text-secondary hover:bg-hov hover:text-primary"
         onClick={(e) => {
-          const rect = (e.target as HTMLElement).getBoundingClientRect();
+          const rect = e.currentTarget.getBoundingClientRect();
           showMenu(rect.right - 232, rect.bottom + 4, toolbarMenuItems());
         }}
       >
-        ⋯
+        <Ellipsis size={15} strokeWidth={1.75} />
       </button>
     </div>
   );

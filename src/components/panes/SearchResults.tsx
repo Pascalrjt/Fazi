@@ -9,9 +9,12 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { iconUrl } from "../../types/ipc";
 import * as ipc from "../../lib/ipc";
 import { useApp, toast, type SearchHit } from "../../stores/app";
+import { useSettings } from "../../stores/settings";
 import { useVolumes } from "../../stores/volumes";
 import { revealInFazi } from "../../lib/actions";
 import { displayPath } from "../../lib/format";
+
+const ROW_H = 44;
 
 export function SearchResults() {
   const hits = useApp((s) => s.globalSearch.hits);
@@ -24,13 +27,14 @@ export function SearchResults() {
   const usedFallback = useApp((s) => s.globalSearch.usedFallback);
   const scope = useApp((s) => s.globalSearch.scope);
   const home = useVolumes((s) => s.folders?.home ?? null);
+  const zebra = useSettings((s) => s.zebraStripes);
   const [selected, setSelected] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
     count: hits.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 44,
+    estimateSize: () => ROW_H,
     overscan: 10,
   });
 
@@ -118,7 +122,14 @@ export function SearchResults() {
         <div className="flex-1" />
         <span className="text-tertiary">⏎ open · ⌘R reveal · esc back</span>
       </div>
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
+      <div
+        ref={scrollRef}
+        className={clsx(
+          "min-h-0 flex-1 overflow-auto",
+          zebra && hits.length > 0 && "zebra-stripes",
+        )}
+        style={{ "--stripe-h": `${ROW_H}px` } as React.CSSProperties}
+      >
         {status === "done" && hits.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             <div className="text-2xl text-tertiary">⌕</div>

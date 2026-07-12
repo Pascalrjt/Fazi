@@ -452,6 +452,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const [marquee, setMarquee] = useState<Rect | null>(null);
   const restoredListing = useRef<string>("");
   const density = useSettings((s) => s.density);
+  const zebra = useSettings((s) => s.zebraStripes);
   const ROW_H = rowHeight(density);
 
   const visible = useMemo(
@@ -718,7 +719,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
       ) : (
         <div
           ref={scrollRef}
-          className="relative min-h-0 flex-1 overflow-auto"
+          className={clsx("relative min-h-0 flex-1 overflow-auto", zebra && "zebra-stripes")}
+          style={{ "--stripe-h": `${ROW_H}px` } as React.CSSProperties}
           onScroll={onScroll}
           onMouseDown={beginMarquee}
           onContextMenu={(e) => {

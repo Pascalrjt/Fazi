@@ -1,5 +1,10 @@
 /** Shared building blocks for the settings panes. */
+import { createContext, useContext } from "react";
 import clsx from "clsx";
+
+/** Lowercased settings-search query; "" = no filtering. Rows filter
+ *  themselves so labels/hints stay single-sourced in the pane JSX. */
+export const SettingsFilterContext = createContext("");
 
 export function SettingRow({
   label,
@@ -10,8 +15,12 @@ export function SettingRow({
   hint?: string;
   children: React.ReactNode;
 }) {
+  const query = useContext(SettingsFilterContext);
+  if (query !== "" && !`${label} ${hint ?? ""}`.toLowerCase().includes(query)) {
+    return null;
+  }
   return (
-    <div className="flex items-start gap-4 py-2.5">
+    <div className="settings-row flex items-start gap-4 py-2.5">
       <div className="w-[210px] shrink-0 pt-0.5">
         <div className="text-[13px] text-primary">{label}</div>
         {hint && <div className="mt-0.5 text-[11px] leading-snug text-tertiary">{hint}</div>}
