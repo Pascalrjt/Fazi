@@ -1,5 +1,6 @@
 /** Full Disk Access onboarding card, shown once when FDA is missing. */
 import { useEffect } from "react";
+import { Lock } from "lucide-react";
 import * as ipc from "../../lib/ipc";
 import { useApp } from "../../stores/app";
 import { useSettings } from "../../stores/settings";
@@ -21,7 +22,7 @@ export function FdaBanner() {
 
   return (
     <div className="anim-slide-up mx-3 mb-2 flex items-center gap-3 rounded-lg border border-edge bg-raised px-3 py-2">
-      <span className="text-lg">🔒</span>
+      <Lock size={20} className="shrink-0 text-secondary" aria-hidden />
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-primary">Grant Full Disk Access</div>
         <div className="truncate text-xs text-secondary">

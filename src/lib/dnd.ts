@@ -5,37 +5,18 @@
  */
 import { useOps } from "../stores/ops";
 import { trashPathsWithUndo } from "./actions";
+import { pinFolders } from "./pin";
 
 export const FAZI_DND_MIME = "application/x-fazi-paths";
 
-/** Sidebar-favorite reorder drags — distinct MIME so rows never treat them
- *  as file moves (`dragHasPaths()` stays false). */
-export const FAZI_FAV_MIME = "application/x-fazi-favorite";
+// NOTE: sidebar-favorite reorder is deliberately NOT HTML5 drag & drop. With
+// Tauri's dragDropEnabled (the default, and required for Finder drag-in),
+// wry swallows the WKWebView's NSDraggingDestination callbacks, so the DOM
+// never receives dragover/drop for ANY drag on macOS — HTML5 drop targets
+// are dead in the running app. Reorder is pointer-event based (Sidebar.tsx).
 
 /** dataTransfer isn't readable during dragover — mirror the payload here. */
 let currentDragPaths: string[] | null = null;
-
-/** Mirror of the favorite path being reorder-dragged (same dragover trick). */
-let currentFavoritePath: string | null = null;
-
-export function beginFavoriteDrag(e: React.DragEvent, path: string): void {
-  currentFavoritePath = path;
-  e.dataTransfer.setData(FAZI_FAV_MIME, path);
-  e.dataTransfer.effectAllowed = "move";
-}
-
-export function endFavoriteDrag(): void {
-  currentFavoritePath = null;
-}
-
-export function dragHasFavorite(e: React.DragEvent): boolean {
-  return e.dataTransfer.types.includes(FAZI_FAV_MIME) || currentFavoritePath != null;
-}
-
-export function draggedFavoritePath(e: React.DragEvent): string | null {
-  const raw = e.dataTransfer.getData(FAZI_FAV_MIME);
-  return raw !== "" ? raw : currentFavoritePath;
-}
 
 export function beginInternalDrag(e: React.DragEvent, paths: string[]): void {
   currentDragPaths = paths;
@@ -98,22 +79,19 @@ export function dropPaths(e: React.DragEvent, destDir: string): void {
 /**
  * What a drop on a zone means. "copyTo" starts a copy into the hit directory;
  * "trash" dispatches trash_paths — dropping onto the Trash row must keep
- * Finder Trash semantics (Put Back metadata), never copy into ~/.Trash.
+ * Finder Trash semantics (Put Back metadata), never copy into ~/.Trash;
+ * "pin" adds dropped folders to the sidebar Favorites at `index`.
  */
-export type DropAction = "copyTo" | "trash";
+export type DropHit =
+  | { action: "copyTo"; destDir: string }
+  | { action: "trash"; destDir: string }
+  | { action: "pin"; index: number };
 
 export interface DropZone {
-  /** Returns the destination dir for a client point inside this zone, else null. */
-  hitTest(clientX: number, clientY: number): string | null;
+  /** Returns what a drop at this client point means, else null. */
+  hitTest(clientX: number, clientY: number): DropHit | null;
   /** Larger = tested first (rows beat pane background). */
   priority: number;
-  /** Defaults to "copyTo". */
-  action?: DropAction;
-}
-
-export interface DropHit {
-  destDir: string;
-  action: DropAction;
 }
 
 const dropZones = new Set<DropZone>();
@@ -126,10 +104,33 @@ export function registerDropZone(zone: DropZone): () => void {
 export function hitTestDropZones(clientX: number, clientY: number): DropHit | null {
   const sorted = [...dropZones].sort((a, b) => b.priority - a.priority);
   for (const zone of sorted) {
-    const dir = zone.hitTest(clientX, clientY);
-    if (dir != null) return { destDir: dir, action: zone.action ?? "copyTo" };
+    const hit = zone.hitTest(clientX, clientY);
+    if (hit != null) return hit;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Pin-hover feedback for native drags (Finder drag-in / native self-drops)
+// ---------------------------------------------------------------------------
+
+type PinHoverListener = (index: number | null) => void;
+const pinHoverListeners = new Set<PinHoverListener>();
+
+/** Subscribe to native-drag pin-hover updates (insertion index, null = none). */
+export function onPinHover(fn: PinHoverListener): () => void {
+  pinHoverListeners.add(fn);
+  return () => pinHoverListeners.delete(fn);
+}
+
+export function emitPinHover(index: number | null): void {
+  for (const fn of pinHoverListeners) fn(index);
+}
+
+/** True while an HTML5 (within-app) drag is in flight — the native bridge
+ *  must not emit hover feedback for those; they own their own feedback. */
+export function htmlDragInFlight(): boolean {
+  return currentDragPaths != null;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,10 +181,14 @@ export function altHeldDuringDrag(): boolean {
   return altDuringDrag;
 }
 
-/** Apply a native self-drop at a hit zone: trash rows trash, folders get an
- *  internal move (⌥ held = copy). Same no-op guards as HTML5 drops. */
+/** Apply a native self-drop at a hit zone: pin zones pin, trash rows trash,
+ *  folders get an internal move (⌥ held = copy). Same guards as HTML5 drops. */
 export function dispatchNativeSelfDrop(hit: DropHit, paths: string[], altCopy: boolean): void {
   if (paths.length === 0) return;
+  if (hit.action === "pin") {
+    void pinFolders(paths, hit.index);
+    return;
+  }
   if (hit.action === "trash") {
     trashPathsWithUndo(paths);
     return;

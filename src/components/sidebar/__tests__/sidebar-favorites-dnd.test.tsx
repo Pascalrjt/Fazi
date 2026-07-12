@@ -1,13 +1,19 @@
 /**
- * Sidebar favorites drag & drop — the two bug-prone handler-order contracts:
- * 1. favorite-reorder drags (FAZI_FAV_MIME) must bubble THROUGH SidebarRow
- *    (MIME checked before stopPropagation) and reach the section's reorder
- *    handler;
- * 2. file-path drops on a favorite row must stopPropagate and stay move-into
- *    (never a pin).
+ * Sidebar favorites drag & drop — the bug-prone contracts:
+ * 1. pin reorder is POINTER-event based (HTML5 drop events never reach the
+ *    DOM in the running app — wry swallows them on macOS): pointerdown +
+ *    move past the threshold shows the insertion line, pointerup commits,
+ *    Escape cancels, and the click after a reorder must not navigate;
+ * 2. file-path drops on a favorite row's CENTER must stopPropagate and stay
+ *    move-into (never a pin);
+ * 3. file-path drops on a row's top/bottom edge band must bubble to the
+ *    section and pin at the insertion slot (with the insertion line shown).
+ *
+ * jsdom rects are 0×0, which the row treats as center — edge-zone tests mock
+ * getBoundingClientRect on the row divs and their [data-fav-index] wrappers.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Entry } from "../../../types/ipc";
 
 const mocks = vi.hoisted(() => ({
@@ -34,7 +40,7 @@ vi.mock("../../../lib/ipc", () => ({
 }));
 
 import { Sidebar } from "../Sidebar";
-import { FAZI_DND_MIME, FAZI_FAV_MIME } from "../../../lib/dnd";
+import { FAZI_DND_MIME } from "../../../lib/dnd";
 import { useSettings } from "../../../stores/settings";
 import { useVolumes } from "../../../stores/volumes";
 import { useOps } from "../../../stores/ops";
@@ -61,6 +67,74 @@ function dt(types: string[], data: Record<string, string>) {
     dropEffect: "",
     effectAllowed: "",
   };
+}
+
+/** Dispatch a pointer event as a MouseEvent (jsdom lacks PointerEvent; the
+ *  type string is what React's listeners and the window listeners match). */
+function firePointer(
+  target: Element | Window,
+  type: "pointerdown" | "pointermove" | "pointerup",
+  init: MouseEventInit,
+) {
+  fireEvent(target, new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+}
+
+/** Fire a drag event carrying clientY — jsdom has no DragEvent, and RTL's
+ *  fallback event drops coordinate init fields, so define them directly. */
+function fireDragAt(
+  el: Element,
+  type: "dragOver" | "drop",
+  clientY: number,
+  dataTransfer: ReturnType<typeof dt>,
+) {
+  const event = createEvent[type](el);
+  Object.defineProperty(event, "clientY", { value: clientY });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  fireEvent(el, event);
+}
+
+/** Give an element a real rect (jsdom defaults to 0×0). */
+function mockRect(el: Element, top: number, bottom: number) {
+  Object.defineProperty(el, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      top,
+      bottom,
+      height: bottom - top,
+      left: 0,
+      right: 200,
+      width: 200,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }),
+  });
+}
+
+/** Mock rects on a favorite row's div AND its [data-fav-index] wrapper. */
+function mockRowRects(label: string, top: number, bottom: number): HTMLElement {
+  const row = screen.getByText(label).parentElement as HTMLElement;
+  mockRect(row, top, bottom);
+  if (row.parentElement?.hasAttribute("data-fav-index")) {
+    mockRect(row.parentElement, top, bottom);
+  }
+  return row;
+}
+
+/** Seed the first pane's first tab with entries so the pin resolver finds
+ *  them without IPC. */
+function seedListing(entries: Entry[]) {
+  const s = usePanes.getState();
+  usePanes.setState({
+    panes: s.panes.map((pane, i) =>
+      i === 0
+        ? {
+            ...pane,
+            tabs: pane.tabs.map((tab, j) => (j === 0 ? { ...tab, entries } : tab)),
+          }
+        : pane,
+    ),
+  });
 }
 
 function dirEntry(id: number, name: string, path: string): Entry {
@@ -101,24 +175,49 @@ describe("sidebar favorites drag & drop", () => {
     cleanup();
   });
 
-  it("reorder drags bubble through SidebarRow to the section handler", () => {
+  it("pointer-drag on a pin shows the insertion line and reorders on pointerup", () => {
     render(<Sidebar />);
-    const rowB = screen.getByText("FavB");
+    mockRowRects("FavA", 100, 128);
+    mockRowRects("FavB", 128, 156);
+    const rowA = screen.getByText("FavA").parentElement as HTMLElement;
 
-    // dragOver a favorite ROW with the reorder MIME: the row must bail before
-    // stopPropagation so the section computes an insertion index…
-    fireEvent.dragOver(rowB, {
-      dataTransfer: dt([FAZI_FAV_MIME], { [FAZI_FAV_MIME]: "/p/A" }),
-    });
-    // …and the drop (also on the row) must reach the section's moveFavorite.
-    fireEvent.drop(rowB, {
-      dataTransfer: dt([FAZI_FAV_MIME], { [FAZI_FAV_MIME]: "/p/A" }),
-    });
+    firePointer(rowA, "pointerdown", { button: 0, clientX: 50, clientY: 110 });
+    // Past the threshold and below FavB's midpoint (142) → insertion slot 2.
+    firePointer(window, "pointermove", { clientX: 50, clientY: 150 });
+    expect(screen.getByTestId("insertion-line")).toBeTruthy();
+    firePointer(window, "pointerup", { clientX: 50, clientY: 150 });
 
     expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/B", "/p/A"]);
-    // A reorder is never a file move.
+    expect(screen.queryByTestId("insertion-line")).toBeNull();
+    // A reorder is never a file move…
     expect(mocks.runOpCalls).toHaveLength(0);
     expect(useOps.getState().cards).toHaveLength(0);
+    // …and the click that follows the reorder must not navigate.
+    const tabPath = usePanes.getState().panes[0].tabs[0].path;
+    fireEvent.click(rowA);
+    expect(usePanes.getState().panes[0].tabs[0].path).toBe(tabPath);
+  });
+
+  it("Escape cancels a pointer reorder; a plain press stays a click", () => {
+    render(<Sidebar />);
+    mockRowRects("FavA", 100, 128);
+    mockRowRects("FavB", 128, 156);
+    const rowB = screen.getByText("FavB").parentElement as HTMLElement;
+
+    firePointer(rowB, "pointerdown", { button: 0, clientX: 50, clientY: 140 });
+    firePointer(window, "pointermove", { clientX: 50, clientY: 105 });
+    expect(screen.getByTestId("insertion-line")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("insertion-line")).toBeNull();
+    firePointer(window, "pointerup", { clientX: 50, clientY: 105 });
+    expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
+
+    // A press without movement past the threshold never starts a reorder.
+    firePointer(rowB, "pointerdown", { button: 0, clientX: 50, clientY: 140 });
+    firePointer(window, "pointermove", { clientX: 51, clientY: 141 });
+    expect(screen.queryByTestId("insertion-line")).toBeNull();
+    firePointer(window, "pointerup", { clientX: 51, clientY: 141 });
+    expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
   });
 
   it("file-path drop on a favorite row stays move-into and never pins", () => {
@@ -145,27 +244,10 @@ describe("sidebar favorites drag & drop", () => {
 
   it("file-path drop on section chrome pins folders (dirs only)", async () => {
     // Seed a listing so the pin resolver finds the entries without IPC.
-    const s = usePanes.getState();
-    usePanes.setState({
-      panes: s.panes.map((pane, i) =>
-        i === 0
-          ? {
-              ...pane,
-              tabs: pane.tabs.map((tab, j) =>
-                j === 0
-                  ? {
-                      ...tab,
-                      entries: [
-                        dirEntry(1, "Projects", "/files/Projects"),
-                        { ...dirEntry(2, "notes.txt", "/files/notes.txt"), kind: "file" as const },
-                      ],
-                    }
-                  : tab,
-              ),
-            }
-          : pane,
-      ),
-    });
+    seedListing([
+      dirEntry(1, "Projects", "/files/Projects"),
+      { ...dirEntry(2, "notes.txt", "/files/notes.txt"), kind: "file" as const },
+    ]);
 
     render(<Sidebar />);
     const label = screen.getByText("Favorites");
@@ -182,5 +264,85 @@ describe("sidebar favorites drag & drop", () => {
       ]);
     });
     expect(mocks.runOpCalls).toHaveLength(0);
+  });
+
+  // FavA row spans y 100–128, FavB y 128–156 in the edge-zone tests below;
+  // edge bands are the top/bottom 7px (25%) of each 28px row.
+
+  it("file-path drop on a row's edge band pins at that insertion slot", async () => {
+    seedListing([dirEntry(1, "Projects", "/files/Projects")]);
+    render(<Sidebar />);
+    mockRowRects("FavA", 100, 128);
+    const rowB = mockRowRects("FavB", 128, 156);
+    const payload = JSON.stringify(["/files/Projects"]);
+
+    // y=130 is inside FavB's top edge band → insertion between A and B.
+    fireDragAt(rowB, "dragOver", 130, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    expect(screen.getByTestId("insertion-line")).toBeTruthy();
+    fireDragAt(rowB, "drop", 130, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+
+    await waitFor(() => {
+      expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
+        "/p/A",
+        "/files/Projects",
+        "/p/B",
+      ]);
+    });
+    // An edge pin is never a file move.
+    expect(mocks.runOpCalls).toHaveLength(0);
+    expect(useOps.getState().cards).toHaveLength(0);
+  });
+
+  it("file-path drop on a row's center still moves into the folder", () => {
+    render(<Sidebar />);
+    const rowA = mockRowRects("FavA", 100, 128);
+    mockRowRects("FavB", 128, 156);
+    const payload = JSON.stringify(["/files/notes.txt"]);
+
+    // y=114 is FavA's center band.
+    fireDragAt(rowA, "dragOver", 114, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    fireDragAt(rowA, "drop", 114, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+
+    const cards = useOps.getState().cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0].kind).toBe("move");
+    expect(cards[0].destDir).toBe("/p/A");
+    expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
+  });
+
+  it("edge drop over a default row pins at slot 0", async () => {
+    seedListing([dirEntry(1, "Projects", "/files/Projects")]);
+    render(<Sidebar />);
+    // Documents sits above the pins; its edge band clamps to slot 0.
+    const docs = mockRowRects("Documents", 40, 68);
+    mockRowRects("FavA", 100, 128);
+    mockRowRects("FavB", 128, 156);
+    const payload = JSON.stringify(["/files/Projects"]);
+
+    fireDragAt(docs, "dragOver", 42, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    fireDragAt(docs, "drop", 42, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+
+    await waitFor(() => {
+      expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
+        "/files/Projects",
+        "/p/A",
+        "/p/B",
+      ]);
+    });
+    expect(mocks.runOpCalls).toHaveLength(0);
+  });
+
+  it("hovering a row's center clears the insertion line from a prior edge hover", () => {
+    render(<Sidebar />);
+    const rowA = mockRowRects("FavA", 100, 128);
+    mockRowRects("FavB", 128, 156);
+    const payload = JSON.stringify(["/files/Projects"]);
+
+    // edge band → line
+    fireDragAt(rowA, "dragOver", 102, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    expect(screen.getByTestId("insertion-line")).toBeTruthy();
+    // center → line must clear
+    fireDragAt(rowA, "dragOver", 114, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    expect(screen.queryByTestId("insertion-line")).toBeNull();
   });
 });

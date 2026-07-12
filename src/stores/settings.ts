@@ -81,9 +81,11 @@ interface SettingsState {
   resetToDefaults(): void;
   /**
    * Pin folders, skipping paths already pinned or matching a default sidebar
-   * row (`defaultPaths`). Returns how many were actually added.
+   * row (`defaultPaths`) — duplicates are skipped, never moved. `atIndex`
+   * inserts the fresh items there (clamped; omitted = append). Returns how
+   * many were actually added.
    */
-  addFavorites(items: FavoriteFolder[], defaultPaths: string[]): number;
+  addFavorites(items: FavoriteFolder[], defaultPaths: string[], atIndex?: number): number;
   removeFavorite(path: string): void;
   moveFavorite(path: string, toIndex: number): void;
 }
@@ -167,7 +169,7 @@ export const useSettings = create<SettingsState>()(
         set({ ...SETTINGS_DEFAULTS, favorites });
       },
 
-      addFavorites: (items, defaultPaths) => {
+      addFavorites: (items, defaultPaths, atIndex) => {
         const taken = new Set([
           ...get().favorites.map((f) => f.path),
           ...defaultPaths,
@@ -179,7 +181,17 @@ export const useSettings = create<SettingsState>()(
           fresh.push(item);
         }
         if (fresh.length > 0) {
-          set((s) => ({ favorites: [...s.favorites, ...fresh] }));
+          set((s) => {
+            // The index was captured at drop time but resolution is async
+            // (statPath) — the list may have changed by now, so clamp.
+            const at =
+              atIndex == null
+                ? s.favorites.length
+                : Math.max(0, Math.min(atIndex, s.favorites.length));
+            const next = [...s.favorites];
+            next.splice(at, 0, ...fresh);
+            return { favorites: next };
+          });
         }
         return fresh.length;
       },

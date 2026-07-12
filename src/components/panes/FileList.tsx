@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import clsx from "clsx";
+import { Lock } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
@@ -319,7 +320,11 @@ const FileRow = memo(function FileRow({
       <span className="flex shrink-0 items-center gap-1 text-[11px] text-tertiary">
         {entry.kind === "symlink" && <span title={entry.linkTarget ?? "Symbolic link"}>⤳</span>}
         {entry.isAlias && <span title="Alias">↪</span>}
-        {entry.noAccess && <span title="No access">🔒</span>}
+        {entry.noAccess && (
+          <span title="No access">
+            <Lock size={11} aria-hidden />
+          </span>
+        )}
       </span>
       <span className="shrink-0 truncate text-xs text-secondary" style={{ width: cols.kind }}>
         {entry.hydrated || entry.ext !== "" || entry.kind !== "unknown"
@@ -534,8 +539,10 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         const vis = visibleEntries(t);
         const idx = Math.floor((y - rect.top + el.scrollTop) / ROW_H);
         const entry = vis[idx];
-        if (entry && entry.kind === "dir" && !entry.isPackage) return entry.path;
-        return t.path;
+        if (entry && entry.kind === "dir" && !entry.isPackage) {
+          return { action: "copyTo", destDir: entry.path };
+        }
+        return { action: "copyTo", destDir: t.path };
       },
     });
     return unregister;

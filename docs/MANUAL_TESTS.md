@@ -198,8 +198,8 @@ phase done. Check items off per release.
       Finder→Fazi drag-in a COPY (the self-drop flag cleared).
 - [ ] Kill-switch: Advanced → disable drag-out → rows drag HTML5-only again
       (internal DnD works, Finder drop does nothing).
-- [ ] Sidebar favorite reorder still works with drag-out enabled (stays
-      HTML5).
+- [ ] Sidebar favorite reorder still works with drag-out enabled (it is
+      pointer-event based, independent of any drag system).
 
 ## Archives
 - [ ] Compress a large folder and cancel mid-way → op card disappears, no
@@ -223,13 +223,36 @@ phase done. Check items off per release.
 ## Sidebar favorites
 - [ ] Right-click a folder → "Add to Sidebar" pins it under the default
       Favorites; pinning ~/Downloads again is refused (no duplicate row).
-- [ ] Drag folders from the file list onto the Favorites section label /
-      whitespace → pinned; dragging files there is refused with a toast.
-- [ ] Drag a pinned favorite row up/down → 2 px insertion line, order
-      persists across relaunch.
-- [ ] Drag a file onto a pinned favorite row still moves it INTO that folder
-      (regression for the drop-propagation change) — it must not pin.
+- [ ] Drag a folder from the file list over the Favorites section: hovering
+      a row's top/bottom edge shows the 2 px insertion line; hovering its
+      center shows the row drop-ring — exactly one indicator at a time.
+      Edge drop pins at that slot; center drop moves INTO that folder
+      (⌥ = copy) — it must not pin.
+- [ ] Hovering the defaults region (Home…Applications) shows the line above
+      the first pin and drops at slot 0; section whitespace pins at the end;
+      works with zero existing pins.
+- [ ] Dragging a file (non-folder) to an edge is refused with "Only folders
+      can be added to the sidebar"; an already-pinned folder toasts "Already
+      in the sidebar".
+- [ ] Drag a pinned favorite row up/down (press + move ≥4 px) → 2 px
+      insertion line follows the pointer, drop reorders, order persists
+      across relaunch; Escape mid-drag cancels; a plain click (no movement)
+      still navigates, and the release after a reorder does NOT navigate.
 - [ ] Right-click a pinned row → "Remove from Sidebar"; default rows offer no
       such item.
-- [ ] Finder drag-in onto the sidebar does not pin (out of scope — it copies
-      into hit-tested folders only).
+- [ ] Finder drag-in over Favorites: the insertion line appears as soon as
+      the drag enters the window and tracks the cursor; dropping on a row
+      edge / whitespace pins at that slot, on a row center copies into that
+      folder. Finder drops on panes still copy; on the Trash row still trash.
+- [ ] Native self-drop (drag a Fazi row out and back onto Favorites): row
+      edge / whitespace pins, row center moves (⌥ = copy).
+
+## Sidebar icons
+- [ ] All sidebar rows show lucide icons (no emoji): Home, Desktop,
+      Documents, Downloads, Applications, pinned folders, Trash, volumes
+      (internal vs USB differ); tint follows the row (accent-dim current
+      row, secondary otherwise) in light AND dark themes.
+- [ ] Eject icon appears on ejectable-volume hover and still ejects.
+- [ ] Lock icon renders in the FDA banner, the permission-denied pane state,
+      and the no-access row badge; the error pane shows the warning triangle
+      in the danger color.
