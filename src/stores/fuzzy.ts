@@ -116,6 +116,14 @@ export const useFuzzy = create<FuzzyState>()(
               s.indexing = false;
             });
             break;
+          case "progress":
+            // Top-K unchanged on this refine tick — move the counter only,
+            // leaving `hits` untouched so the list never rerenders.
+            set((s) => {
+              s.indexed = e.indexed;
+              s.indexing = true;
+            });
+            break;
           default: {
             const _exhaustive: never = e;
             void _exhaustive;

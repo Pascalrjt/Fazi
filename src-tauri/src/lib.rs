@@ -64,6 +64,8 @@ pub fn run() {
 
             let thumb_cache_dir = cache_dir.join("thumbnails");
             std::fs::create_dir_all(&thumb_cache_dir)?;
+            let fuzzy_cache_dir = cache_dir.join("fuzzy-index");
+            std::fs::create_dir_all(&fuzzy_cache_dir)?;
             {
                 let dir = thumb_cache_dir.clone();
                 std::thread::spawn(move || macos::thumbnails::prune_cache(&dir));
@@ -78,12 +80,28 @@ pub fn run() {
                 fuzzy,
                 fuzzy_lru: Mutex::new(Vec::new()),
                 fuzzy_queries: DashMap::new(),
+                fuzzy_pending: Arc::new(DashMap::new()),
+                fuzzy_cache_dir,
                 engine,
                 icon_cache: Arc::new(DashMap::new()),
                 thumb_cache_dir,
                 interrupted,
                 pb_mark: Mutex::new(None),
             });
+
+            // Pre-warm the extension-shared icon PNGs so the first ⌘P result
+            // burst doesn't rasterize dozens of type icons on the AppKit main
+            // thread at once (measured 1-17 ms per cold render). Delayed and
+            // paced so first paint and early navigation always win.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let state = handle.state::<AppState>();
+                    let cache = state.icon_cache.clone();
+                    macos::icons::prewarm_common(&handle, &cache);
+                });
+            }
 
             // Volume mount/unmount: 2 s poll of the mounted-path set.
             {

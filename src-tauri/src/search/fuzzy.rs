@@ -17,7 +17,12 @@
 //!   refinement or the end-of-walk cleanup can never clear a newer query;
 //! - icon tokens are owned by the index generation and cached (bounded LRU)
 //!   so refine ticks reuse identical icon:// URLs and cancellation never
-//!   revokes a token another live view still shows.
+//!   revokes a token another live view still shows;
+//! - refinement is incremental and exact: blocks are immutable and a path's
+//!   score depends only on the pattern, so each tick scans only blocks
+//!   appended since the last tick and merges with the previous top-K
+//!   (topK(A ∪ B) == topK(topK(A) ∪ topK(B))); ticks whose top-K is
+//!   unchanged send a lightweight Progress event instead of Results.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
@@ -91,6 +96,10 @@ pub enum FuzzyEvent {
     },
     #[serde(rename_all = "camelCase")]
     Done { query_id: String, capped: bool },
+    /// Refinement tick whose top-K was identical to the last one sent: only
+    /// the indexed counter moved, so the result list needs no update.
+    #[serde(rename_all = "camelCase")]
+    Progress { query_id: String, indexed: u64 },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -280,6 +289,31 @@ impl FuzzyIndex {
             owners: Mutex::new(Vec::new()),
             icon_tokens: Mutex::new(TokenLru::new(ICON_TOKEN_CACHE_CAP)),
         })
+    }
+
+    /// Reconstruct a COMPLETE index from persisted entries (indexing = false
+    /// from the start). The caller still kicks a background refresh walk —
+    /// the snapshot is a picture of the disk at save time, not now.
+    pub fn restore(
+        root: PathBuf,
+        config_hash: u64,
+        blocks: Vec<Vec<IndexedPath>>,
+        capped: bool,
+        built_at_ms: u64,
+    ) -> Arc<Self> {
+        let index = FuzzyIndex::new(root, config_hash, built_at_ms);
+        let mut total: u64 = 0;
+        {
+            let mut guard = index.blocks.write().unwrap();
+            for b in blocks {
+                total += b.len() as u64;
+                guard.push(Arc::new(b.into_boxed_slice()));
+            }
+        }
+        index.indexed.store(total, Ordering::SeqCst);
+        index.capped.store(capped, Ordering::SeqCst);
+        index.indexing.store(false, Ordering::SeqCst);
+        index
     }
 
     pub fn snapshot(&self) -> Vec<Arc<Block>> {
@@ -475,6 +509,7 @@ pub fn build_index(
     let mut total: u64 = 0;
     let mut last_refine = Instant::now();
     let mut refined_at: u64 = 0;
+    let mut refine_state: Option<RefineState> = None;
     let mut aborted = false;
 
     for entry in walk {
@@ -512,7 +547,7 @@ pub fn build_index(
             if !block.is_empty() {
                 push_block(&index, &mut block);
             }
-            refine_active(&index, generation, true);
+            refine_active(&index, generation, true, &mut refine_state);
         }
     }
     if !block.is_empty() {
@@ -536,7 +571,7 @@ pub fn build_index(
         // Final refinement + Done for the live query, then clear EXACTLY the
         // query that was refined — a newer query can finish its initial scan
         // and install itself concurrently, and must not be wiped.
-        if let Some(refined) = refine_active(&index, generation, false) {
+        if let Some(refined) = refine_active(&index, generation, false, &mut refine_state) {
             index.clear_active_if(&refined);
         }
     }
@@ -550,6 +585,18 @@ fn push_block(index: &FuzzyIndex, block: &mut Vec<IndexedPath>) {
     block.reserve(BLOCK_SIZE);
 }
 
+/// Walk-thread-local refinement state: which prefix of the snapshot the
+/// active query has already scanned, and its exact top-K over that prefix.
+/// Blocks are immutable and a path's score depends only on the pattern, so
+/// merging the previous top-K with the top-K of the appended blocks is
+/// exactly the top-K of the full snapshot. Discarded whenever the active
+/// query changes or carries filters (the stat budget is per-scan).
+struct RefineState {
+    query_id: String,
+    blocks_scanned: usize,
+    hits: Vec<(u32, Arc<Block>, usize)>,
+}
+
 /// Re-run the stored live query against the current snapshot. Returns the id
 /// of the query it refined (for exact end-of-index cleanup).
 ///
@@ -558,7 +605,12 @@ fn push_block(index: &FuzzyIndex, block: &mut Vec<IndexedPath>) {
 /// wait on, so any lock hold here must stay O(µs). Because the slot can be
 /// cancelled or replaced while the scan runs unlocked, the cancel flag is
 /// re-checked before every externally visible step.
-fn refine_active(index: &FuzzyIndex, generation: u64, still_indexing: bool) -> Option<String> {
+fn refine_active(
+    index: &FuzzyIndex,
+    generation: u64,
+    still_indexing: bool,
+    state: &mut Option<RefineState>,
+) -> Option<String> {
     let q = {
         let guard = index.active.lock().unwrap();
         let q = guard.as_ref()?;
@@ -568,20 +620,70 @@ fn refine_active(index: &FuzzyIndex, generation: u64, still_indexing: bool) -> O
         q.clone()
     };
     let started = Instant::now();
-    let outcome = run_query(index, &q.pattern, q.max_results, &q.filters, &q.cancel, generation)?;
+    let k = q.max_results.clamp(1, MAX_TOP_K);
+    let blocks = index.snapshot();
+    let prev = match state.take() {
+        Some(s)
+            if q.filters.is_empty()
+                && s.query_id == q.query_id
+                && s.blocks_scanned <= blocks.len() =>
+        {
+            Some(s)
+        }
+        _ => None,
+    };
+    let scan_from = prev.as_ref().map_or(0, |s| s.blocks_scanned);
+    let pattern = parse_pattern(&q.pattern);
+    let filters_capped = AtomicBool::new(false);
+    let mut hits = scan_blocks(
+        index,
+        &blocks[scan_from..],
+        &pattern,
+        k,
+        &q.filters,
+        &q.cancel,
+        generation,
+        &filters_capped,
+    )?;
     if q.cancel.load(Ordering::SeqCst) {
         return None;
     }
-    let items = build_items(index, outcome.hits, &q.icon_token, &q.icon_revoke);
+    let mut unchanged = false;
+    if let Some(s) = &prev {
+        hits.extend_from_slice(&s.hits);
+        sort_hits(&mut hits);
+        hits.truncate(k);
+        unchanged = hits.len() == s.hits.len()
+            && hits
+                .iter()
+                .zip(&s.hits)
+                .all(|(a, b)| Arc::ptr_eq(&a.1, &b.1) && a.2 == b.2);
+    }
+    *state = Some(RefineState {
+        query_id: q.query_id.clone(),
+        blocks_scanned: blocks.len(),
+        hits: hits.clone(),
+    });
+    if unchanged && still_indexing {
+        // Identical top-K: the client list needs no update — skip the token
+        // cache and serialization entirely, just move the indexed counter.
+        (q.send)(FuzzyEvent::Progress {
+            query_id: q.query_id.clone(),
+            indexed: index.indexed.load(Ordering::SeqCst),
+        });
+        return Some(q.query_id);
+    }
+    let items = build_items(index, hits, &q.icon_token, &q.icon_revoke);
     if q.cancel.load(Ordering::SeqCst) {
         return None;
     }
     if trace_enabled() {
         eprintln!(
-            "[fuzzy] refine {} → {} items over {} entries in {:.1}ms",
+            "[fuzzy] refine {} → {} items over {} entries ({} new blocks) in {:.1}ms",
             q.query_id,
             items.len(),
             index.indexed.load(Ordering::SeqCst),
+            blocks.len() - scan_from,
             started.elapsed().as_secs_f64() * 1000.0,
         );
     }
@@ -594,7 +696,8 @@ fn refine_active(index: &FuzzyIndex, generation: u64, still_indexing: bool) -> O
     if !still_indexing && !q.cancel.load(Ordering::SeqCst) && !q.done.swap(true, Ordering::SeqCst) {
         (q.send)(FuzzyEvent::Done {
             query_id: q.query_id.clone(),
-            capped: index.capped.load(Ordering::SeqCst) || outcome.filters_capped,
+            capped: index.capped.load(Ordering::SeqCst)
+                || filters_capped.load(Ordering::SeqCst),
         });
     }
     Some(q.query_id)
@@ -623,22 +726,58 @@ pub fn run_query(
 ) -> Option<QueryOutcome> {
     let blocks = index.snapshot();
     let k = max_results.clamp(1, MAX_TOP_K);
-    let pattern = if pattern_str.trim().is_empty() {
+    let pattern = parse_pattern(pattern_str);
+    let filters_capped = AtomicBool::new(false);
+    let hits = scan_blocks(index, &blocks, &pattern, k, filters, cancel, generation, &filters_capped)?;
+    Some(QueryOutcome {
+        hits,
+        filters_capped: filters_capped.load(Ordering::SeqCst),
+    })
+}
+
+fn parse_pattern(pattern_str: &str) -> Option<Pattern> {
+    if pattern_str.trim().is_empty() {
         None
     } else {
         Some(Pattern::parse(pattern_str, CaseMatching::Smart, Normalization::Smart))
-    };
+    }
+}
+
+/// Candidate ordering: score desc, then shorter rel path, then lexicographic.
+#[inline]
+fn cmp_candidates(a_score: u32, a_rel: &str, b_score: u32, b_rel: &str) -> std::cmp::Ordering {
+    b_score
+        .cmp(&a_score)
+        .then_with(|| a_rel.len().cmp(&b_rel.len()))
+        .then_with(|| a_rel.cmp(b_rel))
+}
+
+/// Top-K scan over `blocks` (the whole snapshot, or the appended suffix for
+/// an incremental refinement). Per block the hot loop collects bare
+/// (score, index) pairs — no Arc refcount traffic — and partitions around K
+/// with `select_nth_unstable_by` instead of sorting every match; the block
+/// Arc is attached only to the K global winners at the end. Broad patterns
+/// match most of the tree, so avoiding the full sorts is a 10-70% win.
+#[allow(clippy::too_many_arguments)] // internal helper shared by query + refine
+fn scan_blocks(
+    index: &FuzzyIndex,
+    blocks: &[Arc<Block>],
+    pattern: &Option<Pattern>,
+    k: usize,
+    filters: &FuzzyFilters,
+    cancel: &AtomicBool,
+    generation: u64,
+    filters_capped: &AtomicBool,
+) -> Option<Vec<(u32, Arc<Block>, usize)>> {
     let stat_budget = AtomicUsize::new(STAT_BUDGET);
-    let filters_capped = AtomicBool::new(false);
     let cancelled = AtomicBool::new(false);
 
-    // Per-thread top-K, merged after — no shared state on the hot path.
-    let per_block: Vec<Vec<(u32, Arc<Block>, usize)>> = blocks
+    let per_block: Vec<Vec<(u32, u32)>> = blocks
         .par_iter()
         .map_init(
             || Matcher::new(Config::DEFAULT.match_paths()),
             |matcher, block| {
-                let mut local: Vec<(u32, Arc<Block>, usize)> = Vec::new();
+                let mut local: Vec<(u32, u32)> = Vec::new();
                 if cancelled.load(Ordering::Relaxed) {
                     return local;
                 }
@@ -651,7 +790,7 @@ pub fn run_query(
                         cancelled.store(true, Ordering::Relaxed);
                         return Vec::new();
                     }
-                    let score = match &pattern {
+                    let score = match pattern {
                         Some(p) => {
                             let hay = Utf32Str::new(&item.rel, &mut buf);
                             match p.score(hay, matcher) {
@@ -662,14 +801,22 @@ pub fn run_query(
                         // Empty query: rank shallow/short paths first.
                         None => u32::MAX - item.rel.len().min(65_535) as u32,
                     };
-                    if !filter_matches(index, item, filters, &stat_budget, &filters_capped) {
+                    if !filter_matches(index, item, filters, &stat_budget, filters_capped) {
                         continue;
                     }
-                    local.push((score, block.clone(), i));
+                    local.push((score, i as u32));
                 }
-                // Keep only this block's top K (tie-break: shorter path wins).
-                sort_hits(&mut local);
-                local.truncate(k);
+                if local.len() > k {
+                    local.select_nth_unstable_by(k - 1, |a, b| {
+                        cmp_candidates(
+                            a.0,
+                            &block[a.1 as usize].rel,
+                            b.0,
+                            &block[b.1 as usize].rel,
+                        )
+                    });
+                    local.truncate(k);
+                }
                 local
             },
         )
@@ -682,21 +829,34 @@ pub fn run_query(
         return None;
     }
 
-    let mut merged: Vec<(u32, Arc<Block>, usize)> = per_block.into_iter().flatten().collect();
-    sort_hits(&mut merged);
-    merged.truncate(k);
-    Some(QueryOutcome {
-        hits: merged,
-        filters_capped: filters_capped.load(Ordering::SeqCst),
-    })
+    let mut merged: Vec<(u32, u32, u32)> = per_block
+        .iter()
+        .enumerate()
+        .flat_map(|(bi, v)| v.iter().map(move |&(s, i)| (s, bi as u32, i)))
+        .collect();
+    let cmp = |a: &(u32, u32, u32), b: &(u32, u32, u32)| {
+        cmp_candidates(
+            a.0,
+            &blocks[a.1 as usize][a.2 as usize].rel,
+            b.0,
+            &blocks[b.1 as usize][b.2 as usize].rel,
+        )
+    };
+    if merged.len() > k {
+        merged.select_nth_unstable_by(k - 1, cmp);
+        merged.truncate(k);
+    }
+    merged.sort_by(cmp);
+    Some(
+        merged
+            .into_iter()
+            .map(|(s, bi, i)| (s, blocks[bi as usize].clone(), i as usize))
+            .collect(),
+    )
 }
 
 fn sort_hits(hits: &mut [(u32, Arc<Block>, usize)]) {
-    hits.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| a.1[a.2].rel.len().cmp(&b.1[b.2].rel.len()))
-            .then_with(|| a.1[a.2].rel.cmp(&b.1[b.2].rel))
-    });
+    hits.sort_by(|a, b| cmp_candidates(a.0, &a.1[a.2].rel, b.0, &b.1[b.2].rel));
 }
 
 /// Resolve hits into wire items. Icon tokens are minted lazily through the
@@ -1235,7 +1395,7 @@ mod tests {
 
         let idx2 = idx.clone();
         let refine = std::thread::spawn(move || {
-            refine_active(&idx2, gen, true);
+            refine_active(&idx2, gen, true, &mut None);
         });
         entered.wait(); // the refinement is now mid-send, scan done, unlocked
         let t0 = Instant::now();
@@ -1272,7 +1432,7 @@ mod tests {
         });
         assert!(idx.install_active(q));
 
-        assert!(refine_active(&idx, gen, false).is_none());
+        assert!(refine_active(&idx, gen, false, &mut None).is_none());
         assert!(events.lock().unwrap().is_empty(), "post-cancel events leaked");
         let owners = minted_owners.lock().unwrap();
         assert!(!owners.is_empty(), "test must exercise the minting path");
@@ -1311,7 +1471,7 @@ mod tests {
 
         assert!(idx.install_active(active_query("a", 1, send.clone(), no_token())));
         // build_index's tail: final refinement, then clear the refined query…
-        let refined = refine_active(&idx, gen, false).expect("refined the live query");
+        let refined = refine_active(&idx, gen, false, &mut None).expect("refined the live query");
         assert_eq!(refined, "a");
         assert_eq!(done_count(&events.lock().unwrap()), 1, "final refine sends Done");
         // …but a newer query installed in between must survive the cleanup.
@@ -1433,6 +1593,114 @@ mod tests {
             mints.load(Ordering::SeqCst),
             minted_once,
             "second tick must be served entirely from the token cache"
+        );
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn partial_top_k_matches_naive_full_sort() {
+        // The select_nth path must return exactly what a full score-everything
+        // sort returns, including tie-breaks, with k far below the match count.
+        let d = tmp("topk-exact");
+        for i in 0..250 {
+            fs::write(d.join(format!("file-{i:03}.txt")), b"x").unwrap();
+        }
+        fs::create_dir_all(d.join("nested/deep")).unwrap();
+        for i in 0..50 {
+            fs::write(d.join(format!("nested/deep/file-{i:03}.rs")), b"x").unwrap();
+        }
+        let idx = warm_sync(&d, &[], 1_000_000);
+        let gen = idx.generation.load(Ordering::SeqCst);
+        for (pat, k) in [("file", 10), ("file", 100), ("", 7)] {
+            let outcome = run_query(
+                &idx,
+                pat,
+                k,
+                &FuzzyFilters::default(),
+                &AtomicBool::new(false),
+                gen,
+            )
+            .unwrap();
+            let got: Vec<(u32, String)> =
+                outcome.hits.iter().map(|(s, b, i)| (*s, b[*i].rel.to_string())).collect();
+
+            let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+            let pattern = parse_pattern(pat);
+            let mut buf = Vec::new();
+            let mut all: Vec<(u32, String)> = Vec::new();
+            for block in idx.snapshot() {
+                for item in block.iter() {
+                    let score = match &pattern {
+                        Some(p) => {
+                            match p.score(Utf32Str::new(&item.rel, &mut buf), &mut matcher) {
+                                Some(s) => s,
+                                None => continue,
+                            }
+                        }
+                        None => u32::MAX - item.rel.len().min(65_535) as u32,
+                    };
+                    all.push((score, item.rel.to_string()));
+                }
+            }
+            all.sort_by(|a, b| cmp_candidates(a.0, &a.1, b.0, &b.1));
+            all.truncate(k);
+            assert_eq!(got, all, "pattern {pat:?} k {k}");
+        }
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn incremental_refine_matches_full_rescan_and_sends_progress_when_unchanged() {
+        let d = tmp("incremental");
+        let idx = FuzzyIndex::new(d.clone(), 0, 0);
+        idx.indexing.store(true, Ordering::SeqCst);
+        let push = |names: &[&str]| {
+            let items: Vec<IndexedPath> = names
+                .iter()
+                .map(|n| IndexedPath {
+                    rel: (*n).into(),
+                    name_len: n.split('/').next_back().unwrap().len() as u16,
+                    is_dir: false,
+                })
+                .collect();
+            idx.blocks.write().unwrap().push(Arc::new(items.into_boxed_slice()));
+            idx.indexed.fetch_add(names.len() as u64, Ordering::SeqCst);
+        };
+        push(&["alpha/main.rs", "alpha/readme.md"]);
+
+        let (send, events) = collect_events();
+        let mut q = active_query("q1", 1, send, no_token());
+        q.pattern = "main".into();
+        assert!(idx.install_active(q));
+        let gen = idx.generation.load(Ordering::SeqCst);
+        let mut state = None;
+
+        // Tick 1: full scan (no prior state) → Results.
+        assert_eq!(refine_active(&idx, gen, true, &mut state).as_deref(), Some("q1"));
+        // Tick 2: a better match appears in a NEW block only — the merged
+        // incremental top-K must equal a from-scratch rescan → Results.
+        push(&["main.rs"]);
+        assert_eq!(refine_active(&idx, gen, true, &mut state).as_deref(), Some("q1"));
+        // Tick 3: appended block contains no match → identical top-K → Progress.
+        push(&["zzz/other.bin"]);
+        assert_eq!(refine_active(&idx, gen, true, &mut state).as_deref(), Some("q1"));
+
+        let events = events.lock().unwrap();
+        let results: Vec<Vec<String>> = events
+            .iter()
+            .filter_map(|e| match e {
+                FuzzyEvent::Results { items, .. } => {
+                    Some(items.iter().map(|i| i.path.clone()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 2, "unchanged tick must not resend results: {events:?}");
+        assert_eq!(results[1], query_paths(&idx, "main", 100), "incremental != full rescan");
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, FuzzyEvent::Progress { .. })).count(),
+            1,
+            "third tick must be progress-only: {events:?}"
         );
         fs::remove_dir_all(&d).ok();
     }

@@ -265,10 +265,13 @@ export interface FuzzyItem {
 }
 
 /** Streamed over the Channel passed to `fuzzy_query`. Live queries emit
- *  multiple `results` batches (replace, don't append) while indexing. */
+ *  multiple `results` batches (replace, don't append) while indexing;
+ *  refinement ticks whose top-K is unchanged send `progress` instead (only
+ *  the indexed counter moved — the list must stay as-is). */
 export type FuzzyEvent =
   | { event: "results"; queryId: string; items: FuzzyItem[]; indexed: number; indexing: boolean }
-  | { event: "done"; queryId: string; capped: boolean };
+  | { event: "done"; queryId: string; capped: boolean }
+  | { event: "progress"; queryId: string; indexed: number };
 
 export interface FuzzyIndexStatus {
   indexed: number;

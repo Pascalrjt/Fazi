@@ -73,6 +73,11 @@ pub struct AppState {
     pub fuzzy_lru: Mutex<Vec<PathBuf>>,
     /// fuzzy query id → cancel flag (the listing-cancel pattern).
     pub fuzzy_queries: DashMap<String, Arc<AtomicBool>>,
+    /// Roots with an in-flight background refresh walk (serve-old-until-swap).
+    /// Arc-shared with the refresh threads.
+    pub fuzzy_pending: Arc<DashMap<PathBuf, u64>>,
+    /// Persisted fuzzy-index snapshots (instant warm on relaunch).
+    pub fuzzy_cache_dir: PathBuf,
     pub engine: Arc<Engine>,
     pub icon_cache: Arc<IconCache>,
     pub thumb_cache_dir: PathBuf,

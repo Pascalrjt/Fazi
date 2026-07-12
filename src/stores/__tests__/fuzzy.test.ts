@@ -128,6 +128,25 @@ describe("fuzzy store", () => {
     expect(useFuzzy.getState().capped).toBe(true);
   });
 
+  it("progress events move the indexed counter without touching hits", async () => {
+    useFuzzy.getState().openFinder();
+    await tick();
+    const q = mocks.queryCalls[0];
+    q.onEvent({
+      event: "results",
+      queryId: q.args.queryId,
+      items: [item("/a")],
+      indexed: 100,
+      indexing: true,
+    });
+    const hitsBefore = useFuzzy.getState().hits;
+    q.onEvent({ event: "progress", queryId: q.args.queryId, indexed: 5000 });
+    expect(useFuzzy.getState().indexed).toBe(5000);
+    expect(useFuzzy.getState().indexing).toBe(true);
+    // The list must keep the exact same identity — no rerender churn.
+    expect(useFuzzy.getState().hits).toBe(hitsBefore);
+  });
+
   it("close cancels the in-flight query", async () => {
     useFuzzy.getState().openFinder();
     await tick();

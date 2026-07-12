@@ -5,7 +5,7 @@
  * ⌘R rebuilds the index. The footer shows index freshness — the index is a
  * snapshot of the walk moment, not live.
  */
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { iconUrl } from "../../types/ipc";
@@ -27,6 +27,86 @@ function relativeAge(ms: number): string {
   return `${Math.round(hours / 24)} d ago`;
 }
 
+/** The virtualized result rows, isolated behind memo so footer-only updates
+ *  (the `progress` event: indexed counter ticks while the top-K is unchanged)
+ *  never rerender or re-reconcile the list. `hits` keeps its identity across
+ *  progress ticks — the store only replaces it on a `results` batch. */
+const ResultsList = memo(function ResultsList({
+  hits,
+  selected,
+  home,
+  onSelect,
+  onOpen,
+}: {
+  hits: FuzzyItem[];
+  selected: number;
+  home: string | null;
+  onSelect: (index: number) => void;
+  onOpen: (hit: FuzzyItem | undefined) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const virtualizer = useVirtualizer({
+    count: hits.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 40,
+    overscan: 8,
+  });
+
+  useEffect(() => {
+    if (selected >= 0 && selected < hits.length) {
+      virtualizer.scrollToIndex(selected, { align: "auto" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  return (
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-1.5">
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+        {virtualizer.getVirtualItems().map((vi) => {
+          const hit = hits[vi.index];
+          const isSel = vi.index === selected;
+          return (
+            <div
+              key={hit.path}
+              className={clsx(
+                "flex cursor-default items-center gap-2.5 rounded-md px-2.5",
+                isSel ? "bg-accent text-white" : "hover:bg-hov",
+              )}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                height: vi.size,
+                transform: `translateY(${vi.start}px)`,
+              }}
+              onMouseDown={() => onSelect(vi.index)}
+              onDoubleClick={() => onOpen(hit)}
+            >
+              <img
+                src={iconUrl(hit.icon, 32)}
+                alt=""
+                className="h-5 w-5 shrink-0"
+                draggable={false}
+                loading="lazy"
+              />
+              <div className="min-w-0 flex-1">
+                <div className={clsx("truncate text-[13px]", isSel ? "text-white" : "text-primary")}>
+                  {hit.name}
+                </div>
+                <div className={clsx("truncate text-[11px]", isSel ? "text-white/70" : "text-tertiary")}>
+                  {displayPath(hit.path, home)}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
 export function FuzzyFinder() {
   const open = useFuzzy((s) => s.open);
   const query = useFuzzy((s) => s.query);
@@ -40,14 +120,6 @@ export function FuzzyFinder() {
   const home = useVolumes((s) => s.folders?.home ?? null);
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  const virtualizer = useVirtualizer({
-    count: hits.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 40,
-    overscan: 8,
-  });
 
   useEffect(() => {
     setSelected(0);
@@ -59,14 +131,9 @@ export function FuzzyFinder() {
     }
   }, [open]);
 
-  useEffect(() => {
-    if (selected >= 0 && selected < hits.length) {
-      virtualizer.scrollToIndex(selected, { align: "auto" });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected]);
-
-  const openHit = (hit: FuzzyItem | undefined) => {
+  // Stable across renders (they only touch store getState) so ResultsList's
+  // memo isn't defeated by fresh closures on every footer tick.
+  const openHit = useCallback((hit: FuzzyItem | undefined) => {
     if (!hit) return;
     useFuzzy.getState().close();
     if (hit.isDir) {
@@ -75,9 +142,9 @@ export function FuzzyFinder() {
       return;
     }
     void ipc.openPaths([hit.path]).catch((err) => toast(`Couldn't open: ${err}`, { danger: true }));
-  };
+  }, []);
 
-  const revealHit = (hit: FuzzyItem | undefined) => {
+  const revealHit = useCallback((hit: FuzzyItem | undefined) => {
     if (!hit) return;
     useFuzzy.getState().close();
     const at = activePaneTab();
@@ -86,7 +153,7 @@ export function FuzzyFinder() {
     usePanes
       .getState()
       .navigate(at.pane.id, at.tab.id, parent, { selectName: basename(hit.path) });
-  };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -170,10 +237,12 @@ export function FuzzyFinder() {
           </div>
         </div>
 
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-1.5">
-          {error != null ? (
+        {error != null ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
             <div className="px-3 py-6 text-center text-xs text-danger">{error}</div>
-          ) : hits.length === 0 ? (
+          </div>
+        ) : hits.length === 0 ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
             <div className="px-3 py-6 text-center text-xs text-tertiary">
               {query === ""
                 ? indexing
@@ -183,50 +252,16 @@ export function FuzzyFinder() {
                   ? "Searching (still indexing)…"
                   : "No matches"}
             </div>
-          ) : (
-            <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-              {virtualizer.getVirtualItems().map((vi) => {
-                const hit = hits[vi.index];
-                const isSel = vi.index === selected;
-                return (
-                  <div
-                    key={hit.path}
-                    className={clsx(
-                      "flex cursor-default items-center gap-2.5 rounded-md px-2.5",
-                      isSel ? "bg-accent text-white" : "hover:bg-hov",
-                    )}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      height: vi.size,
-                      transform: `translateY(${vi.start}px)`,
-                    }}
-                    onMouseDown={() => setSelected(vi.index)}
-                    onDoubleClick={() => openHit(hit)}
-                  >
-                    <img
-                      src={iconUrl(hit.icon, 32)}
-                      alt=""
-                      className="h-5 w-5 shrink-0"
-                      draggable={false}
-                      loading="lazy"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className={clsx("truncate text-[13px]", isSel ? "text-white" : "text-primary")}>
-                        {hit.name}
-                      </div>
-                      <div className={clsx("truncate text-[11px]", isSel ? "text-white/70" : "text-tertiary")}>
-                        {displayPath(hit.path, home)}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <ResultsList
+            hits={hits}
+            selected={selected}
+            home={home}
+            onSelect={setSelected}
+            onOpen={openHit}
+          />
+        )}
 
         <div className="flex h-7 shrink-0 items-center gap-2 border-t border-edge px-3 text-[11px] text-tertiary">
           <span>
