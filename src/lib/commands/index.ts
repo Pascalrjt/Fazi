@@ -160,6 +160,14 @@ function buildCommandSpecs(): CommandSpec[] {
       run: () => actions.showOpenWithMenuAtCenter(),
     },
     {
+      id: "share",
+      title: "Share…",
+      keywords: "airdrop send mail messages",
+      shortcut: "cmd+shift+s",
+      enabled: hasSelection,
+      run: () => actions.showShareMenuAtCenter(),
+    },
+    {
       id: "up",
       title: "Enclosing Folder",
       keywords: "parent up folder",

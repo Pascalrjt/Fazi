@@ -72,6 +72,10 @@ interface SettingsState {
   /** Native drag-out (drag to Finder/Mail/…). Kill-switch: off = HTML5-only
    *  internal drag & drop, exactly the pre-drag-out behavior. */
   dragOutEnabled: boolean;
+  /** Share opens the native NSSharingServicePicker instead of the built-in
+   *  submenu (also the escape hatch if Apple breaks the submenu's
+   *  deprecated enumeration API). */
+  nativeSharePicker: boolean;
 
   setShowHidden(v: boolean): void;
   setViewMode(v: ViewMode): void;
@@ -142,6 +146,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   sidebarPosition: "left",
   showFolderSizes: false,
   dragOutEnabled: true,
+  nativeSharePicker: false,
 };
 
 export const useSettings = create<SettingsState>()(

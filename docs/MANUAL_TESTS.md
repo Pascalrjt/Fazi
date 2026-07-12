@@ -127,6 +127,22 @@ phase done. Check items off per release.
       broken symlinks list and copy without error.
 - [ ] A Finder alias shows the alias badge.
 
+## Share
+- [ ] Right-click a file → Share: spinner, then the system's destinations
+      with icons (AirDrop, Mail, Messages, plus any installed share
+      extensions); AirDrop opens its window with the file attached; Mail
+      opens a draft with the attachment.
+- [ ] Multi-select → Share sends all selected files; the list narrows to
+      services that accept the whole set.
+- [ ] ⌘⇧S (and palette "Share…") opens the same menu centered; no-op with
+      nothing selected; rebinding it in Settings → Keyboard works.
+- [ ] Open Share, dismiss, open again and pick a destination — still works
+      (each open re-enumerates; a stale pick shows a toast, never a crash).
+- [ ] Advanced → "System share menu" on: right-click Share… opens the native
+      picker at the click point (correct in a resized window and with the
+      window on a second display); ⌘⇧S opens it centered; sharing works.
+      Toggle off restores the built-in submenu without a relaunch.
+
 ## Perf
 - [ ] 100k-file directory: first rows <50 ms, scrolling never hitches,
       sort settles once, filter-as-you-type stays instant.

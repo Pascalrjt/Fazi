@@ -27,9 +27,19 @@ interface MenuState {
 
 export const useMenu = create<MenuState>()((set) => ({
   open: null,
-  show: (x, y, items) => set({ open: { x, y, items } }),
+  show: (x, y, items) => {
+    lastAnchor = { x, y };
+    set({ open: { x, y, items } });
+  },
   close: () => set({ open: null }),
 }));
+
+/** Where the menu was last shown. Survives close — item actions run after
+ *  the menu closes, and some (native share picker) anchor to this point. */
+let lastAnchor = { x: 0, y: 0 };
+export function lastMenuAnchor(): { x: number; y: number } {
+  return lastAnchor;
+}
 
 export function showMenu(x: number, y: number, items: MenuItem[]): void {
   useMenu.getState().show(x, y, items);

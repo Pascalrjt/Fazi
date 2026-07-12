@@ -397,6 +397,57 @@ export function showOpenWithMenuAtCenter(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Share menu
+// ---------------------------------------------------------------------------
+
+export function shareMenuItems(entry: Entry): () => Promise<MenuItem[]> {
+  return async () => {
+    const paths = selectedEntries().map((e) => e.path);
+    const targets = paths.length > 0 ? paths : [entry.path];
+    try {
+      const { generation, services } = await ipc.shareServices(targets);
+      if (services.length === 0) {
+        return [{ type: "item", label: "No share destinations", disabled: true }];
+      }
+      const items: MenuItem[] = services.map((svc, index) => ({
+        type: "item",
+        label: svc.title,
+        icon: svc.icon || undefined,
+        action: () => {
+          void ipc.sharePerform(generation, index, targets).catch((err) => {
+            toast(`Couldn't share: ${err}`, { danger: true });
+          });
+        },
+      }));
+      return items;
+    } catch (err) {
+      return [{ type: "item", label: `Unavailable: ${err}`, disabled: true }];
+    }
+  };
+}
+
+/** Option B: the native NSSharingServicePicker, anchored at webview coords. */
+export function sharePickerAt(entries: Entry[], at: { x: number; y: number }): void {
+  void ipc
+    .sharePicker(entries.map((e) => e.path), at.x, at.y)
+    .catch((err) => {
+      toast(`Couldn't share: ${err}`, { danger: true });
+    });
+}
+
+export function showShareMenuAtCenter(): void {
+  const entries = selectedEntries();
+  if (entries.length === 0) return;
+  if (useSettings.getState().nativeSharePicker) {
+    sharePickerAt(entries, { x: window.innerWidth / 2, y: window.innerHeight / 3 });
+    return;
+  }
+  void shareMenuItems(entries[0])().then((items) => {
+    showMenu(window.innerWidth / 2 - 120, window.innerHeight / 3, items);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // navigation helpers
 // ---------------------------------------------------------------------------
 
