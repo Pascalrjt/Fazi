@@ -37,6 +37,8 @@ interface SettingsState {
   density: Density;
   /** Finder-style alternating row colors in list view and search results. */
   zebraStripes: boolean;
+  /** Accent-colored line above the active pane's tab strip. */
+  paneAccentLine: boolean;
   // Keyboard
   keybindingOverrides: KeybindingOverrides;
   // Search
@@ -127,6 +129,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   accent: "",
   density: "normal",
   zebraStripes: true,
+  paneAccentLine: true,
   keybindingOverrides: {},
   searchContentsDefault: false,
   searchMaxResults: 10_000,

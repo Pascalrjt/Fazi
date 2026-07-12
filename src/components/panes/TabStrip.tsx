@@ -1,36 +1,48 @@
-/** Per-pane tab strip: active accent top-border, +, ✕, middle-click close. */
+/** Per-pane tab strip: Finder-style tabs (active tab connected to the
+ *  content below), optional active accent top-border, +, ✕, middle-click
+ *  close. */
 import clsx from "clsx";
+import { Plus, X } from "lucide-react";
 import { usePanes, type Pane } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
+import { useSettings } from "../../stores/settings";
 import { basename } from "../../lib/format";
 import { showMenu } from "../../stores/menu";
 
 export function TabStrip({ pane }: { pane: Pane }) {
   const activePaneId = useApp((s) => s.activePaneId);
   const setActivePane = useApp((s) => s.setActivePane);
+  const paneAccentLine = useSettings((s) => s.paneAccentLine);
   const activateTab = usePanes((s) => s.activateTab);
   const closeTab = usePanes((s) => s.closeTab);
   const openTab = usePanes((s) => s.openTab);
   const isActivePane = activePaneId === pane.id;
+  const activeIdx = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
 
   return (
     <div
       className={clsx(
-        "flex h-8 shrink-0 items-stretch gap-px overflow-x-auto border-b border-edge bg-window px-1 pt-1",
-        isActivePane ? "border-t-2 border-t-accent" : "border-t-2 border-t-transparent",
+        "flex h-8 shrink-0 items-stretch overflow-x-auto bg-window pt-1",
+        paneAccentLine &&
+          (isActivePane ? "border-t-2 border-t-accent" : "border-t-2 border-t-transparent"),
       )}
       onMouseDown={() => setActivePane(pane.id as PaneId)}
     >
-      {pane.tabs.map((tab) => {
-        const isActive = tab.id === pane.activeTabId;
+      {/* the bottom divider lives on the children so it can break under the
+          active tab, letting its bg-pane flow into the content area */}
+      <div className="w-1 shrink-0 border-b border-edge" />
+      {pane.tabs.map((tab, i) => {
+        const isActive = i === activeIdx;
         return (
           <div
             key={tab.id}
             className={clsx(
-              "group flex min-w-0 max-w-[180px] flex-1 cursor-default items-center gap-1 rounded-t-md px-2 text-xs",
+              "group flex min-w-0 max-w-[180px] flex-1 cursor-default items-center gap-1 px-2 text-xs",
               isActive
-                ? "bg-pane text-primary"
-                : "text-secondary hover:bg-hov hover:text-primary",
+                ? "rounded-t-md border-b border-b-transparent bg-pane text-primary"
+                : "border-b border-edge text-secondary hover:bg-hov hover:text-primary",
+              // separators only between two inactive tabs
+              i > 0 && !isActive && i !== activeIdx + 1 && "border-l",
             )}
             onMouseDown={(e) => {
               if (e.button === 1) {
@@ -59,12 +71,14 @@ export function TabStrip({ pane }: { pane: Pane }) {
             }}
             title={tab.path}
           >
-            <span className="min-w-0 flex-1 truncate">
+            {/* balances the close button so the title sits centered */}
+            <span className="w-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate text-center">
               {basename(tab.path) || "/"}
             </span>
             <button
               className={clsx(
-                "shrink-0 cursor-default rounded px-0.5 text-[10px] text-tertiary hover:text-primary",
+                "flex h-4 w-4 shrink-0 cursor-default items-center justify-center rounded text-tertiary hover:bg-hov hover:text-primary",
                 !isActive && "invisible group-hover:visible",
               )}
               onClick={(e) => {
@@ -73,21 +87,23 @@ export function TabStrip({ pane }: { pane: Pane }) {
               }}
               aria-label="Close tab"
             >
-              ✕
+              <X size={11} strokeWidth={1.75} />
             </button>
           </div>
         );
       })}
-      <button
-        className="mx-1 shrink-0 cursor-default self-center rounded px-1.5 py-0.5 text-xs text-tertiary hover:bg-hov hover:text-primary"
-        title="New tab (⌘T)"
-        onClick={() => {
-          const active = pane.tabs.find((t) => t.id === pane.activeTabId);
-          openTab(pane.id as PaneId, active?.path ?? "/");
-        }}
-      >
-        +
-      </button>
+      <div className="flex min-w-0 flex-1 items-center border-b border-edge">
+        <button
+          className="mx-1 shrink-0 cursor-default rounded p-1 text-tertiary hover:bg-hov hover:text-primary"
+          title="New tab (⌘T)"
+          onClick={() => {
+            const active = pane.tabs.find((t) => t.id === pane.activeTabId);
+            openTab(pane.id as PaneId, active?.path ?? "/");
+          }}
+        >
+          <Plus size={13} strokeWidth={1.75} />
+        </button>
+      </div>
     </div>
   );
 }

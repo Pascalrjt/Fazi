@@ -140,6 +140,12 @@ function AppearancePane() {
       >
         <Toggle checked={s.zebraStripes} onChange={(v) => s.patch({ zebraStripes: v })} />
       </SettingRow>
+      <SettingRow
+        label="Accent line"
+        hint="Accent-colored line above the active pane's tabs."
+      >
+        <Toggle checked={s.paneAccentLine} onChange={(v) => s.patch({ paneAccentLine: v })} />
+      </SettingRow>
     </>
   );
 }
