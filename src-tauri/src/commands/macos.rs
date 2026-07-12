@@ -12,7 +12,7 @@ use tauri::{AppHandle, State};
 use crate::core::tags::{read_tags, write_tags, FinderTag};
 use crate::error::{Error, Result};
 use crate::macos::main_thread::on_main;
-use crate::macos::{pasteboard, volumes, workspace};
+use crate::macos::{pasteboard, share, volumes, workspace};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -51,6 +51,28 @@ pub fn open_with_apps(
             path: app_path.to_string_lossy().into_owned(),
         })
         .collect()
+}
+
+#[tauri::command]
+pub fn share_services(app: AppHandle, paths: Vec<String>) -> share::ShareServices {
+    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    on_main(&app, move || share::share_services(&paths))
+}
+
+#[tauri::command]
+pub fn share_perform(
+    app: AppHandle,
+    generation: u64,
+    index: usize,
+    paths: Vec<String>,
+) -> Result<()> {
+    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let ok = on_main(&app, move || share::share_perform(generation, index, &paths));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::msg("the share menu went stale — try again"))
+    }
 }
 
 #[tauri::command]

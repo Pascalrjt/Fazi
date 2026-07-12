@@ -338,6 +338,18 @@ export interface AppCandidate {
   isDefault: boolean;
 }
 
+export interface ShareDestination {
+  title: string;
+  /** PNG data: URL (32px, shown at 16px), or "" if rendering failed. */
+  icon: string;
+}
+
+export interface ShareServices {
+  /** Echo back to share_perform; a newer enumeration invalidates it. */
+  generation: number;
+  services: ShareDestination[];
+}
+
 export interface PasteboardContents {
   paths: string[];
   /** True if this was a Fazi cut (move-on-paste). */
@@ -413,6 +425,8 @@ export const COMMANDS = {
   openPaths: "open_paths",
   openWith: "open_with", // (paths, appPath)
   openWithApps: "open_with_apps", // (path) -> AppCandidate[]
+  shareServices: "share_services", // (paths) -> ShareServices
+  sharePerform: "share_perform", // (generation, index, paths)
   revealInFinder: "reveal_in_finder",
   getTags: "get_tags",
   setTags: "set_tags",

@@ -129,6 +129,11 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
     action: () => actions.trashSelection(),
   });
   items.push({ type: "separator" });
+  items.push({
+    type: "item",
+    label: "Share",
+    submenu: actions.shareMenuItems(entry),
+  });
   items.push({ type: "item", label: "Tags", submenu: tagsSubmenu(targets) });
   items.push({
     type: "item",

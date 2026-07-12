@@ -26,6 +26,7 @@ import {
   type ConflictResponse,
   type SearchArgs,
   type SearchEvent,
+  type ShareServices,
   type TextPreview,
   type TrashStats,
   type UndoDescription,
@@ -260,6 +261,18 @@ export function openWith(paths: string[], appPath: string): Promise<void> {
 
 export function openWithApps(path: string): Promise<AppCandidate[]> {
   return invoke(COMMANDS.openWithApps, { path });
+}
+
+export function shareServices(paths: string[]): Promise<ShareServices> {
+  return invoke(COMMANDS.shareServices, { paths });
+}
+
+export function sharePerform(
+  generation: number,
+  index: number,
+  paths: string[],
+): Promise<void> {
+  return invoke(COMMANDS.sharePerform, { generation, index, paths });
 }
 
 export function revealInFinder(paths: string[]): Promise<void> {
