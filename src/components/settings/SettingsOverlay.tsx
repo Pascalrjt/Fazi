@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { useApp } from "../../stores/app";
-import { useSettings, type Density, type Theme } from "../../stores/settings";
+import { useSettings, type Density, type SidebarPosition, type Theme } from "../../stores/settings";
 import { NumberField, Segmented, SettingRow, Toggle } from "./controls";
 import { KeyboardPane } from "./KeyboardPane";
 import type { SortDir, SortKey } from "../../lib/sort";
@@ -217,6 +217,16 @@ function SidebarPane() {
   const s = useSettings();
   return (
     <>
+      <SettingRow label="Position" hint="Which edge of the window the sidebar docks to.">
+        <Segmented
+          value={s.sidebarPosition}
+          options={[
+            ["left", "Left"],
+            ["right", "Right"],
+          ]}
+          onChange={(v) => s.patch({ sidebarPosition: v as SidebarPosition })}
+        />
+      </SettingRow>
       <SettingRow label="Show Trash in sidebar">
         <Toggle checked={s.showTrashInSidebar} onChange={(v) => s.patch({ showTrashInSidebar: v })} />
       </SettingRow>

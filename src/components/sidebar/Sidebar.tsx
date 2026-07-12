@@ -427,6 +427,7 @@ function FavoritesSection({
 
 export function Sidebar() {
   const collapsed = useSettings((s) => s.sidebarCollapsed);
+  const position = useSettings((s) => s.sidebarPosition);
   const pinned = useSettings((s) => s.favorites);
   const folders = useVolumes((s) => s.folders);
   const volumes = useVolumes((s) => s.volumes);
@@ -471,7 +472,12 @@ export function Sidebar() {
   }));
 
   return (
-    <div className="flex w-[200px] shrink-0 flex-col overflow-y-auto border-r border-edge bg-window pb-2">
+    <div
+      className={clsx(
+        "flex w-[200px] shrink-0 flex-col overflow-y-auto border-edge bg-window pb-2",
+        position === "right" ? "border-l" : "border-r",
+      )}
+    >
       {(defaults.length > 0 || favoriteRows.length > 0) && (
         <FavoritesSection defaults={defaults} favorites={favoriteRows} />
       )}

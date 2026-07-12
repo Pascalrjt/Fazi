@@ -89,6 +89,7 @@ export default function App() {
   useKeyboard();
   const theme = useSettings((s) => s.theme);
   const accent = useSettings((s) => s.accent);
+  const sidebarPosition = useSettings((s) => s.sidebarPosition);
 
   useEffect(() => {
     applyAppearance(theme, accent);
@@ -132,9 +133,10 @@ export default function App() {
       <Toolbar />
       <FdaBanner />
       <div className="flex min-h-0 flex-1">
-        <Sidebar />
+        {sidebarPosition === "left" && <Sidebar />}
         <PaneArea />
         <GetInfoPanel />
+        {sidebarPosition === "right" && <Sidebar />}
       </div>
       <StatusBar />
 

@@ -6,6 +6,7 @@ import type { SortDir, SortKey } from "../lib/sort";
 export type ViewMode = "list" | "grid";
 export type Theme = "system" | "light" | "dark";
 export type Density = "normal" | "compact";
+export type SidebarPosition = "left" | "right";
 
 /** A user-pinned sidebar folder (defaults live in useVolumes, not here). */
 export interface FavoriteFolder {
@@ -59,6 +60,8 @@ interface SettingsState {
   // Sidebar
   favorites: FavoriteFolder[];
   showTrashInSidebar: boolean;
+  /** Which edge of the window the sidebar docks to. */
+  sidebarPosition: SidebarPosition;
   // Advanced
   /** Lazy folder sizes in list view (M7) — explicitly approximate. */
   showFolderSizes: boolean;
@@ -130,6 +133,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   opCardAutoHideMs: 4000,
   favorites: [],
   showTrashInSidebar: true,
+  sidebarPosition: "left",
   showFolderSizes: false,
   dragOutEnabled: true,
 };
