@@ -22,9 +22,10 @@ export function TabStrip({ pane }: { pane: Pane }) {
   return (
     <div
       className={clsx(
-        "flex h-8 shrink-0 items-stretch overflow-x-auto bg-window pt-1",
-        paneAccentLine &&
-          (isActivePane ? "border-t-2 border-t-accent" : "border-t-2 border-t-transparent"),
+        // the 2px top border is always reserved so toggling the accent line
+        // (or switching panes) never shifts the tabs vertically
+        "flex h-8 shrink-0 items-stretch overflow-x-auto border-t-2 bg-window pt-1",
+        paneAccentLine && isActivePane ? "border-t-accent" : "border-t-transparent",
       )}
       onMouseDown={() => setActivePane(pane.id as PaneId)}
     >
