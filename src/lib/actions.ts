@@ -182,6 +182,14 @@ export function confirmEmptyTrash(): void {
   ipc
     .trashStats()
     .then((stats) => {
+      if (stats.unreadable.length > 0) {
+        const volumes = [...new Set(stats.unreadable.map((issue) => issue.volume))].join(", ");
+        toast(
+          `Can't empty the Trash because it can't be read on ${volumes}. Grant Fazi Full Disk Access and try again.`,
+          { danger: true },
+        );
+        return;
+      }
       if (stats.count === 0) {
         toast("The Trash is empty");
         return;

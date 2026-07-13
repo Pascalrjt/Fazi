@@ -82,6 +82,7 @@ fn env(name: &str) -> Env {
             fazi_lib::core::verify::checksum_compare(src, dst, cancelled)
         }),
         invalidate_fuzzy: Arc::new(|_| {}),
+        undo_changed: Arc::new(|_| {}),
     });
     Env { root, engine, trash_dir }
 }

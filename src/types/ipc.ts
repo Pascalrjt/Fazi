@@ -177,6 +177,8 @@ export type OpEvent =
       warnings: OpWarning[];
       /** Destination paths of top-level items that were produced (for selection/ghost rows). */
       produced: string[];
+      /** Conflicting items the user or policy skipped; absent on older/non-conflict producers. */
+      skipped?: number;
       undoable: boolean;
     };
 
@@ -212,6 +214,8 @@ export interface TrashStats {
   count: number;
   /** Items living in per-volume `.Trashes` (external disks). */
   externalCount: number;
+  /** Trash directories that could not be enumerated; destructive emptying is blocked. */
+  unreadable: Array<{ path: string; volume: string; message: string }>;
 }
 
 export interface InterruptedOp {
@@ -412,6 +416,8 @@ export const COMMANDS = {
   redoLast: "redo_last",
   undoStackTop: "undo_stack_top", // () -> UndoDescription | null (for menu label)
   redoStackTop: "redo_stack_top",
+  setShortcutRecording: "set_shortcut_recording",
+  setNativeMenuShortcuts: "set_native_menu_shortcuts",
   interruptedOps: "interrupted_ops", // () -> InterruptedOp[] (journal recovery report)
   // search
   search: "search",

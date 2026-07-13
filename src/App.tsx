@@ -1,7 +1,7 @@
 /** Fazi application shell: layout grid, boot sequence, global overlays. */
 import { useEffect } from "react";
 import { rebuildRegistry, registerAllCommands } from "./lib/commands";
-import { runCommand } from "./lib/commands/registry";
+import { getCommand, runCommand } from "./lib/commands/registry";
 import { useSettings } from "./stores/settings";
 import { useKeyboard } from "./hooks/useKeyboard";
 import * as ipc from "./lib/ipc";
@@ -30,11 +30,25 @@ import { ContextMenuHost } from "./components/menus/ContextMenu";
 
 registerAllCommands(useSettings.getState().keybindingOverrides);
 
+const NATIVE_MENU_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "selectAll"] as const;
+
+function syncNativeMenuShortcuts(): void {
+  const shortcuts = Object.fromEntries(
+    NATIVE_MENU_COMMANDS.map((id) => [id, getCommand(id)?.shortcut ?? null]),
+  );
+  try {
+    void ipc.setNativeMenuShortcuts(shortcuts).catch(() => {});
+  } catch {
+    // Browser-only tests/dev preview have no Tauri bridge.
+  }
+}
+
 // Keybinding overrides re-register the whole command set (labels, menus, and
 // dispatch all read the registry).
 useSettings.subscribe((s, prev) => {
   if (s.keybindingOverrides !== prev.keybindingOverrides) {
     rebuildRegistry(s.keybindingOverrides);
+    syncNativeMenuShortcuts();
   }
 });
 
@@ -97,6 +111,7 @@ export default function App() {
 
   useEffect(() => {
     boot();
+    syncNativeMenuShortcuts();
     let alive = true;
     let unlistenDnd: (() => void) | undefined;
     let unlistenMenu: (() => void) | undefined;

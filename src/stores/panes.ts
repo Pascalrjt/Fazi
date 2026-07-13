@@ -104,6 +104,7 @@ interface PanesState {
 
   // --- listing plumbing --------------------------------------------------
   applyListEvent(paneId: PaneId, tabId: string, listingId: string, event: ListEvent): void;
+  finishHydration(paneId: PaneId, tabId: string, listingId: string): void;
   applyWatchBatch(paneId: PaneId, tabId: string, watchId: string, event: WatchEvent): void;
 
   // --- view state --------------------------------------------------------
@@ -129,6 +130,170 @@ interface PanesState {
 // ---------------------------------------------------------------------------
 
 let ghostSeq = 0;
+
+/**
+ * Pass-1 chunks live outside Immer until they are committed. Pushing every
+ * 1,000-row chunk into an Immer draft makes Immer repeatedly finalize the
+ * growing array, which becomes effectively quadratic for 100k directories.
+ */
+interface ListingIngest {
+  paneId: PaneId;
+  tabId: string;
+  listingId: string;
+  entries: Entry[];
+  committed: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const INGEST_COMMIT_MS = 100;
+const listingIngest = new Map<string, ListingIngest>();
+const listingIndexes = new Map<string, Map<number, number>>();
+
+function entryIndex(entries: readonly Entry[]): Map<number, number> {
+  return new Map(entries.map((entry, index) => [entry.id, index]));
+}
+
+/** Replace one tab through Zustand's plain-object path, bypassing Immer. */
+function replaceTabPlain(
+  paneId: PaneId,
+  tabId: string,
+  listingId: string,
+  update: (tab: Tab) => Tab,
+): Tab | null {
+  const state = usePanes.getState();
+  const paneIndex = state.panes.findIndex((pane) => pane.id === paneId);
+  if (paneIndex < 0) return null;
+  const pane = state.panes[paneIndex];
+  const tabIndex = pane.tabs.findIndex((tab) => tab.id === tabId);
+  if (tabIndex < 0 || pane.tabs[tabIndex].listingId !== listingId) return null;
+
+  const nextTab = update(pane.tabs[tabIndex]);
+  const tabs = pane.tabs.slice();
+  tabs[tabIndex] = nextTab;
+  const panes = state.panes.slice();
+  panes[paneIndex] = { ...pane, tabs };
+  usePanes.setState({ panes });
+  return nextTab;
+}
+
+function dropListingCaches(listingId: string): void {
+  const ingest = listingIngest.get(listingId);
+  if (ingest?.timer != null) clearTimeout(ingest.timer);
+  listingIngest.delete(listingId);
+  listingIndexes.delete(listingId);
+}
+
+function commitIngest(ingest: ListingIngest, total?: number): void {
+  if (ingest.timer != null) {
+    clearTimeout(ingest.timer);
+    ingest.timer = null;
+  }
+  const current = findTab(usePanes.getState(), ingest.paneId, ingest.tabId);
+  if (!current || current.listingId !== ingest.listingId) {
+    dropListingCaches(ingest.listingId);
+    return;
+  }
+
+  const settled = total != null;
+  const entries =
+    settled || ingest.entries.length <= RESORT_THRESHOLD
+      ? sortEntries(ingest.entries, current.sort)
+      : ingest.entries.slice();
+  const next = replaceTabPlain(ingest.paneId, ingest.tabId, ingest.listingId, (tab) => {
+    const updated: Tab = {
+      ...tab,
+      entries,
+      loading: false,
+      listed: settled ? true : tab.listed,
+      total: settled ? total : tab.total,
+      sorting: settled ? false : ingest.entries.length > RESORT_THRESHOLD,
+    };
+    if (settled) applyRestore(updated);
+    return updated;
+  });
+  ingest.committed = next != null;
+  if (settled && next) {
+    listingIndexes.set(ingest.listingId, entryIndex(entries));
+    listingIngest.delete(ingest.listingId);
+  }
+}
+
+function ingestChunk(
+  paneId: PaneId,
+  tabId: string,
+  listingId: string,
+  entries: Entry[],
+): void {
+  const tab = findTab(usePanes.getState(), paneId, tabId);
+  if (!tab || tab.listingId !== listingId) return;
+  let ingest = listingIngest.get(listingId);
+  if (!ingest) {
+    ingest = { paneId, tabId, listingId, entries: tab.entries.slice(), committed: false, timer: null };
+    listingIngest.set(listingId, ingest);
+  }
+  ingest.entries.push(...entries);
+
+  // First paint is synchronous. Later chunks are coalesced so a 100k listing
+  // commits around ten times instead of finalizing one hundred growing drafts.
+  if (!ingest.committed) {
+    commitIngest(ingest);
+  } else if (ingest.timer == null) {
+    ingest.timer = setTimeout(() => commitIngest(ingest as ListingIngest), INGEST_COMMIT_MS);
+  }
+}
+
+function settleIngest(paneId: PaneId, tabId: string, listingId: string, total: number): void {
+  const tab = findTab(usePanes.getState(), paneId, tabId);
+  if (!tab || tab.listingId !== listingId) return;
+  const ingest = listingIngest.get(listingId) ?? {
+    paneId,
+    tabId,
+    listingId,
+    entries: tab.entries.slice(),
+    committed: true,
+    timer: null,
+  };
+  listingIngest.set(listingId, ingest);
+  commitIngest(ingest, total);
+}
+
+function mergeHydrationPlain(
+  paneId: PaneId,
+  tabId: string,
+  listingId: string,
+  patches: Entry[],
+): void {
+  const tab = findTab(usePanes.getState(), paneId, tabId);
+  if (!tab || tab.listingId !== listingId || patches.length === 0) return;
+
+  let indexes = listingIndexes.get(listingId);
+  if (!indexes || indexes.size !== tab.entries.length) {
+    indexes = entryIndex(tab.entries);
+    listingIndexes.set(listingId, indexes);
+  }
+  const entries = tab.entries.slice();
+  let changed = false;
+  for (const patch of patches) {
+    const index = indexes.get(patch.id);
+    if (index == null || entries[index]?.id !== patch.id) continue;
+    entries[index] = patch;
+    changed = true;
+  }
+  if (!changed) return;
+
+  const hydratedNames = new Set(patches.map((entry) => entry.name));
+  replaceTabPlain(paneId, tabId, listingId, (current) => ({
+    ...current,
+    entries,
+    ghosts:
+      current.ghosts.length === 0
+        ? current.ghosts
+        : current.ghosts.filter((ghost) => !hydratedNames.has(ghost.name)),
+    // Hydration can change size/kind/time ordering. Settle once at channel
+    // Done or when the client-side hydrator drains, never once per batch.
+    sorting: current.listed ? true : current.sorting,
+  }));
+}
 
 function newTab(path: string): Tab {
   const settings = useSettings.getState();
@@ -230,6 +395,7 @@ function stopListing(tab: Tab): void {
   if (tab.listingId) {
     void ipc.cancelListing(tab.listingId).catch(() => {});
     dropHydrator(tab.listingId);
+    dropListingCaches(tab.listingId);
   }
   if (tab.watchId) {
     void ipc.unwatch(tab.watchId).catch(() => {});
@@ -462,47 +628,23 @@ export const usePanes = create<PanesState>()(
     },
 
     applyListEvent: (paneId, tabId, listingId, event) => {
+      if (event.event === "chunk") {
+        ingestChunk(paneId, tabId, listingId, event.entries);
+        return;
+      }
+      if (event.event === "listed") {
+        settleIngest(paneId, tabId, listingId, event.total);
+        return;
+      }
+      if (event.event === "hydrate") {
+        mergeHydrationPlain(paneId, tabId, listingId, event.entries);
+        return;
+      }
+
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (!tab || tab.listingId !== listingId) return; // stale listing
         switch (event.event) {
-          case "chunk": {
-            tab.loading = false;
-            tab.entries.push(...event.entries);
-            if (!tab.listed) {
-              if (tab.entries.length <= RESORT_THRESHOLD) {
-                tab.entries = sortEntries(tab.entries, tab.sort);
-              } else {
-                tab.sorting = true; // arrival order; settle at "listed"
-              }
-            }
-            break;
-          }
-          case "listed": {
-            tab.total = event.total;
-            tab.listed = true;
-            tab.loading = false;
-            tab.entries = sortEntries(tab.entries, tab.sort);
-            tab.sorting = false;
-            applyRestore(tab);
-            break;
-          }
-          case "hydrate": {
-            const byId = new Map(event.entries.map((e) => [e.id, e]));
-            for (let i = 0; i < tab.entries.length; i++) {
-              const patch = byId.get(tab.entries[i].id);
-              if (patch) tab.entries[i] = patch;
-            }
-            // ghost cleanup: hydrated real entries replace ghosts by name
-            if (tab.ghosts.length > 0) {
-              const names = new Set(event.entries.map((e) => e.name));
-              tab.ghosts = tab.ghosts.filter((g) => !names.has(g.name));
-            }
-            if (tab.listed && tab.sort.key !== "name") {
-              tab.entries = sortEntries(tab.entries, tab.sort);
-            }
-            break;
-          }
           case "done": {
             tab.loading = false;
             if (!tab.listed) {
@@ -528,13 +670,17 @@ export const usePanes = create<PanesState>()(
 
       // side effects outside the draft
       if (event.event === "done") {
-        const tab = findTab(get(), paneId, tabId);
+        let tab = findTab(get(), paneId, tabId);
         if (!tab || tab.listingId !== listingId || tab.error) return;
         // Big listing (pass 2 skipped server-side): hand the unhydrated rows
         // to the shared viewport-priority scheduler.
         if (tab.entries.some((e) => !e.hydrated)) {
           initHydrator(paneId, tabId, listingId, tab.entries);
+        } else {
+          get().finishHydration(paneId, tabId, listingId);
         }
+        tab = findTab(get(), paneId, tabId);
+        if (!tab || tab.listingId !== listingId) return;
         const watchId = crypto.randomUUID();
         set((s) => {
           const t = findTab(s, paneId, tabId);
@@ -549,6 +695,18 @@ export const usePanes = create<PanesState>()(
             // watcher is best-effort; listing remains valid without it
           });
       }
+    },
+
+    finishHydration: (paneId, tabId, listingId) => {
+      const tab = findTab(get(), paneId, tabId);
+      if (!tab || tab.listingId !== listingId || !tab.sorting) return;
+      const entries = sortEntries(tab.entries, tab.sort);
+      const next = replaceTabPlain(paneId, tabId, listingId, (current) => ({
+        ...current,
+        entries,
+        sorting: false,
+      }));
+      if (next) listingIndexes.set(listingId, entryIndex(entries));
     },
 
     applyWatchBatch: (paneId, tabId, watchId, event) => {
@@ -578,6 +736,8 @@ export const usePanes = create<PanesState>()(
                 );
               }
             });
+            const updated = findTab(get(), paneId, tabId);
+            if (updated) listingIndexes.set(updated.listingId, entryIndex(updated.entries));
           }
           const changed = [...event.upserted, ...event.removed].map((name) =>
             joinPath(tab.path, name),
@@ -623,7 +783,10 @@ export const usePanes = create<PanesState>()(
         tab.entries = sortEntries(tab.entries, tab.sort);
       });
       const tab = findTab(get(), paneId, tabId);
-      if (tab) useSettings.getState().setDefaultSort(tab.sort.key, tab.sort.dir);
+      if (tab) {
+        listingIndexes.set(tab.listingId, entryIndex(tab.entries));
+        useSettings.getState().setDefaultSort(tab.sort.key, tab.sort.dir);
+      }
     },
 
     setFilter: (paneId, tabId, filter) => {
@@ -689,6 +852,8 @@ export const usePanes = create<PanesState>()(
         };
         tab.entries = sortEntries(tab.entries, tab.sort);
       });
+      const tab = findTab(get(), paneId, tabId);
+      if (tab) listingIndexes.set(tab.listingId, entryIndex(tab.entries));
     },
 
     removeEntriesByPath: (paths) => {
@@ -743,7 +908,8 @@ export const usePanes = create<PanesState>()(
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (!tab) return;
-        const idx = tab.entries.findIndex((e) => e.name === entry.name);
+        const folded = entry.name.toLocaleLowerCase();
+        const idx = tab.entries.findIndex((e) => e.name.toLocaleLowerCase() === folded);
         if (idx >= 0) {
           // keep the row's id stable so selection survives the update
           tab.entries[idx] = { ...entry, id: tab.entries[idx].id };
@@ -752,8 +918,10 @@ export const usePanes = create<PanesState>()(
           tab.entries = sortEntries(tab.entries, tab.sort);
           if (tab.total != null) tab.total += 1;
         }
-        tab.ghosts = tab.ghosts.filter((g) => g.name !== entry.name);
+        tab.ghosts = tab.ghosts.filter((g) => g.name.toLocaleLowerCase() !== folded);
       });
+      const tab = findTab(get(), paneId, tabId);
+      if (tab) listingIndexes.set(tab.listingId, entryIndex(tab.entries));
     },
   })),
 );

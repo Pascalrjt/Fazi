@@ -98,6 +98,9 @@ pub enum OpEvent {
         errors: Vec<OpError>,
         warnings: Vec<OpWarning>,
         produced: Vec<String>,
+        /// Additive outcome count. Absent when nothing was skipped.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skipped: Option<u64>,
         undoable: bool,
     },
 }
@@ -192,6 +195,7 @@ pub type CopyVerifier = Arc<dyn Fn(&Path, &Path, &dyn Fn() -> bool) -> ChecksumR
 /// Marks warm fuzzy indexes containing any of the touched paths stale so
 /// ⌘P never reuses a snapshot the engine just mutated out from under it.
 pub type InvalidateFuzzy = Arc<dyn Fn(&[PathBuf]) + Send + Sync>;
+pub type UndoChanged = Arc<dyn Fn(&UndoStack) + Send + Sync>;
 
 /// Shared engine dependencies (built once at app setup).
 pub struct Engine {
@@ -203,9 +207,27 @@ pub struct Engine {
     pub icon_token: IconTokenFn,
     pub verify_copy_contents: CopyVerifier,
     pub invalidate_fuzzy: InvalidateFuzzy,
+    pub undo_changed: UndoChanged,
 }
 
 impl Engine {
+    pub fn push_undo(&self, op: UndoOp) {
+        let mut stack = self.undo.lock().unwrap();
+        stack.push(op);
+        (self.undo_changed)(&stack);
+    }
+
+    pub fn purge_undo_records_under(&self, paths: &[PathBuf]) {
+        let mut stack = self.undo.lock().unwrap();
+        stack.purge_records_under(paths);
+        (self.undo_changed)(&stack);
+    }
+
+    pub fn notify_undo_changed(&self) {
+        let stack = self.undo.lock().unwrap();
+        (self.undo_changed)(&stack);
+    }
+
     pub fn cancel_op(&self, op_id: &str) {
         if let Some(h) = self.ops.get(op_id) {
             h.cancel();
@@ -252,6 +274,7 @@ struct OpSink {
     dir_policy: Option<Resolution>,
     conflict_seq: u64,
     remaining_hint: usize,
+    skipped: u64,
 }
 
 impl OpSink {
@@ -279,6 +302,7 @@ impl OpSink {
             dir_policy: None,
             conflict_seq: 0,
             remaining_hint,
+            skipped: 0,
         }
     }
 
@@ -395,7 +419,10 @@ impl WalkSink for OpSink {
             match self.op_policy {
                 Policy::KeepBoth => return Resolution::KeepBoth,
                 Policy::Replace => return Resolution::Replace,
-                Policy::Skip => return Resolution::Skip,
+                Policy::Skip => {
+                    self.skipped += 1;
+                    return Resolution::Skip;
+                }
                 Policy::Ask => {}
             }
             // Cached apply-to-all answer.
@@ -405,6 +432,9 @@ impl WalkSink for OpSink {
                 _ => None,
             };
             if let Some(r) = cached {
+                if r == Resolution::Skip {
+                    self.skipped += 1;
+                }
                 return r;
             }
         }
@@ -416,6 +446,9 @@ impl WalkSink for OpSink {
                 ConflictKind::DirDir => self.dir_policy = Some(resolution),
                 _ => {}
             }
+        }
+        if resolution == Resolution::Skip {
+            self.skipped += 1;
         }
         resolution
     }
@@ -526,6 +559,7 @@ fn run_op_thread(
             }],
             warnings: Vec::new(),
             produced: Vec::new(),
+            skipped: None,
             undoable: false,
         });
         return;
@@ -730,7 +764,7 @@ fn run_op_thread(
             OpKind::Move => UndoOp::Move { pairs: move_pairs },
             OpKind::Copy => UndoOp::Copy { produced: produced.clone() },
         };
-        engine.undo.lock().unwrap().push(op);
+        engine.push_undo(op);
     }
 
     engine.journal.remove(&args.op_id);
@@ -753,6 +787,7 @@ fn run_op_thread(
         errors: sink.errors.clone(),
         warnings: sink.warnings.clone(),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+        skipped: (sink.skipped > 0).then_some(sink.skipped),
         undoable,
     });
 }
@@ -1034,6 +1069,7 @@ fn run_duplicate_thread(
             }],
             warnings: Vec::new(),
             produced: Vec::new(),
+            skipped: None,
             undoable: false,
         });
         return;
@@ -1121,7 +1157,7 @@ fn run_duplicate_thread(
     }
 
     if !produced.is_empty() {
-        engine.undo.lock().unwrap().push(UndoOp::Copy { produced: produced.clone() });
+        engine.push_undo(UndoOp::Copy { produced: produced.clone() });
     }
     engine.journal.remove(&op_id);
     engine.ops.remove(&op_id);
@@ -1143,6 +1179,7 @@ fn run_duplicate_thread(
         errors: sink.errors.clone(),
         warnings: sink.warnings.clone(),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+        skipped: (sink.skipped > 0).then_some(sink.skipped),
         undoable: !produced.is_empty(),
     });
 }

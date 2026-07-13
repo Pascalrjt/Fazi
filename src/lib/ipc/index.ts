@@ -199,6 +199,16 @@ export function redoStackTop(): Promise<UndoDescription | null> {
   return invoke(COMMANDS.redoStackTop);
 }
 
+export function setShortcutRecording(recording: boolean): Promise<void> {
+  return invoke(COMMANDS.setShortcutRecording, { recording });
+}
+
+export function setNativeMenuShortcuts(
+  shortcuts: Record<string, string | null>,
+): Promise<void> {
+  return invoke(COMMANDS.setNativeMenuShortcuts, { shortcuts });
+}
+
 export function interruptedOps(): Promise<InterruptedOp[]> {
   return invoke(COMMANDS.interruptedOps);
 }

@@ -10,7 +10,7 @@ in a disposable `/tmp/FaziDevTest.app` solely so Computer Use could target its
 window. The webview URL was `localhost:1420/`. Test data lived under
 `/tmp/fazi-manual-tests.gTWMbl`.
 
-Confirmed failures / issues:
+Initial confirmed failures / issues:
 
 - **Packages & links — symlink target:** symlinks and broken symlinks list and
   copy successfully as links, but list rows show only the symlink indicator and
@@ -36,6 +36,37 @@ Confirmed failures / issues:
 - **Trash without FDA:** Move to Trash and undo work, but navigating to
   `~/.Trash` shows the permission pane and simultaneously claims `The Trash is
   empty`, so item count and Finder Put Back could not be verified.
+
+Fix retest — 2026-07-13:
+
+Retested with Computer Use against a disposable
+`/tmp/Fazi-dev-manual.app` wrapper whose executable SHA-256 matched the current
+`target/debug/fazi` byte-for-byte. The webview URL was `localhost:1420/`, and
+the previously registered release bundle was temporarily hidden so automation
+could not attach to or relaunch the wrong build.
+
+- **PASSED — Packages & links:** valid and broken symlinks show the exact
+  stored `read_link` target inline.
+- **PASSED — Conflict skip summary:** the file-vs-folder Skip path leaves the
+  destination folder unchanged and finishes with `Skipped 1 item` / `No files
+  changed`.
+- **PASSED — Case-only rename UI:** `foo` → `Foo` leaves one `Foo` row, keeps
+  the selection, and reports the correct four-item fixture total.
+- **PASSED — 100k-entry directory:** inspectable rows appeared while listing,
+  the final count reached 100,000, filtering to `file-099999` stayed
+  interactive, visible rows hydrated before background rows, and navigating
+  away during background hydration left the four-item destination clean. The
+  store-level 100k ingest regression test completes in about 50 ms on this
+  machine.
+- **PASSED — Keyboard conflict recording:** recording both ⌘D and the
+  previously native-menu-shadowed ⌘C shows the inline conflict, names the
+  owning command, and offers Unbind and Cancel without changing a binding.
+- **PASSED — Archive Edit-menu label:** after compress, the native Edit menu
+  reads `Undo Compress of 1 Item`; after undo it reads
+  `Redo Compress of 1 Item`, and redo restores the archive.
+- **PASSED — Trash without FDA:** the Trash banner now says
+  `Trash contents unavailable` and offers `Grant access…`; it no longer claims
+  that an unreadable Trash is empty or offers Empty Trash.
 
 Not exercised in this run remain unchecked. In particular, tests needing a
 fresh signing identity, TCC/system-setting changes, USB/exFAT media, SMB,
@@ -84,9 +115,11 @@ need the corresponding environment or explicit approval.
       Trash contents / Finder Put Back could not be inspected without FDA.
 - [ ] Sidebar Trash row navigates to ~/.Trash; the banner shows the item
       count; dragging items onto the row trashes them (Put Back still works).
-      **FAILED 2026-07-13:** navigation reaches `~/.Trash`, but the no-FDA pane
-      also reports `The Trash is empty`; count, drag-to-row, and Put Back were
-      not verifiable in that state.
+      **FIXED 2026-07-13:** without FDA, navigation now reports
+      `Trash contents unavailable` and does not claim the Trash is empty.
+      Count, drag-to-row, and Put Back still require FDA and remain unchecked.
+- [x] Without FDA, an unreadable Trash shows an actionable permission state
+      and never shows an empty count or Empty Trash action.
 - [ ] Empty Trash… (banner button / palette / row context menu): confirm
       dialog totals items across volumes ("N items (M on external volumes)"
       with a seeded external-volume .Trashes fixture); after emptying, ⌘Z has
@@ -105,10 +138,12 @@ need the corresponding environment or explicit approval.
 - [ ] Folder vs folder: Merge is the highlighted default; merge unions
       contents and prompts per colliding file lazily.
 - [x] File vs folder: per-item prompt; no Apply-to-all offered.
-- [ ] Case-only rename `foo` → `Foo` works; `foo` → existing `BAR` variant
-      `bar` is a collision. **FAILED 2026-07-13:** the rename succeeds on disk
-      and collision detection works, but the old lowercase row remains visible
-      as a ghost and the item count is wrong.
+- [x] Case-only rename `foo` → `Foo` works; `foo` → existing `BAR` variant
+      `bar` is a collision. **PASSED 2026-07-13 RETEST:** the row updates in
+      place with no lowercase ghost and the item count remains correct.
+- [x] Choosing Skip for an all-skipped collision finishes successfully with
+      `Skipped N items` / `No files changed`, leaves the destination untouched,
+      and creates no undo entry.
 
 ## Dataless (evicted cloud) files
 - [ ] Copying a dataless file ("Remove Download" in Finder first) fails that
@@ -185,10 +220,10 @@ need the corresponding environment or explicit approval.
       Contents correctly browses `Contents`; launching and operation progress
       were not tested with the intentionally non-executable fixture app.
 - [x] `.photoslibrary` behaves as a file.
-- [ ] Symlink shows badge + target; copying a symlink copies the link;
-      broken symlinks list and copy without error. **FAILED 2026-07-13:** copy
-      behavior works for normal and broken symlinks, but the target text is not
-      shown in the list row (only the symlink indicator and kind are visible).
+- [x] Symlink shows badge + target; copying a symlink copies the link;
+      broken symlinks list and copy without error. **PASSED 2026-07-13
+      RETEST:** list rows show the exact stored target for both valid and broken
+      links.
 - [ ] A Finder alias shows the alias badge.
 
 ## Share
@@ -228,16 +263,21 @@ need the corresponding environment or explicit approval.
       timeout).
 
 ## Perf
+- [x] A 100k-file directory reaches an interactive, inspectable state instead
+      of freezing: rows stream, the final count reaches 100,000, and filtering
+      to a single known filename works.
 - [ ] 100k-file directory: first rows <50 ms, scrolling never hitches,
-      sort settles once, filter-as-you-type stays instant. **FAILED
-      2026-07-13:** no inspectable rows after >50 s; window became unresponsive
-      and required restart.
+      sort settles once, filter-as-you-type stays instant. **PARTIAL
+      2026-07-13 RETEST:** the live interaction and filter pass, and the 100k
+      store ingest regression test completes in about 50 ms. Sub-50-ms live
+      first paint, a full scroll sweep, and final background-sort settlement
+      were not separately instrumented.
 - [ ] 100k-file directory hydrates from the viewport outward: visible rows
       lose their shimmer first (even after jumping to the middle), the rest
       trickles in the background, and navigating away mid-hydration leaves
-      no stray updates in the next folder. **FAILED 2026-07-13:** the directory
-      never reached an interactive state, so hydration order could not be
-      exercised.
+      no stray updates in the next folder. **PARTIAL 2026-07-13 RETEST:**
+      visible rows hydrated first and navigating away left no stray updates;
+      jumping to the middle during hydration was not separately exercised.
 - [ ] Folder sizes (Advanced → on): list-view dirs show "…" then the value
       as rows scroll into view (max 2 computing at once); copying INTO a
       cached folder refreshes its size; values recompute after ~5 min TTL.
@@ -256,12 +296,12 @@ need the corresponding environment or explicit approval.
       bytes land; flip a byte in the source mid-copy is impractical — instead
       verify a normal copy passes clean, and confirm cross-volume moves still
       verify with the toggle OFF (mandatory gate unaffected).
-- [ ] Keyboard pane: Record ⌘⇧M for New Folder → palette label updates, old
+- [x] Keyboard pane: Record ⌘⇧M for New Folder → palette label updates, old
       binding dead, new one fires; recording ⌘D (Duplicate's) is blocked with
       "unbind the other command"; Unbind removes a shortcut; Reset restores
-      the default; all of it survives relaunch. **FAILED 2026-07-13:** custom
-      binding, palette, firing, persistence, and Reset pass; recording ⌘D stays
-      at `press keys…` and never shows the conflict prompt.
+      the default; all of it survives relaunch. **PASSED 2026-07-13 RETEST:**
+      ⌘D shows the inline Duplicate conflict, and recording ⌘C also reaches the
+      webview and shows the inline Copy conflict.
 - [ ] Corrupt-blob recovery: hand-edit localStorage fazi-settings
       keybindingOverrides to garbage → app still boots with default
       shortcuts.
@@ -323,10 +363,11 @@ need the corresponding environment or explicit approval.
       error; no zip is produced.
 - [x] Extract a `.tar.gz` → contents promoted next to the archive; a
       single-root tarball promotes under the inner name (no `X/X` nesting).
-- [ ] ⌘Z after compress trashes the zip; Edit menu reads "Undo Compress of
-      1 Item"; ⌘⇧Z restores it and the menu still says Compress. **FAILED
-      2026-07-13:** undo/redo restore the zip correctly, but the native Edit
-      menu remains generic `Undo` / `Redo`.
+- [x] ⌘Z after compress trashes the zip; Edit menu reads "Undo Compress of
+      1 Item"; ⌘⇧Z restores it and the menu still says Compress. **PASSED
+      2026-07-13 RETEST:** the native menu reads
+      `Undo Compress of 1 Item` and `Redo Compress of 1 Item`, and both actions
+      update the filesystem correctly.
 - [ ] Compress/extract progress: compress card shows bytes (no rate/ETA) and
       never exceeds 100%; multi-archive extract shows "N of M archives" and
       advances past a failed archive.

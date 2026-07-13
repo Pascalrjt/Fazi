@@ -47,6 +47,8 @@ pub fn run() {
             let engine_tokens = tokens.clone();
             let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
             let fuzzy_for_ops = fuzzy.clone();
+            let native_menu = macos::menu::install(app)?;
+            let menu_for_undo = native_menu.clone();
             let engine = Arc::new(Engine {
                 trasher: Arc::new(SystemTrasher),
                 journal,
@@ -60,6 +62,7 @@ pub fn run() {
                     crate::core::verify::checksum_compare(src, dst, cancelled)
                 }),
                 invalidate_fuzzy: Arc::new(move |paths| mark_stale_under(&fuzzy_for_ops, paths)),
+                undo_changed: Arc::new(move |stack| menu_for_undo.sync_undo(stack)),
             });
 
             let thumb_cache_dir = cache_dir.join("thumbnails");
@@ -83,6 +86,7 @@ pub fn run() {
                 fuzzy_pending: Arc::new(DashMap::new()),
                 fuzzy_cache_dir,
                 engine,
+                native_menu,
                 icon_cache: Arc::new(DashMap::new()),
                 thumb_cache_dir,
                 interrupted,
@@ -144,6 +148,8 @@ pub fn run() {
             commands::listing::stat_path,
             commands::listing::stat_paths,
             commands::listing::hydrate_paths,
+            commands::menu::set_shortcut_recording,
+            commands::menu::set_native_menu_shortcuts,
             commands::watch::watch_dir,
             commands::watch::unwatch,
             commands::ops::run_op,

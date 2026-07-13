@@ -28,7 +28,7 @@ vi.mock("../../../lib/ipc", () => ({
     mocks.trashPathsCalls.push(paths);
     return Promise.resolve();
   },
-  trashStats: () => Promise.resolve({ count: 0, externalCount: 0 }),
+  trashStats: () => Promise.resolve({ count: 0, externalCount: 0, unreadable: [] }),
   emptyTrash: () => Promise.resolve(),
   eject: () => Promise.resolve(),
   revealInFinder: () => Promise.resolve(),

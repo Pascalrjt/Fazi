@@ -201,6 +201,20 @@ interface RowProps {
   onRenameDone: (entry: Entry, committed: boolean, advance: boolean) => void;
 }
 
+/** Name column content kept separate for focused link-display coverage. */
+export function EntryName({ entry }: { entry: Entry }) {
+  return (
+    <span className="min-w-0 flex-1 truncate text-primary">
+      {entry.name}
+      {entry.kind === "symlink" && entry.linkTarget && (
+        <span className="ml-2 text-[11px] text-tertiary" title={entry.linkTarget}>
+          → {entry.linkTarget}
+        </span>
+      )}
+    </span>
+  );
+}
+
 const FileRow = memo(function FileRow({
   entry,
   paneId,
@@ -315,7 +329,7 @@ const FileRow = memo(function FileRow({
           onDone={(committed, advance) => onRenameDone(entry, committed, advance)}
         />
       ) : (
-        <span className="min-w-0 flex-1 truncate text-primary">{entry.name}</span>
+        <EntryName entry={entry} />
       )}
       <span className="flex shrink-0 items-center gap-1 text-[11px] text-tertiary">
         {entry.kind === "symlink" && <span title={entry.linkTarget ?? "Symbolic link"}>⤳</span>}

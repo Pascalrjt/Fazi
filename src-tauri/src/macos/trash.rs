@@ -56,7 +56,7 @@ pub fn user_trash_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
         let t = PathBuf::from(home).join(".Trash");
-        if t.is_dir() {
+        if is_dir_or_permission_denied(&t) {
             dirs.push(t);
         }
     }
@@ -68,7 +68,7 @@ pub fn user_trash_dirs() -> Vec<PathBuf> {
                 continue;
             }
             let t = e.path().join(".Trashes").join(uid.to_string());
-            if t.is_dir() {
+            if is_dir_or_permission_denied(&t) {
                 dirs.push(t);
             }
         }
@@ -76,20 +76,28 @@ pub fn user_trash_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+fn is_dir_or_permission_denied(path: &Path) -> bool {
+    match path.symlink_metadata() {
+        Ok(meta) => meta.is_dir(),
+        // Keep protected-but-present candidates so enumeration reports the
+        // access failure instead of silently treating the volume as empty.
+        Err(error) => error.kind() == io::ErrorKind::PermissionDenied,
+    }
+}
+
 /// Top-level items of one trash dir (never recurses — an item is deleted
 /// whole, and the count matches what the user sees in the Trash).
-pub fn trash_items(dir: &Path) -> Vec<PathBuf> {
+pub fn trash_items(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            // .DS_Store isn't a trashed item; deleting it is pointless churn.
-            if e.file_name().to_string_lossy() == ".DS_Store" {
-                continue;
-            }
-            out.push(e.path());
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        // .DS_Store isn't a trashed item; deleting it is pointless churn.
+        if entry.file_name().to_string_lossy() == ".DS_Store" {
+            continue;
         }
+        out.push(entry.path());
     }
-    out
+    Ok(out)
 }
 
 pub struct EmptyTrashOutcome {
@@ -106,7 +114,20 @@ pub fn empty_trash_dirs(
     on_progress: &mut dyn FnMut(u64, u64),
     cancel: &std::sync::atomic::AtomicBool,
 ) -> EmptyTrashOutcome {
-    let items: Vec<PathBuf> = dirs.iter().flat_map(|d| trash_items(d)).collect();
+    let mut items = Vec::new();
+    let mut enumeration_errors = Vec::new();
+    for dir in dirs {
+        match trash_items(dir) {
+            Ok(mut found) => items.append(&mut found),
+            Err(error) => enumeration_errors.push((dir.clone(), error)),
+        }
+    }
+    // Empty Trash is all-or-nothing at the enumeration gate. Deleting from
+    // only the readable volumes would make the confirmation count dishonest.
+    if !enumeration_errors.is_empty() {
+        on_progress(0, 0);
+        return EmptyTrashOutcome { deleted: Vec::new(), errors: enumeration_errors };
+    }
     let total = items.len() as u64;
     let mut outcome = EmptyTrashOutcome { deleted: Vec::new(), errors: Vec::new() };
     on_progress(0, total);
@@ -196,6 +217,27 @@ mod tests {
         assert!(outcome.deleted.iter().any(|p| p.ends_with("a.txt")));
         assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
         assert!(outcome.errors[0].0.ends_with("locked"));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn enumeration_failure_blocks_all_deletion() {
+        let d = tmp("enumeration");
+        let readable = d.join("readable");
+        let missing = d.join("missing");
+        fs::create_dir_all(&readable).unwrap();
+        fs::write(readable.join("keep.txt"), b"keep").unwrap();
+
+        let outcome = empty_trash_dirs(
+            &[readable.clone(), missing.clone()],
+            &mut |_, _| {},
+            &AtomicBool::new(false),
+        );
+
+        assert!(outcome.deleted.is_empty());
+        assert_eq!(outcome.errors.len(), 1);
+        assert_eq!(outcome.errors[0].0, missing);
+        assert!(readable.join("keep.txt").exists());
         fs::remove_dir_all(&d).ok();
     }
 }
