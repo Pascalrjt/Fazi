@@ -67,6 +67,20 @@ export function cutSelection(): void {
     .catch((err) => toast(`Cut failed: ${err}`, { danger: true }));
 }
 
+/** Clear the cut-dim mirror if another app has since taken the pasteboard.
+ *  Called on window focus — the backend's changeCount check is the truth;
+ *  IPC failures keep the dim (better stale than flickering). */
+export async function recheckCutMirror(): Promise<void> {
+  const app = useApp.getState();
+  if (app.clipboard?.mode !== "cut") return;
+  try {
+    const valid = await ipc.pbCutValid();
+    if (!valid) useApp.getState().setClipboard(null);
+  } catch {
+    // no backend — leave the mirror alone
+  }
+}
+
 export function pasteInto(destDir: string, forceMove = false): void {
   ipc
     .pbReadFiles()

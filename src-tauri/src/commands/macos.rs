@@ -366,6 +366,14 @@ pub fn pb_read_files(app: AppHandle, state: State<'_, AppState>) -> Option<Paste
     })
 }
 
+/// True while the pasteboard still holds Fazi's own cut write. Once another
+/// app bumps the changeCount, the cut marker (and the UI's dimming) is stale.
+#[tauri::command]
+pub fn pb_cut_valid(app: AppHandle, state: State<'_, AppState>) -> bool {
+    let count = on_main(&app, pasteboard::change_count);
+    matches!(*state.pb_mark.lock().unwrap(), Some((c, true)) if c == count)
+}
+
 #[tauri::command]
 pub fn pb_write_text(app: AppHandle, state: State<'_, AppState>, text: String) {
     let after = on_main(&app, move || pasteboard::write_text(&text));

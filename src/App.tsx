@@ -7,6 +7,7 @@ import { useKeyboard } from "./hooks/useKeyboard";
 import * as ipc from "./lib/ipc";
 import { setupFinderDragIn } from "./lib/ipc/dnd";
 import { setAltDuringDrag } from "./lib/dnd";
+import { recheckCutMirror } from "./lib/actions";
 import { usePanes } from "./stores/panes";
 import { useVolumes } from "./stores/volumes";
 import { useApp } from "./stores/app";
@@ -126,6 +127,16 @@ export default function App() {
         else fn();
       })
       .catch(() => {});
+    // Cut dimming goes stale when another app takes the pasteboard while
+    // Fazi is in the background — re-validate on every focus regain.
+    let unlistenFocus: (() => void) | undefined;
+    ipc
+      .onWindowFocused(() => void recheckCutMirror())
+      .then((fn) => {
+        if (alive) unlistenFocus = fn;
+        else fn();
+      })
+      .catch(() => {});
     // ⌥ tracker for native drag-out: the dragstart snapshot covers
     // press-then-drag; these keep mid-drag presses/releases current while the
     // window still receives key events.
@@ -138,6 +149,7 @@ export default function App() {
       alive = false;
       unlistenDnd?.();
       unlistenMenu?.();
+      unlistenFocus?.();
       window.removeEventListener("keydown", onAltKey);
       window.removeEventListener("keyup", onAltKey);
     };

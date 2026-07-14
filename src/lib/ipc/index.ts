@@ -4,6 +4,7 @@
  */
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   COMMANDS,
   EVENTS,
@@ -347,6 +348,10 @@ export function pbReadFiles(): Promise<PasteboardContents | null> {
   return invoke(COMMANDS.pbReadFiles);
 }
 
+export function pbCutValid(): Promise<boolean> {
+  return invoke(COMMANDS.pbCutValid);
+}
+
 export function pbWriteText(text: string): Promise<void> {
   return invoke(COMMANDS.pbWriteText, { text });
 }
@@ -377,6 +382,18 @@ export function revokePreview(token: string): Promise<void> {
 
 export function onVolumesChanged(cb: () => void): Promise<UnlistenFn> {
   return listen(EVENTS.volumesChanged, cb);
+}
+
+/** Fires when the window regains focus (never on blur). Safe without a
+ *  backend (resolves to a no-op). */
+export function onWindowFocused(cb: () => void): Promise<UnlistenFn> {
+  try {
+    return getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) cb();
+    });
+  } catch {
+    return Promise.resolve(() => {});
+  }
 }
 
 export function onMenuCommand(cb: (commandId: string) => void): Promise<UnlistenFn> {

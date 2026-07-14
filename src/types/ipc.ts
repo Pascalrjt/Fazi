@@ -448,6 +448,7 @@ export const COMMANDS = {
   openFullDiskAccessSettings: "open_full_disk_access_settings",
   pbWriteFiles: "pb_write_files", // (paths, isCut)
   pbReadFiles: "pb_read_files", // () -> PasteboardContents | null
+  pbCutValid: "pb_cut_valid", // () -> bool: pasteboard still holds our cut write
   pbWriteText: "pb_write_text",
   pbPasteNewFile: "pb_paste_new_file", // (destDir) -> path | null — clipboard image/text as a new file
   quicklookPanel: "quicklook_panel", // (paths) — qlmanage -p escape hatch

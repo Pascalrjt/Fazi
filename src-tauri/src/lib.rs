@@ -197,6 +197,7 @@ pub fn run() {
             commands::macos::open_full_disk_access_settings,
             commands::macos::pb_write_files,
             commands::macos::pb_read_files,
+            commands::macos::pb_cut_valid,
             commands::macos::pb_write_text,
             commands::ops::pb_paste_new_file,
             commands::macos::register_preview,
