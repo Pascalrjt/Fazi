@@ -166,18 +166,23 @@ describe("marquee selection", () => {
     expect(selectedIds(tabId).size).toBeGreaterThan(before);
   });
 
-  it("Escape cancels the drag and restores the pre-drag selection", () => {
+  it("Escape cancels the drag and restores the full pre-drag selection", () => {
     const { tabId, el } = renderList();
+    // Anchor and lead must survive the cancel too — shift-range selection
+    // after an aborted marquee has to behave as if the drag never happened.
     usePanes
       .getState()
-      .setSelection("left", tabId, { selected: new Set([7]), anchor: null, lead: null });
+      .setSelection("left", tabId, { selected: new Set([7, 8]), anchor: 7, lead: 8 });
     fireEvent.mouseDown(el, { button: 0, clientX: 20, clientY: 10 });
     fireEvent(window, new MouseEvent("mousemove", { clientX: 100, clientY: 100 }));
     expect(selectedIds(tabId).has(1)).toBe(true); // marquee replaced it
     fireEvent.keyDown(window, { key: "Escape" });
-    expect([...selectedIds(tabId)]).toEqual([7]);
+    const sel = usePanes.getState().panes[0].tabs.find((t) => t.id === tabId)?.selection;
+    expect([...(sel?.selected ?? [])].sort((a, b) => a - b)).toEqual([7, 8]);
+    expect(sel?.anchor).toBe(7);
+    expect(sel?.lead).toBe(8);
     // The drag is dead: further movement changes nothing.
     fireEvent(window, new MouseEvent("mousemove", { clientX: 150, clientY: 150 }));
-    expect([...selectedIds(tabId)]).toEqual([7]);
+    expect([...selectedIds(tabId)].sort((a, b) => a - b)).toEqual([7, 8]);
   });
 });

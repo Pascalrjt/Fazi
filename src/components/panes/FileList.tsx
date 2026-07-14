@@ -629,7 +629,15 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     const state = usePanes.getState();
     const t0 = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
     const base = additive && t0 ? new Set(t0.selection.selected) : null;
-    const prior = t0 ? new Set(t0.selection.selected) : new Set<number>();
+    // Full snapshot (incl. anchor/lead) so Escape restores shift-range
+    // behavior exactly, not just the selected set.
+    const prior = t0
+      ? {
+          selected: new Set(t0.selection.selected),
+          anchor: t0.selection.anchor,
+          lead: t0.selection.lead,
+        }
+      : { selected: new Set<number>(), anchor: null, lead: null };
     const itemRects = visible.map((en, i) => ({
       id: en.id,
       rect: { x: 0, y: i * ROW_H, width: Math.max(el.scrollWidth, el.clientWidth), height: ROW_H },
@@ -706,9 +714,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
       ke.stopPropagation();
       teardown();
       // Cancel restores the pre-drag selection.
-      usePanes
-        .getState()
-        .setSelection(paneId, tabId, { selected: prior, anchor: null, lead: null });
+      usePanes.getState().setSelection(paneId, tabId, prior);
     };
     marqueeTeardown.current = teardown;
     window.addEventListener("mousemove", onMove);

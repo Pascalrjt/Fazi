@@ -65,7 +65,7 @@ pub struct DragModifiers {
 #[tauri::command]
 pub fn drag_modifiers(app: AppHandle) -> DragModifiers {
     use objc2_app_kit::{NSEvent, NSEventModifierFlags};
-    let flags = on_main(&app, || NSEvent::modifierFlags_class());
+    let flags = on_main(&app, NSEvent::modifierFlags_class);
     DragModifiers {
         alt: flags.contains(NSEventModifierFlags::Option),
     }

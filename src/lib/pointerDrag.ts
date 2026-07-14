@@ -34,6 +34,8 @@ export function startPointerDrag(paths: string[]): void {
   const teardown = () => {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onCancel);
+    window.removeEventListener("blur", onCancel);
     window.removeEventListener("keydown", onKey, true);
     badge.remove();
     emitDropHover(null); // clears rings/highlights and cancels the spring
@@ -54,6 +56,10 @@ export function startPointerDrag(paths: string[]): void {
     if (hit) dispatchNativeSelfDrop(hit, paths, ev.altKey);
   };
 
+  // A pointer stream can end without a pointerup (pointercancel, or the
+  // window losing focus mid-drag) — those must not wedge the drag state.
+  const onCancel = () => teardown();
+
   const onKey = (ev: KeyboardEvent) => {
     if (ev.key !== "Escape") return;
     ev.stopPropagation();
@@ -62,5 +68,7 @@ export function startPointerDrag(paths: string[]): void {
 
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onCancel);
+  window.addEventListener("blur", onCancel);
   window.addEventListener("keydown", onKey, true);
 }

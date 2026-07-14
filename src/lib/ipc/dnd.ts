@@ -12,7 +12,7 @@
  * move (⌥ = copy): the drag-drop event fires for native sessions too, and the
  * native-drag state tells self from external. If the event never fires for a
  * self-drop (spike risk (a)), the plugin's completion callback hit-tests its
- * cursor position as a fallback — `markNativeDropHandled` keeps the two paths
+ * cursor position as a fallback — `tryClaimNativeDrop` keeps the two paths
  * from double-dispatching.
  */
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -26,8 +26,8 @@ import {
   emitDropHover,
   endNativeDragState,
   hitTestDropZones,
-  markNativeDropHandled,
   nativeDragPathsNow,
+  tryClaimNativeDrop,
   wasNativeDropHandled,
 } from "../dnd";
 import { useOps } from "../../stores/ops";
@@ -83,10 +83,11 @@ export async function setupFinderDragIn(): Promise<() => void> {
       // Self-drop of our own native drag-out → internal move (⌥ = copy).
       const selfPaths = nativeDragPathsNow();
       if (selfPaths != null) {
-        // Claim the drop BEFORE any await — this is the double-dispatch
-        // guard the 120ms completion-callback fallback checks.
-        markNativeDropHandled();
-        void altAtDropTime().then((alt) => dispatchNativeSelfDrop(hit, selfPaths, alt));
+        // Claim BEFORE any await, and dispatch only on a successful claim —
+        // the completion-callback fallback may already be mid-dispatch.
+        if (tryClaimNativeDrop()) {
+          void altAtDropTime().then((alt) => dispatchNativeSelfDrop(hit, selfPaths, alt));
+        }
         return;
       }
 
@@ -162,9 +163,13 @@ async function finishNativeDrop(screenX: number, screenY: number): Promise<void>
     const clientY = screenY - inner.y / scale;
     const inWindow =
       clientX >= 0 && clientY >= 0 && clientX <= window.innerWidth && clientY <= window.innerHeight;
-    if (inWindow && !wasNativeDropHandled()) {
+    if (inWindow) {
       const hit = hitTestDropZones(clientX, clientY);
-      if (hit) dispatchNativeSelfDrop(hit, paths, await altAtDropTime());
+      // Claim synchronously before the modifier await: the bridge event can
+      // still arrive while this path is suspended.
+      if (hit && tryClaimNativeDrop()) {
+        dispatchNativeSelfDrop(hit, paths, await altAtDropTime());
+      }
     }
   } catch {
     // No backend / window API unavailable — external drop, nothing to do.

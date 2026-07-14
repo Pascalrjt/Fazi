@@ -180,10 +180,15 @@ export function nativeDragPathsNow(): string[] | null {
   return nativeDragPaths;
 }
 
-/** The bridge marks the drop consumed so the plugin's completion-callback
- *  fallback never dispatches the same drop twice. */
-export function markNativeDropHandled(): void {
+/** Atomically claim the drop for dispatch. The bridge event and the plugin
+ *  completion-callback fallback race in unspecified order, and BOTH await a
+ *  modifier query before dispatching — each must claim synchronously (before
+ *  its first await) and dispatch only if the claim succeeded, or the same
+ *  drop runs twice. */
+export function tryClaimNativeDrop(): boolean {
+  if (nativeDropHandled) return false;
   nativeDropHandled = true;
+  return true;
 }
 
 export function wasNativeDropHandled(): boolean {

@@ -69,13 +69,13 @@ import {
   dispatchNativeSelfDrop,
   emitDropHover,
   endNativeDragState,
-  markNativeDropHandled,
   nativeDragPathsNow,
   onDropHover,
   onPinHover,
   registerDropZone,
   setPointerDragPaths,
   SPRING_LOAD_MS,
+  tryClaimNativeDrop,
   wasNativeDropHandled,
   type DropHover,
 } from "../dnd";
@@ -97,8 +97,9 @@ describe("native drag state", () => {
     expect(nativeDragPathsNow()).toEqual(["/a/x.txt"]);
     expect(altHeldDuringDrag()).toBe(true);
     expect(wasNativeDropHandled()).toBe(false);
-    markNativeDropHandled();
+    expect(tryClaimNativeDrop()).toBe(true);
     expect(wasNativeDropHandled()).toBe(true);
+    expect(tryClaimNativeDrop()).toBe(false); // second claim must lose
     endNativeDragState();
     expect(nativeDragPathsNow()).toBeNull();
     expect(wasNativeDropHandled()).toBe(false);
@@ -180,7 +181,7 @@ describe("native drag state", () => {
     };
     startNativeDrag(["/elsewhere/f.txt"], false);
     await new Promise((r) => setTimeout(r, 0));
-    markNativeDropHandled(); // the bridge claimed it
+    tryClaimNativeDrop(); // the bridge claimed it
     callback?.({ result: "Dropped", cursorPos: { x: 50, y: 50 } });
     await new Promise((r) => setTimeout(r, 200));
     expect(mocks.runOpCalls).toHaveLength(0);
@@ -357,6 +358,33 @@ describe("drop-time modifiers", () => {
     ]);
   });
 
+  it("a bridge drop arriving while the fallback awaits modifiers is not double-dispatched", async () => {
+    mocks.dragModifiersImpl = () =>
+      new Promise((resolve) => setTimeout(() => resolve({ alt: false }), 300));
+    let callback: ((p: { result: string; cursorPos: { x: number; y: number } }) => void) | undefined;
+    mocks.startDragImpl = (_o, cb) => {
+      callback = cb;
+      return Promise.resolve();
+    };
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    startNativeDrag(["/src/f.txt"], false);
+    await new Promise((r) => setTimeout(r, 0));
+    // Completion callback first: after 120ms the fallback claims the drop
+    // and suspends on the slow modifier query…
+    callback?.({ result: "Dropped", cursorPos: { x: 5, y: 5 } });
+    await new Promise((r) => setTimeout(r, 200));
+    // …then the bridge event lands mid-await. It must lose the claim.
+    handler({
+      payload: { type: "drop", paths: ["/src/f.txt"], position: { x: 5, y: 5 } },
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "move", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
+  });
+
   it("a slow modifier query still yields exactly one dispatch with the fallback armed", async () => {
     mocks.dragModifiersImpl = () =>
       new Promise((resolve) => setTimeout(() => resolve({ alt: false }), 200));
@@ -487,6 +515,49 @@ describe("spring-loaded folders", () => {
     emitDropHover({ hit: { action: "copyTo", destDir: "/pane" }, x: 10, y: 10 });
     vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("pointer drag cancellation", () => {
+  beforeEach(() => {
+    mocks.runOpCalls.length = 0;
+    useOps.setState({ cards: [], conflicts: [] });
+  });
+
+  function fire(type: string, init: MouseEventInit = {}) {
+    window.dispatchEvent(new MouseEvent(type, { bubbles: true, ...init }));
+  }
+
+  it("pointercancel tears the drag down: state cleared, later pointerup inert", async () => {
+    const unregister = registerDropZone({
+      priority: 1,
+      hitTest: () => ({ action: "copyTo", destDir: "/dest" }) as const,
+    });
+    const { startPointerDrag } = await import("../pointerDrag");
+    const hovers: Array<unknown> = [];
+    const off = onDropHover((h) => hovers.push(h));
+
+    startPointerDrag(["/src/f.txt"]);
+    fire("pointermove", { clientX: 5, clientY: 5 });
+    expect(activeDragPaths()).toEqual(["/src/f.txt"]);
+    expect(hovers.at(-1)).not.toBeNull();
+
+    fire("pointercancel");
+    expect(activeDragPaths()).toBeNull();
+    expect(hovers.at(-1)).toBeNull(); // rings/spring cleared
+    fire("pointerup", { clientX: 5, clientY: 5 });
+    expect(mocks.runOpCalls).toHaveLength(0); // the dead drag never dispatches
+
+    off();
+    unregister();
+  });
+
+  it("window blur mid-drag also tears down", async () => {
+    const { startPointerDrag } = await import("../pointerDrag");
+    startPointerDrag(["/src/f.txt"]);
+    expect(activeDragPaths()).toEqual(["/src/f.txt"]);
+    window.dispatchEvent(new Event("blur"));
+    expect(activeDragPaths()).toBeNull();
   });
 });
 
