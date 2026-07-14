@@ -613,6 +613,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   );
 
   // marquee selection on empty-area drag
+  const marqueeTeardown = useRef<(() => void) | null>(null);
+  useEffect(() => () => marqueeTeardown.current?.(), []);
   const beginMarquee = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const el = scrollRef.current;
@@ -627,33 +629,92 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     const state = usePanes.getState();
     const t0 = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
     const base = additive && t0 ? new Set(t0.selection.selected) : null;
+    const prior = t0 ? new Set(t0.selection.selected) : new Set<number>();
     const itemRects = visible.map((en, i) => ({
       id: en.id,
       rect: { x: 0, y: i * ROW_H, width: Math.max(el.scrollWidth, el.clientWidth), height: ROW_H },
     }));
     let moved = false;
+    // itemRects are content-space and stable while scrolling — only the
+    // pointer point needs recomputing, from its last client position.
+    const lastClient = { x: e.clientX, y: e.clientY };
 
-    const onMove = (me: MouseEvent) => {
+    const recompute = () => {
       const r = el.getBoundingClientRect();
-      const cur = { x: me.clientX - r.left + el.scrollLeft, y: me.clientY - r.top + el.scrollTop };
+      const cur = {
+        x: lastClient.x - r.left + el.scrollLeft,
+        y: lastClient.y - r.top + el.scrollTop,
+      };
       const rectSel = dragRect(start, cur);
       if (!moved && (rectSel.width > 3 || rectSel.height > 3)) moved = true;
       if (!moved) return;
       setMarquee(rectSel);
       usePanes.getState().setSelection(paneId, tabId, marqueeSelect(rectSel, itemRects, base));
     };
-    const onUp = () => {
+
+    // Edge auto-scroll: while the pointer is near/past the top or bottom
+    // edge, scroll proportionally to the overshoot and re-derive the
+    // selection each frame. Runs for the whole drag; off-edge ticks no-op.
+    const EDGE_PX = 24;
+    const MAX_STEP = 24;
+    let raf = 0;
+    const tick = () => {
+      const r = el.getBoundingClientRect();
+      const past = Math.min(0, lastClient.y - r.top - EDGE_PX) ||
+        Math.max(0, lastClient.y - r.bottom + EDGE_PX);
+      if (past !== 0 && moved) {
+        const step = Math.sign(past) * Math.min(MAX_STEP, Math.abs(past) / 2);
+        const max = el.scrollHeight - el.clientHeight;
+        const next = Math.min(max, Math.max(0, el.scrollTop + step));
+        if (next !== el.scrollTop) {
+          el.scrollTop = next;
+          recompute();
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    const onMove = (me: MouseEvent) => {
+      lastClient.x = me.clientX;
+      lastClient.y = me.clientY;
+      recompute();
+    };
+    // Wheel-scrolling mid-drag moves the content under a stationary pointer.
+    const onScroll = () => {
+      if (moved) recompute();
+    };
+    const teardown = () => {
+      marqueeTeardown.current = null;
+      cancelAnimationFrame(raf);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+      el.removeEventListener("scroll", onScroll);
       setMarquee(null);
+    };
+    const onUp = () => {
+      teardown();
       if (!moved && !additive) {
         usePanes
           .getState()
           .setSelection(paneId, tabId, { selected: new Set(), anchor: null, lead: null });
       }
     };
+    const onKey = (ke: KeyboardEvent) => {
+      if (ke.key !== "Escape") return;
+      ke.stopPropagation();
+      teardown();
+      // Cancel restores the pre-drag selection.
+      usePanes
+        .getState()
+        .setSelection(paneId, tabId, { selected: prior, anchor: null, lead: null });
+    };
+    marqueeTeardown.current = teardown;
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKey, true);
+    el.addEventListener("scroll", onScroll);
   };
 
   if (!tab) return null;
