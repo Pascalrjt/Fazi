@@ -80,8 +80,8 @@ need the corresponding environment or explicit approval.
 - [ ] FDA banner appears without Full Disk Access; "Open Settings" lands on
       Privacy & Security → Full Disk Access; after granting + relaunch the
       banner is gone and ~/Library/Safari lists.
-- [ ] Dev note: grant FDA to the dev terminal, or `~/Library` browsing fails
-      in `npm run tauri dev`.
+Prerequisite: grant FDA to the dev terminal, or `~/Library` browsing fails
+in `npm run tauri dev`.
 
 ## The reason this app exists (ops acceptance)
 - [x] Same-volume move of a 100 GB folder → completes <1 s, **no progress
@@ -110,9 +110,9 @@ need the corresponding environment or explicit approval.
 - [x] "Copy as Pathname" (⌘⌥C) pastes absolute paths as text.
 
 ## Trash & undo
-- [ ] ⌘⌫ → toast with Undo; item appears in Finder's Trash with working
-      "Put Back". **PARTIAL 2026-07-13:** the toast and Undo action work, but
-      Trash contents / Finder Put Back could not be inspected without FDA.
+- [x] ⌘⌫ → toast with Undo; Undo restores. **PASSED 2026-07-13.**
+- [ ] ⌘⌫ → the item appears in Finder's Trash with working "Put Back"
+      (Trash contents could not be inspected without FDA).
 - [ ] Sidebar Trash row navigates to ~/.Trash; the banner shows the item
       count; dragging items onto the row trashes them (Put Back still works).
       **FIXED 2026-07-13:** without FDA, navigation now reports
@@ -162,15 +162,15 @@ need the corresponding environment or explicit approval.
       and from, search shows the unindexed-volume notice.
 
 ## Search
-- [ ] Filename/Contents pill: switching to Contents re-runs the query and
-      returns kMDItemTextContent hits; the results header notes "matching
-      file contents. **PARTIAL 2026-07-13:** switching modes updated the header
-      correctly, but the `/tmp` fixture was not Spotlight-indexed, so a known
-      contents hit could not be confirmed.
-- [ ] Predicates: `kind:image`, `date:7d`, `size:>10mb` narrow results;
-      the "?" popover lists the syntax; unparseable values search as text.
-      **PARTIAL 2026-07-13:** the help popover listed the expected syntax;
-      result narrowing was not verified against an indexed fixture.
+- [x] Filename/Contents pill: switching to Contents re-runs the query and
+      the results header notes "matching file contents". **PASSED
+      2026-07-13.**
+- [ ] Contents mode returns kMDItemTextContent hits — the fixture must live
+      in a Spotlight-indexed location (`/tmp` is not indexed; use `~`).
+- [x] Predicates: the "?" popover lists the expected syntax. **PASSED
+      2026-07-13.**
+- [ ] `kind:image`, `date:7d`, `size:>10mb` narrow results against an
+      indexed fixture; unparseable values search as text.
 - [ ] A query with >2,000 matches renders past the old cap (default 10,000)
       with a "showing the first N results" note when truncated; scrolling a
       10k-hit list stays smooth (batched updates).
@@ -180,45 +180,44 @@ need the corresponding environment or explicit approval.
       their explanatory notices instead of falling back.
 
 ## Fuzzy finder (⌘P)
-- [ ] ⌘P on a ~100k-file tree: overlay opens instantly, results refine live
-      while the footer counts up "indexing… N items"; typing mid-index keeps
-      refining without stalls. **PARTIAL 2026-07-13:** indexing completed for
-      a 130,067-entry tree and `item-099999` refined to the expected hit;
-      typing during the indexing phase was not separately timed.
+- [x] ⌘P on a ~100k-file tree: overlay opens instantly, results refine live
+      while the footer counts up "indexing… N items" (130,067-entry tree
+      indexed; `item-099999` refined to the expected hit). **PASSED
+      2026-07-13.**
+- [ ] Typing mid-index keeps refining without stalls (not separately
+      timed).
 - [ ] Tab toggles This Folder ↔ Home; the old scope's in-flight query is
       cancelled (no stale rows flash in).
-- [ ] Enter opens the hit; ⌘Enter navigates to its parent with the hit
-      selected; Esc closes and ⌘P over a previously-warm root reuses the
-      index (footer shows its age). **PARTIAL 2026-07-13:** ⌘Enter started the
-      reveal, but entering the 100k-item parent hit the directory-list hang
-      recorded under Perf; warm-index reuse was not verified.
+- [x] Enter opens the hit; Esc closes. **PASSED 2026-07-13.**
+- [ ] ⌘Enter navigates to the hit's parent with the hit selected (the
+      reveal into the 100k parent previously hit the since-fixed
+      directory-list hang — retest).
+- [ ] ⌘P over a previously-warm root reuses the index (footer shows its
+      age).
 - [ ] Rebuild (footer button / ⌘R) re-walks; after a copy INTO the indexed
       root completes, reopening ⌘P rebuilds automatically (stale marking).
-- [ ] With fuzzyIndexMaxEntries lowered, the footer shows "index capped".
+- [ ] With a low Fuzzy-index entry cap set (Settings; `fuzzyIndexEntryCap`,
+      0 = no cap), the footer shows "index capped".
 
 ## Previews
-- [ ] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3,
-      .txt/.rs/.ts (text with line numbers), .docx / .sketch (QL thumbnail
-      render), a 0-byte file, a broken symlink (no crash). **PARTIAL
-      2026-07-13:** JPEG, PNG, and HEIC render; keyboard zoom and drag-to-pan
-      work; synthesized MP4/MOV files play with controls and seeking; MP3
-      plays; text has line numbers; a real DOCX gets a Quick Look thumbnail;
-      and 0-byte / broken-link previews do not crash. A `.sketch` fixture was
-      not available.
-- [ ] PDF: multi-page renders via pdf.js; PageUp/PageDown and the on-screen
-      arrows page; ←/→ still walk file-to-file; a >100 MB PDF falls back to
-      the thumbnail. Verify in `tauri dev` AND the bundled app (worker URL
-      forms differ dev vs prod). **PARTIAL 2026-07-13:** all listed behavior
-      passes in the dev build, including a synthesized three-page PDF and a
-      106 MB fallback fixture. The bundled-app worker path was not retested.
+- [x] Space on: JPEG/PNG/HEIC (zoom/pan), MP4/MOV (plays, seeks), MP3,
+      .txt/.rs/.ts (text with line numbers), .docx (QL thumbnail render), a
+      0-byte file, a broken symlink (no crash). **PASSED 2026-07-13.**
+- [ ] Space on a `.sketch` file renders a QL thumbnail (fixture was not
+      available).
+- [x] PDF in `tauri dev`: multi-page renders via pdf.js; PageUp/PageDown and
+      the on-screen arrows page; ←/→ still walk file-to-file; a >100 MB PDF
+      (106 MB fixture) falls back to the thumbnail. **PASSED 2026-07-13.**
+- [ ] The same PDF matrix passes in the bundled app (worker URL forms
+      differ dev vs prod).
 - [x] ←/→ walks the selection; title shows "n of m"; Esc and Space close.
 - [ ] ⌘Y opens qlmanage for anything exotic.
 
 ## Packages & links
-- [ ] .app opens on double-click/⏎; "Show Package Contents" browses inside;
-      progress counts it as one item. **PARTIAL 2026-07-13:** Show Package
-      Contents correctly browses `Contents`; launching and operation progress
-      were not tested with the intentionally non-executable fixture app.
+- [x] "Show Package Contents" browses inside `Contents`. **PASSED
+      2026-07-13.**
+- [ ] .app opens on double-click/⏎; progress counts it as one item (needs a
+      launchable fixture app, e.g. built with `osacompile`).
 - [x] `.photoslibrary` behaves as a file.
 - [x] Symlink shows badge + target; copying a symlink copies the link;
       broken symlinks list and copy without error. **PASSED 2026-07-13
@@ -227,18 +226,16 @@ need the corresponding environment or explicit approval.
 - [ ] A Finder alias shows the alias badge.
 
 ## Share
-- [ ] Right-click a file → Share: spinner, then the system's destinations
-      with icons (AirDrop, Mail, Messages, plus any installed share
-      extensions); AirDrop opens its window with the file attached; Mail
-      opens a draft with the attachment. **PARTIAL 2026-07-13:** the built-in
-      menu populated AirDrop, Mail, Messages, and other destinations; delivery
-      and attachment state were not verified.
+- [x] Right-click a file → Share: spinner, then the system's destinations
+      with icons (AirDrop, Mail, Messages, plus installed share extensions).
+      **PASSED 2026-07-13.**
+- [ ] AirDrop opens its window with the file attached; Mail opens a draft
+      with the attachment (delivery/attachment state not verified).
 - [ ] Multi-select → Share sends all selected files; the list narrows to
       services that accept the whole set.
-- [ ] ⌘⇧S (and palette "Share…") opens the same menu centered; no-op with
-      nothing selected; rebinding it in Settings → Keyboard works. **PARTIAL
-      2026-07-13:** no-selection was a no-op and a selected file opened the
-      same destination menu; rebinding was not tested.
+- [x] ⌘⇧S (and palette "Share…") opens the same menu centered; no-op with
+      nothing selected. **PASSED 2026-07-13.**
+- [ ] Rebinding ⌘⇧S in Settings → Keyboard works.
 - [ ] Open Share, dismiss, open again and pick a destination — still works
       (each open re-enumerates; a stale pick shows a toast, never a crash).
 - [ ] Advanced → "System share menu" on: right-click Share… opens the native
@@ -266,24 +263,22 @@ need the corresponding environment or explicit approval.
 - [x] A 100k-file directory reaches an interactive, inspectable state instead
       of freezing: rows stream, the final count reaches 100,000, and filtering
       to a single known filename works.
-- [ ] 100k-file directory: first rows <50 ms, scrolling never hitches,
-      sort settles once, filter-as-you-type stays instant. **PARTIAL
-      2026-07-13 RETEST:** the live interaction and filter pass, and the 100k
-      store ingest regression test completes in about 50 ms. Sub-50-ms live
-      first paint, a full scroll sweep, and final background-sort settlement
-      were not separately instrumented.
-- [ ] 100k-file directory hydrates from the viewport outward: visible rows
-      lose their shimmer first (even after jumping to the middle), the rest
-      trickles in the background, and navigating away mid-hydration leaves
-      no stray updates in the next folder. **PARTIAL 2026-07-13 RETEST:**
-      visible rows hydrated first and navigating away left no stray updates;
-      jumping to the middle during hydration was not separately exercised.
-- [ ] Folder sizes (Advanced → on): list-view dirs show "…" then the value
-      as rows scroll into view (max 2 computing at once); copying INTO a
-      cached folder refreshes its size; values recompute after ~5 min TTL.
-      **PARTIAL 2026-07-13:** an empty folder hydrated to `Zero bytes`; copying
-      a 1 MB file into it through Fazi refreshed the parent row to `1.0 MB`.
-      The two-worker limit and five-minute TTL were not directly verified.
+- [x] 100k-file directory: live interaction and filter-as-you-type pass;
+      the 100k store ingest regression test completes in about 50 ms.
+      **PASSED 2026-07-13 RETEST.**
+- [ ] First rows <50 ms, a full scroll sweep never hitches, and sort
+      settles once (needs instrumentation).
+- [x] 100k-file directory hydrates from the viewport outward: visible rows
+      lose their shimmer first, the rest trickles in the background, and
+      navigating away mid-hydration leaves no stray updates in the next
+      folder. **PASSED 2026-07-13 RETEST.**
+- [ ] Jumping to the middle during hydration hydrates the new viewport
+      first.
+- [x] Folder sizes (Advanced → on): an empty folder hydrated to `Zero
+      bytes`; copying a 1 MB file into it through Fazi refreshed the parent
+      row to `1.0 MB`. **PASSED 2026-07-13.**
+- [ ] List-view dirs show "…" while computing (max 2 at once) and values
+      recompute after the ~5 min TTL.
 - [ ] Open a dir on a slow SMB share: thin indeterminate bar, pane stays
       interactive, no blank white pane.
 
@@ -375,11 +370,11 @@ need the corresponding environment or explicit approval.
       advances past a failed archive.
 
 ## Sidebar favorites
-- [ ] Right-click a folder → "Add to Sidebar" pins it under the default
-      Favorites; pinning ~/Downloads again is refused (no duplicate row).
-      **PARTIAL 2026-07-13:** a temporary folder pinned below the defaults and
-      a second pin attempt produced `Already in sidebar`; the specific
-      `~/Downloads` row was not modified.
+- [x] Right-click a folder → "Add to Sidebar" pins it under the default
+      Favorites; a second pin attempt is refused with `Already in sidebar`.
+      **PASSED 2026-07-13.**
+- [ ] Pinning `~/Downloads` (an existing default row) again is refused (no
+      duplicate row).
 - [ ] Drag a folder from the file list over the Favorites section: hovering
       a row's top/bottom edge shows the 2 px insertion line; hovering its
       center shows the row drop-ring — exactly one indicator at a time.
@@ -388,10 +383,10 @@ need the corresponding environment or explicit approval.
 - [ ] Hovering the defaults region (Home…Applications) shows the line above
       the first pin and drops at slot 0; section whitespace pins at the end;
       works with zero existing pins.
+- [x] Dropping an already-pinned folder toasts "Already in the sidebar".
+      **PASSED 2026-07-13.**
 - [ ] Dragging a file (non-folder) to an edge is refused with "Only folders
-      can be added to the sidebar"; an already-pinned folder toasts "Already
-      in the sidebar". **PARTIAL 2026-07-13:** the already-pinned-folder toast
-      passed; the file edge-drop half was not exercised.
+      can be added to the sidebar".
 - [ ] Drag a pinned favorite row up/down (press + move ≥4 px) → 2 px
       insertion line follows the pointer, drop reorders, order persists
       across relaunch; Escape mid-drag cancels; a plain click (no movement)
