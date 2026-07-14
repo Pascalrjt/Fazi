@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
     opts: unknown,
     cb?: (p: { result: string; cursorPos: { x: number; y: number } }) => void,
   ) => Promise<void>,
+  // Default mimics "no backend": the bridge falls back to the drag snapshot.
+  dragModifiersImpl: (() => Promise.reject(new Error("no backend"))) as () => Promise<{
+    alt: boolean;
+  }>,
 }));
 
 vi.mock("../pin", () => ({
@@ -36,6 +40,7 @@ vi.mock("../ipc", () => ({
   cancelOp: () => Promise.resolve(),
   undoLast: () => Promise.resolve(null),
   redoLast: () => Promise.resolve(null),
+  dragModifiers: () => mocks.dragModifiersImpl(),
 }));
 
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -286,6 +291,7 @@ describe("native pin contract (favorites zones)", () => {
     handler({
       payload: { type: "drop", paths: ["/src/Folder"], position: { x: 50, y: 114 } },
     });
+    await new Promise((r) => setTimeout(r, 0)); // modifier query resolves first
     expect(mocks.runOpCalls).toEqual([
       { kind: "move", sources: ["/src/Folder"], destDir: "/fav/A" },
     ]);
@@ -300,6 +306,80 @@ describe("native pin contract (favorites zones)", () => {
     });
     expect(mocks.pinCalls).toEqual([{ paths: ["/ext/Folder"], atIndex: 1 }]);
     expect(mocks.runOpCalls).toHaveLength(0);
+  });
+});
+
+describe("drop-time modifiers", () => {
+  const zone = {
+    priority: 1,
+    hitTest: () => ({ action: "copyTo", destDir: "/dest" }) as const,
+  };
+  let unregister: (() => void) | null = null;
+
+  beforeEach(() => {
+    mocks.runOpCalls.length = 0;
+    mocks.dragDropHandler = null;
+    mocks.dragModifiersImpl = () => Promise.reject(new Error("no backend"));
+    endNativeDragState();
+    useOps.setState({ cards: [], conflicts: [] });
+    unregister = registerDropZone(zone);
+  });
+
+  afterEach(() => {
+    unregister?.();
+    endNativeDragState();
+  });
+
+  async function bridgeDrop(): Promise<void> {
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    handler({
+      payload: { type: "drop", paths: ["/src/f.txt"], position: { x: 5, y: 5 } },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it("⌥ down at drop time makes a copy even when the dragstart snapshot was false", async () => {
+    mocks.dragModifiersImpl = () => Promise.resolve({ alt: true });
+    beginNativeDragState(["/src/f.txt"], false);
+    await bridgeDrop();
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "copy", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
+  });
+
+  it("a rejected modifier query falls back to the drag snapshot", async () => {
+    beginNativeDragState(["/src/f.txt"], true); // snapshot says ⌥
+    await bridgeDrop();
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "copy", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
+  });
+
+  it("a slow modifier query still yields exactly one dispatch with the fallback armed", async () => {
+    mocks.dragModifiersImpl = () =>
+      new Promise((resolve) => setTimeout(() => resolve({ alt: false }), 200));
+    let callback: ((p: { result: string; cursorPos: { x: number; y: number } }) => void) | undefined;
+    mocks.startDragImpl = (_o, cb) => {
+      callback = cb;
+      return Promise.resolve();
+    };
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    startNativeDrag(["/src/f.txt"], false);
+    await new Promise((r) => setTimeout(r, 0));
+    // Bridge and completion callback race: bridge claims synchronously, so
+    // the 120ms fallback must stay silent even while the query is in flight.
+    handler({
+      payload: { type: "drop", paths: ["/src/f.txt"], position: { x: 5, y: 5 } },
+    });
+    callback?.({ result: "Dropped", cursorPos: { x: 5, y: 5 } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "move", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
   });
 });
 

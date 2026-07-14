@@ -53,6 +53,24 @@ pub fn open_with_apps(
         .collect()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DragModifiers {
+    pub alt: bool,
+}
+
+/// Current hardware modifier state. Read at drop time of a native drag
+/// session — the webview receives no key events while AppKit runs the drag,
+/// so the frontend's keydown/keyup tracker is blind then.
+#[tauri::command]
+pub fn drag_modifiers(app: AppHandle) -> DragModifiers {
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags};
+    let flags = on_main(&app, || NSEvent::modifierFlags_class());
+    DragModifiers {
+        alt: flags.contains(NSEventModifierFlags::Option),
+    }
+}
+
 #[tauri::command]
 pub fn set_default_app(app: AppHandle, path: String, app_path: String) -> Result<()> {
     let p = PathBuf::from(&path);

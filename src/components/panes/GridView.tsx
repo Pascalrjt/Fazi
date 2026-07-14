@@ -11,12 +11,14 @@ import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
 import { clickSelect, cmdToggle, shiftRange } from "../../lib/selection";
 import { setGridColumns } from "../../lib/commands";
 import {
+  activeDragPaths,
   beginInternalDrag,
   dragHasPaths,
   draggedPaths,
   dropPaths,
   endInternalDrag,
   isInvalidDrop,
+  onDropHover,
   registerDropZone,
 } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
@@ -26,6 +28,8 @@ import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
 const CELL_W = 112;
 const CELL_H = 112;
+/** Content inset of the grid's `p-2` scroll container — must track that class. */
+const GRID_PAD = 8;
 
 const GridCell = memo(function GridCell({
   entry,
@@ -54,6 +58,18 @@ const GridCell = memo(function GridCell({
   );
   const [dropping, setDropping] = useState(false);
   const isNavigableDir = entry.kind === "dir" && !entry.isPackage;
+
+  // Drop-ring during native/pointer drags, keyed by the registry zone's hit.
+  useEffect(() => {
+    if (!isNavigableDir) return;
+    return onDropHover((h) =>
+      setDropping(
+        h != null &&
+          h.hit.action === "copyTo" &&
+          h.hit.targetKey === `cell:${paneId}:${tabId}:${entry.id}`,
+      ),
+    );
+  }, [paneId, tabId, entry.id, isNavigableDir]);
 
   return (
     <div
@@ -185,7 +201,9 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
 
-  // Finder drag-in: whole grid drops into the tab dir
+  // Native drop zone: dir cells are individual targets (ring + spring), any
+  // other point drops into the tab dir. Cell resolution mirrors the layout
+  // arithmetic: rows of `columns` cells inside the p-2 padded container.
   useEffect(() => {
     if (!tab) return;
     return registerDropZone({
@@ -195,11 +213,33 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         if (!el) return null;
         const r = el.getBoundingClientRect();
         if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
-        const dest = usePanes
+        const t = usePanes
           .getState()
           .panes.find((p) => p.id === paneId)
-          ?.tabs.find((t) => t.id === tabId)?.path;
-        return dest != null ? { action: "copyTo", destDir: dest } : null;
+          ?.tabs.find((tt) => tt.id === tabId);
+        if (!t) return null;
+        const vis = visibleEntries(t);
+        const cols = Math.max(1, Math.floor(el.clientWidth / CELL_W));
+        const col = Math.floor((x - r.left - GRID_PAD) / CELL_W);
+        const row = Math.floor((y - r.top + el.scrollTop - GRID_PAD) / CELL_H);
+        const entry =
+          col >= 0 && col < cols && row >= 0 ? vis[row * cols + col] : undefined;
+        if (entry && entry.kind === "dir" && !entry.isPackage) {
+          const paths = activeDragPaths();
+          if (paths == null || !isInvalidDrop(paths, entry.path)) {
+            const key = `cell:${paneId}:${tabId}:${entry.id}`;
+            return {
+              action: "copyTo",
+              destDir: entry.path,
+              targetKey: key,
+              spring: {
+                key,
+                open: () => usePanes.getState().navigate(paneId, tabId, entry.path),
+              },
+            };
+          }
+        }
+        return { action: "copyTo", destDir: t.path };
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

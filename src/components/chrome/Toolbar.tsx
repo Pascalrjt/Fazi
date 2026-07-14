@@ -20,7 +20,7 @@ import { usePanes, activeTabOf } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVolumes } from "../../stores/volumes";
 import { pathSegments } from "../../lib/format";
-import { dragHasPaths, dropPaths } from "../../lib/dnd";
+import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { runCommand, allCommands } from "../../lib/commands/registry";
 import { showMenu, type MenuItem } from "../../stores/menu";
 
@@ -62,6 +62,7 @@ function Breadcrumbs() {
   const [draft, setDraft] = useState("");
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const crumbsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (editing && tab) {
@@ -74,6 +75,38 @@ function Breadcrumbs() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing]);
+
+  // Native drop target: each crumb accepts a drop into its directory. Crumb
+  // rects are queried live from the DOM so navigation never leaves a stale
+  // closure behind (same trick as the sidebar's insertIndexFromPoint).
+  useEffect(() => {
+    return registerDropZone({
+      priority: 30,
+      hitTest: (x, y) => {
+        const crumbs = crumbsRef.current?.querySelectorAll<HTMLElement>("[data-crumb-path]");
+        for (const el of crumbs ?? []) {
+          const r = el.getBoundingClientRect();
+          if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+          const dest = el.dataset.crumbPath;
+          if (!dest) continue;
+          const paths = activeDragPaths();
+          if (paths != null && isInvalidDrop(paths, dest)) return null;
+          return { action: "copyTo", destDir: dest, targetKey: `crumb:${dest}` };
+        }
+        return null;
+      },
+    });
+  }, []);
+
+  useEffect(() => {
+    return onDropHover((h) =>
+      setDropTarget(
+        h != null && h.hit.action === "copyTo" && h.hit.targetKey?.startsWith("crumb:")
+          ? h.hit.destDir
+          : null,
+      ),
+    );
+  }, []);
 
   if (!tab || !pane) return null;
 
@@ -108,6 +141,7 @@ function Breadcrumbs() {
 
   return (
     <div
+      ref={crumbsRef}
       className="flex h-7 min-w-0 flex-1 items-center gap-0.5 overflow-hidden rounded-md px-1 hover:bg-hov/50"
       onDoubleClick={() => setEditing(true)}
       data-tauri-drag-region
@@ -127,18 +161,7 @@ function Breadcrumbs() {
             onClick={() => {
               if (seg.path !== tab.path) navigate(pane.id, tab.id, seg.path);
             }}
-            onDragOver={(e) => {
-              if (!dragHasPaths(e)) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
-              setDropTarget(seg.path);
-            }}
-            onDragLeave={() => setDropTarget((cur) => (cur === seg.path ? null : cur))}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDropTarget(null);
-              dropPaths(e, seg.path);
-            }}
+            data-crumb-path={seg.path}
           >
             {seg.name}
           </button>

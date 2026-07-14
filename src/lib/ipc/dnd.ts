@@ -34,6 +34,18 @@ import {
 import { useOps } from "../../stores/ops";
 import { trashPathsWithUndo } from "../actions";
 import { pinFolders } from "../pin";
+import { dragModifiers } from "./index";
+
+/** ⌥ state at drop time. The webview gets no key events during an AppKit
+ *  drag session, so ask the backend for the live hardware state; fall back
+ *  to the dragstart/tracker snapshot when no backend answers. */
+async function altAtDropTime(): Promise<boolean> {
+  try {
+    return (await dragModifiers()).alt;
+  } catch {
+    return altHeldDuringDrag();
+  }
+}
 
 /**
  * Start listening for files dropped onto the window — from Finder (or any
@@ -73,8 +85,10 @@ export async function setupFinderDragIn(): Promise<() => void> {
       // Self-drop of our own native drag-out → internal move (⌥ = copy).
       const selfPaths = nativeDragPathsNow();
       if (selfPaths != null) {
+        // Claim the drop BEFORE any await — this is the double-dispatch
+        // guard the 120ms completion-callback fallback checks.
         markNativeDropHandled();
-        dispatchNativeSelfDrop(hit, selfPaths, altHeldDuringDrag());
+        void altAtDropTime().then((alt) => dispatchNativeSelfDrop(hit, selfPaths, alt));
         return;
       }
 
@@ -152,7 +166,7 @@ async function finishNativeDrop(screenX: number, screenY: number): Promise<void>
       clientX >= 0 && clientY >= 0 && clientX <= window.innerWidth && clientY <= window.innerHeight;
     if (inWindow && !wasNativeDropHandled()) {
       const hit = hitTestDropZones(clientX, clientY);
-      if (hit) dispatchNativeSelfDrop(hit, paths, altHeldDuringDrag());
+      if (hit) dispatchNativeSelfDrop(hit, paths, await altAtDropTime());
     }
   } catch {
     // No backend / window API unavailable — external drop, nothing to do.

@@ -277,6 +277,10 @@ export function setDefaultApp(path: string, appPath: string): Promise<void> {
   return invoke(COMMANDS.setDefaultApp, { path, appPath });
 }
 
+export function dragModifiers(): Promise<{ alt: boolean }> {
+  return invoke(COMMANDS.dragModifiers);
+}
+
 export function shareServices(paths: string[]): Promise<ShareServices> {
   return invoke(COMMANDS.shareServices, { paths });
 }

@@ -38,6 +38,7 @@ import {
   draggedPaths,
   dropPaths,
   endInternalDrag,
+  onDropHover,
   onPinHover,
   registerDropZone,
 } from "../../lib/dnd";
@@ -128,7 +129,7 @@ function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSection
         const rect = rowRef.current?.getBoundingClientRect();
         if (!rect) return null;
         return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
-          ? { action: "trash", destDir: row.path }
+          ? { action: "trash", destDir: row.path, targetKey: "sidebar:trash" }
           : null;
       },
     });
@@ -147,10 +148,19 @@ function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSection
         if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
         const frac = (y - rect.top) / rect.height;
         if (frac < EDGE_FRACTION || frac > 1 - EDGE_FRACTION) return null;
-        return { action: "copyTo", destDir: row.path };
+        return { action: "copyTo", destDir: row.path, targetKey: `fav:${row.path}` };
       },
     });
   }, [inFavSection, row.path]);
+
+  // Drop-ring during native/pointer drags, fed by the registry hover channel.
+  useEffect(() => {
+    if (!row.trash && !inFavSection) return;
+    const key = row.trash ? "sidebar:trash" : `fav:${row.path}`;
+    return onDropHover((h) =>
+      setDropping(h != null && h.hit.action !== "pin" && h.hit.targetKey === key),
+    );
+  }, [row.trash, inFavSection, row.path]);
 
   const isCurrent = tab?.path === row.path;
   // Set when a pointer-reorder happened so the click that follows the

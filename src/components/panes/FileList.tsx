@@ -34,12 +34,14 @@ import { entryKindLabel, type SortKey } from "../../lib/sort";
 import { formatBytes, formatDate, splitExt } from "../../lib/format";
 import { renameValidationError } from "../../lib/actions";
 import {
+  activeDragPaths,
   beginInternalDrag,
   dragHasPaths,
   dropPaths,
   draggedPaths,
   endInternalDrag,
   isInvalidDrop,
+  onDropHover,
   registerDropZone,
 } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
@@ -250,6 +252,19 @@ const FileRow = memo(function FileRow({
   const springTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const isNavigableDir = entry.kind === "dir" && !entry.isPackage;
+
+  // Drop-ring during native/pointer drags: the registry zone identifies this
+  // row by targetKey; memo'd rows only re-render on their own transition.
+  useEffect(() => {
+    if (!isNavigableDir) return;
+    return onDropHover((h) =>
+      setDropping(
+        h != null &&
+          h.hit.action === "copyTo" &&
+          h.hit.targetKey === `row:${paneId}:${tabId}:${entry.id}`,
+      ),
+    );
+  }, [paneId, tabId, entry.id, isNavigableDir]);
 
   const clearSpring = () => {
     if (springTimer.current) {
@@ -555,7 +570,19 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         const idx = Math.floor((y - rect.top + el.scrollTop) / ROW_H);
         const entry = vis[idx];
         if (entry && entry.kind === "dir" && !entry.isPackage) {
-          return { action: "copyTo", destDir: entry.path };
+          const paths = activeDragPaths();
+          if (paths == null || !isInvalidDrop(paths, entry.path)) {
+            const key = `row:${paneId}:${tabId}:${entry.id}`;
+            return {
+              action: "copyTo",
+              destDir: entry.path,
+              targetKey: key,
+              spring: {
+                key,
+                open: () => usePanes.getState().navigate(paneId, tabId, entry.path),
+              },
+            };
+          }
         }
         return { action: "copyTo", destDir: t.path };
       },
