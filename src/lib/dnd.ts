@@ -76,15 +76,25 @@ export function dropPaths(e: React.DragEvent, destDir: string): void {
 // Drop-zone registry for Finder drag-in (real screen-coordinate hit tests)
 // ---------------------------------------------------------------------------
 
+/** A zone hit that should spring-open its directory after a hover dwell.
+ *  `key` identifies the hovered target (same key = same dwell); `open`
+ *  navigates the hovering pane's tab. Background zones carry no spring. */
+export interface SpringSpec {
+  key: string;
+  open(): void;
+}
+
 /**
  * What a drop on a zone means. "copyTo" starts a copy into the hit directory;
  * "trash" dispatches trash_paths — dropping onto the Trash row must keep
  * Finder Trash semantics (Put Back metadata), never copy into ~/.Trash;
  * "pin" adds dropped folders to the sidebar Favorites at `index`.
+ * `targetKey` identifies the specific hovered element (row/cell/crumb) so it
+ * can render a drop ring; pane backgrounds omit it.
  */
 export type DropHit =
-  | { action: "copyTo"; destDir: string }
-  | { action: "trash"; destDir: string }
+  | { action: "copyTo"; destDir: string; targetKey?: string; spring?: SpringSpec }
+  | { action: "trash"; destDir: string; targetKey?: string }
   | { action: "pin"; index: number };
 
 export interface DropZone {
@@ -111,20 +121,78 @@ export function hitTestDropZones(clientX: number, clientY: number): DropHit | nu
 }
 
 // ---------------------------------------------------------------------------
-// Pin-hover feedback for native drags (Finder drag-in / native self-drops)
+// Drag-hover feedback for native drags (Finder drag-in / native self-drops)
 // ---------------------------------------------------------------------------
 
-type PinHoverListener = (index: number | null) => void;
-const pinHoverListeners = new Set<PinHoverListener>();
-
-/** Subscribe to native-drag pin-hover updates (insertion index, null = none). */
-export function onPinHover(fn: PinHoverListener): () => void {
-  pinHoverListeners.add(fn);
-  return () => pinHoverListeners.delete(fn);
+/** The current drag hover: the hit under the cursor plus its client point. */
+export interface DropHover {
+  hit: DropHit;
+  x: number;
+  y: number;
 }
 
-export function emitPinHover(index: number | null): void {
-  for (const fn of pinHoverListeners) fn(index);
+type DropHoverListener = (h: DropHover | null) => void;
+const dropHoverListeners = new Set<DropHoverListener>();
+
+/** Subscribe to drag-hover updates (null = nothing hovered / drag ended).
+ *  Consumers filter by `hit.action` / `hit.targetKey`. */
+export function onDropHover(fn: DropHoverListener): () => void {
+  dropHoverListeners.add(fn);
+  return () => dropHoverListeners.delete(fn);
+}
+
+/** Broadcast the current hover. Drives the spring-load timer synchronously
+ *  before notifying listeners, so ordering is deterministic. */
+export function emitDropHover(h: DropHover | null): void {
+  updateSpring(h);
+  for (const fn of dropHoverListeners) fn(h);
+}
+
+/** Subscribe to pin-hover updates (insertion index, null = none). */
+export function onPinHover(fn: (index: number | null) => void): () => void {
+  return onDropHover((h) => fn(h != null && h.hit.action === "pin" ? h.hit.index : null));
+}
+
+// ---------------------------------------------------------------------------
+// Spring-loaded folders: hover a dir row/cell for SPRING_LOAD_MS → it opens
+// ---------------------------------------------------------------------------
+
+export const SPRING_LOAD_MS = 600;
+
+let springKey: string | null = null;
+let springTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelSpring(): void {
+  if (springTimer != null) clearTimeout(springTimer);
+  springTimer = null;
+  springKey = null;
+}
+
+function updateSpring(h: DropHover | null): void {
+  const spring = h?.hit.action === "copyTo" ? h.hit.spring : undefined;
+  // Same target: keep the running timer (hover jitter must not reset it).
+  if (spring != null && spring.key === springKey) return;
+  cancelSpring();
+  if (spring == null) return;
+  springKey = spring.key;
+  springTimer = setTimeout(() => {
+    springTimer = null;
+    springKey = null;
+    spring.open();
+  }, SPRING_LOAD_MS);
+}
+
+/** Paths of whichever drag is in flight (native session or internal pointer
+ *  drag), else null. Zone hit-tests use this to refuse invalid targets. */
+export function activeDragPaths(): string[] | null {
+  return nativeDragPaths ?? pointerDragPaths;
+}
+
+let pointerDragPaths: string[] | null = null;
+
+/** Set by the pointer-drag layer while an internal pointer drag is live. */
+export function setPointerDragPaths(paths: string[] | null): void {
+  pointerDragPaths = paths;
 }
 
 /** True while an HTML5 (within-app) drag is in flight — the native bridge
@@ -152,11 +220,14 @@ export function beginNativeDragState(paths: string[], altHeld: boolean): void {
 }
 
 /** MUST run on every session end — completion callback AND startDrag
- *  rejection — or a stale flag turns the next Finder drag-in into a move. */
+ *  rejection — or a stale flag turns the next Finder drag-in into a move.
+ *  Also cancels any armed spring: an Esc-cancelled native session can end
+ *  without a "leave" event ever reaching the bridge. */
 export function endNativeDragState(): void {
   nativeDragPaths = null;
   nativeDropHandled = false;
   altDuringDrag = false;
+  cancelSpring();
 }
 
 export function nativeDragPathsNow(): string[] | null {

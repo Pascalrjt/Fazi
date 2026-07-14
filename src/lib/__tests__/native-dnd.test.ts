@@ -58,15 +58,21 @@ vi.mock("@crabnebula/tauri-plugin-drag", () => ({
 }));
 
 import {
+  activeDragPaths,
   altHeldDuringDrag,
   beginNativeDragState,
   dispatchNativeSelfDrop,
+  emitDropHover,
   endNativeDragState,
   markNativeDropHandled,
   nativeDragPathsNow,
+  onDropHover,
   onPinHover,
   registerDropZone,
+  setPointerDragPaths,
+  SPRING_LOAD_MS,
   wasNativeDropHandled,
+  type DropHover,
 } from "../dnd";
 import { setupFinderDragIn, startNativeDrag } from "../ipc/dnd";
 import { useOps } from "../../stores/ops";
@@ -294,5 +300,126 @@ describe("native pin contract (favorites zones)", () => {
     });
     expect(mocks.pinCalls).toEqual([{ paths: ["/ext/Folder"], atIndex: 1 }]);
     expect(mocks.runOpCalls).toHaveLength(0);
+  });
+});
+
+describe("drop-hover broadcast", () => {
+  beforeEach(() => {
+    mocks.dragDropHandler = null;
+    endNativeDragState();
+  });
+
+  it("over a copyTo zone broadcasts the full hit with client coords", async () => {
+    const unregister = registerDropZone({
+      priority: 1,
+      hitTest: (x, y) =>
+        x >= 0 && x <= 100 && y >= 0 && y <= 100
+          ? { action: "copyTo", destDir: "/zone", targetKey: "row:z" }
+          : null,
+    });
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    const seen: Array<DropHover | null> = [];
+    const off = onDropHover((h) => seen.push(h));
+    handler({ payload: { type: "over", position: { x: 50, y: 50 } } });
+    handler({ payload: { type: "over", position: { x: 500, y: 500 } } }); // off-zone
+    handler({ payload: { type: "leave" } });
+    off();
+    unregister();
+    expect(seen).toEqual([
+      { hit: { action: "copyTo", destDir: "/zone", targetKey: "row:z" }, x: 50, y: 50 },
+      null,
+      null,
+    ]);
+  });
+
+  it("onPinHover filters non-pin hovers to null", () => {
+    const seen: Array<number | null> = [];
+    const off = onPinHover((i) => seen.push(i));
+    emitDropHover({ hit: { action: "copyTo", destDir: "/d" }, x: 1, y: 1 });
+    emitDropHover({ hit: { action: "pin", index: 3 }, x: 1, y: 1 });
+    emitDropHover(null);
+    off();
+    expect(seen).toEqual([null, 3, null]);
+  });
+});
+
+describe("spring-loaded folders", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    endNativeDragState(); // also cancels any armed spring
+  });
+
+  afterEach(() => {
+    emitDropHover(null);
+    vi.useRealTimers();
+  });
+
+  function springHover(key: string, open: () => void): DropHover {
+    return {
+      hit: { action: "copyTo", destDir: `/dir/${key}`, targetKey: key, spring: { key, open } },
+      x: 10,
+      y: 10,
+    };
+  }
+
+  it("fires open() once after the dwell; jitter on the same key keeps the timer", () => {
+    const open = vi.fn();
+    emitDropHover(springHover("row:a", open));
+    vi.advanceTimersByTime(SPRING_LOAD_MS / 2);
+    emitDropHover(springHover("row:a", open)); // same key mid-dwell: no reset
+    vi.advanceTimersByTime(SPRING_LOAD_MS / 2);
+    expect(open).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("a key change restarts the dwell for the new target", () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    emitDropHover(springHover("row:a", a));
+    vi.advanceTimersByTime(SPRING_LOAD_MS - 1);
+    emitDropHover(springHover("row:b", b));
+    vi.advanceTimersByTime(SPRING_LOAD_MS - 1);
+    expect(a).not.toHaveBeenCalled();
+    expect(b).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+
+  it("null hover and endNativeDragState both cancel the dwell", () => {
+    const open = vi.fn();
+    emitDropHover(springHover("row:a", open));
+    emitDropHover(null);
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).not.toHaveBeenCalled();
+
+    emitDropHover(springHover("row:a", open));
+    endNativeDragState(); // Esc-cancelled session, no leave event
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("a background copyTo hit (no spring) never arms and cancels a running dwell", () => {
+    const open = vi.fn();
+    emitDropHover(springHover("row:a", open));
+    emitDropHover({ hit: { action: "copyTo", destDir: "/pane" }, x: 10, y: 10 });
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("activeDragPaths", () => {
+  it("reflects native session paths, then pointer-drag paths, else null", () => {
+    expect(activeDragPaths()).toBeNull();
+    beginNativeDragState(["/a"], false);
+    expect(activeDragPaths()).toEqual(["/a"]);
+    endNativeDragState();
+    expect(activeDragPaths()).toBeNull();
+    setPointerDragPaths(["/b"]);
+    expect(activeDragPaths()).toEqual(["/b"]);
+    setPointerDragPaths(null);
+    expect(activeDragPaths()).toBeNull();
   });
 });

@@ -23,7 +23,7 @@ import {
   beginNativeDragState,
   dispatchNativeSelfDrop,
   dragImageDataUrl,
-  emitPinHover,
+  emitDropHover,
   endNativeDragState,
   hitTestDropZones,
   htmlDragInFlight,
@@ -46,21 +46,23 @@ export async function setupFinderDragIn(): Promise<() => void> {
     return await webview.onDragDropEvent((event) => {
       const scale = window.devicePixelRatio || 1;
       // "enter" and "over" both carry a position — handle them identically
-      // so the pin insertion line appears the moment the drag enters the
-      // window, not on the first subsequent move.
+      // so hover feedback appears the moment the drag enters the window,
+      // not on the first subsequent move.
       if (event.payload.type === "enter" || event.payload.type === "over") {
         if (htmlDragInFlight()) return; // HTML5 drags own their own feedback
         const { position } = event.payload;
-        const hover = hitTestDropZones(position.x / scale, position.y / scale);
-        emitPinHover(hover?.action === "pin" ? hover.index : null);
+        const x = position.x / scale;
+        const y = position.y / scale;
+        const hover = hitTestDropZones(x, y);
+        emitDropHover(hover ? { hit: hover, x, y } : null);
         return;
       }
       if (event.payload.type === "leave") {
-        emitPinHover(null);
+        emitDropHover(null);
         return;
       }
       if (event.payload.type !== "drop") return;
-      emitPinHover(null);
+      emitDropHover(null);
       const { paths, position } = event.payload;
       if (paths.length === 0) return;
       const clientX = position.x / scale;
@@ -118,6 +120,7 @@ export function startNativeDrag(paths: string[], altHeld: boolean): void {
   const icon = dragImageDataUrl(paths.length);
   startDrag({ item: paths, icon }, (payload) => {
     if (payload.result !== "Dropped") {
+      emitDropHover(null); // clear rings/spring from a cancelled session
       endNativeDragState();
       return;
     }
