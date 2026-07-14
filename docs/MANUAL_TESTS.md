@@ -345,8 +345,10 @@ need the corresponding environment or explicit approval.
 - [ ] Self-drop onto the row's own parent folder is a no-op (no duplicate).
 - [ ] A cancelled native drag (Esc / drop on nothing) leaves the next
       Finder→Fazi drag-in a COPY (the self-drop flag cleared).
-- [ ] Kill-switch: Advanced → disable drag-out → rows drag HTML5-only again
-      (internal DnD works, Finder drop does nothing).
+- [ ] Kill-switch: Advanced → disable drag-out → internal drags become
+      pointer-based (rows, breadcrumbs, sidebar, other pane, spring-loading
+      all still work; ⌥ copies; Esc cancels); dragging to Finder does
+      nothing.
 - [ ] Sidebar favorite reorder still works with drag-out enabled (it is
       pointer-event based, independent of any drag system).
 

@@ -35,7 +35,7 @@ vi.mock("../../../lib/ipc", () => ({
 }));
 
 import { Sidebar } from "../Sidebar";
-import { FAZI_DND_MIME } from "../../../lib/dnd";
+import { startPointerDrag } from "../../../lib/pointerDrag";
 import { useVolumes } from "../../../stores/volumes";
 import { useSettings } from "../../../stores/settings";
 import { useOps } from "../../../stores/ops";
@@ -52,14 +52,27 @@ const FOLDERS = {
   trash: "/Users/me/.Trash",
 };
 
-function dt(types: string[], data: Record<string, string>) {
-  return {
-    types,
-    getData: (t: string) => data[t] ?? "",
-    setData: () => {},
-    dropEffect: "",
-    effectAllowed: "",
-  };
+/** Dispatch a pointer event as a MouseEvent (jsdom lacks PointerEvent). */
+function firePointer(target: Element | Window, type: "pointermove" | "pointerup", init: MouseEventInit) {
+  fireEvent(target, new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+}
+
+/** Give the row div a real rect (jsdom defaults to 0×0). */
+function mockRect(el: Element, top: number, bottom: number) {
+  Object.defineProperty(el, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      top,
+      bottom,
+      height: bottom - top,
+      left: 0,
+      right: 200,
+      width: 200,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }),
+  });
 }
 
 describe("sidebar Trash row", () => {
@@ -80,17 +93,14 @@ describe("sidebar Trash row", () => {
     expect(screen.getByText("Trash")).toBeTruthy();
   });
 
-  it("file-path drop on the Trash row dispatches trash_paths, never a move", async () => {
+  it("pointer-drag drop on the Trash row dispatches trash_paths, never a move", async () => {
     render(<Sidebar />);
-    const row = screen.getByText("Trash");
-    const payload = JSON.stringify(["/files/doomed.txt", "/files/old"]);
+    const row = screen.getByText("Trash").parentElement as HTMLElement;
+    mockRect(row, 100, 128);
 
-    fireEvent.dragOver(row, {
-      dataTransfer: dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }),
-    });
-    fireEvent.drop(row, {
-      dataTransfer: dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }),
-    });
+    startPointerDrag(["/files/doomed.txt", "/files/old"]);
+    firePointer(window, "pointermove", { clientX: 50, clientY: 114 });
+    firePointer(window, "pointerup", { clientX: 50, clientY: 114 });
 
     await waitFor(() => {
       expect(mocks.trashPathsCalls).toEqual([["/files/doomed.txt", "/files/old"]]);

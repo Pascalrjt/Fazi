@@ -26,7 +26,6 @@ import {
   emitDropHover,
   endNativeDragState,
   hitTestDropZones,
-  htmlDragInFlight,
   markNativeDropHandled,
   nativeDragPathsNow,
   wasNativeDropHandled,
@@ -61,7 +60,6 @@ export async function setupFinderDragIn(): Promise<() => void> {
       // so hover feedback appears the moment the drag enters the window,
       // not on the first subsequent move.
       if (event.payload.type === "enter" || event.payload.type === "over") {
-        if (htmlDragInFlight()) return; // HTML5 drags own their own feedback
         const { position } = event.payload;
         const x = position.x / scale;
         const y = position.y / scale;

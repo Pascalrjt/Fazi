@@ -4,16 +4,19 @@
  *    DOM in the running app — wry swallows them on macOS): pointerdown +
  *    move past the threshold shows the insertion line, pointerup commits,
  *    Escape cancels, and the click after a reorder must not navigate;
- * 2. file-path drops on a favorite row's CENTER must stopPropagate and stay
- *    move-into (never a pin);
- * 3. file-path drops on a row's top/bottom edge band must bubble to the
- *    section and pin at the insertion slot (with the insertion line shown).
+ * 2. file drags (exercised through the internal pointer-drag path, which
+ *    drives the same DropZone registry as native drags) dropped on a
+ *    favorite row's CENTER stay move-into (never a pin);
+ * 3. drops on a row's top/bottom edge band or section chrome fall through
+ *    to the section pin zone and pin at the insertion slot (with the
+ *    insertion line shown while hovering).
  *
- * jsdom rects are 0×0, which the row treats as center — edge-zone tests mock
- * getBoundingClientRect on the row divs and their [data-fav-index] wrappers.
+ * jsdom rects are 0×0, which the zones refuse — tests mock
+ * getBoundingClientRect on the row divs, their [data-fav-index] wrappers,
+ * and the section container.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Entry } from "../../../types/ipc";
 
 const mocks = vi.hoisted(() => ({
@@ -40,7 +43,7 @@ vi.mock("../../../lib/ipc", () => ({
 }));
 
 import { Sidebar } from "../Sidebar";
-import { FAZI_DND_MIME } from "../../../lib/dnd";
+import { startPointerDrag } from "../../../lib/pointerDrag";
 import { useSettings } from "../../../stores/settings";
 import { useVolumes } from "../../../stores/volumes";
 import { useOps } from "../../../stores/ops";
@@ -58,17 +61,6 @@ const FOLDERS = {
   trash: "/Users/me/.Trash",
 };
 
-/** jsdom has no DataTransfer — a minimal stand-in for fireEvent. */
-function dt(types: string[], data: Record<string, string>) {
-  return {
-    types,
-    getData: (t: string) => data[t] ?? "",
-    setData: () => {},
-    dropEffect: "",
-    effectAllowed: "",
-  };
-}
-
 /** Dispatch a pointer event as a MouseEvent (jsdom lacks PointerEvent; the
  *  type string is what React's listeners and the window listeners match). */
 function firePointer(
@@ -79,18 +71,17 @@ function firePointer(
   fireEvent(target, new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
 }
 
-/** Fire a drag event carrying clientY — jsdom has no DragEvent, and RTL's
- *  fallback event drops coordinate init fields, so define them directly. */
-function fireDragAt(
-  el: Element,
-  type: "dragOver" | "drop",
-  clientY: number,
-  dataTransfer: ReturnType<typeof dt>,
-) {
-  const event = createEvent[type](el);
-  Object.defineProperty(event, "clientY", { value: clientY });
-  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
-  fireEvent(el, event);
+/** Drive an internal pointer drag of `paths` to (x, y) and drop there. */
+function pointerDragTo(paths: string[], x: number, y: number) {
+  startPointerDrag(paths);
+  firePointer(window, "pointermove", { clientX: x, clientY: y });
+  firePointer(window, "pointerup", { clientX: x, clientY: y });
+}
+
+/** Mock the Favorites section container rect (the pin zone hit area). */
+function mockSectionRect(top: number, bottom: number) {
+  const container = screen.getByText("Favorites").parentElement as HTMLElement;
+  mockRect(container, top, bottom);
 }
 
 /** Give an element a real rect (jsdom defaults to 0×0). */
@@ -220,17 +211,13 @@ describe("sidebar favorites drag & drop", () => {
     expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
   });
 
-  it("file-path drop on a favorite row stays move-into and never pins", () => {
+  it("pointer drop on a favorite row's center stays move-into and never pins", () => {
     render(<Sidebar />);
-    const rowA = screen.getByText("FavA");
-    const payload = JSON.stringify(["/files/notes.txt"]);
+    mockSectionRect(60, 200);
+    mockRowRects("FavA", 100, 128);
+    mockRowRects("FavB", 128, 156);
 
-    fireEvent.dragOver(rowA, {
-      dataTransfer: dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }),
-    });
-    fireEvent.drop(rowA, {
-      dataTransfer: dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }),
-    });
+    pointerDragTo(["/files/notes.txt"], 50, 114); // FavA's center band
 
     // Move-into the favorite folder…
     const cards = useOps.getState().cards;
@@ -238,11 +225,11 @@ describe("sidebar favorites drag & drop", () => {
     expect(cards[0].kind).toBe("move");
     expect(cards[0].sources).toEqual(["/files/notes.txt"]);
     expect(cards[0].destDir).toBe("/p/A");
-    // …and the bubbled pin handler never ran (stopPropagation regression).
+    // …and the pin zone never won (row-center priority regression).
     expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
   });
 
-  it("file-path drop on section chrome pins folders (dirs only)", async () => {
+  it("pointer drop on section chrome pins folders (dirs only)", async () => {
     // Seed a listing so the pin resolver finds the entries without IPC.
     seedListing([
       dirEntry(1, "Projects", "/files/Projects"),
@@ -250,11 +237,10 @@ describe("sidebar favorites drag & drop", () => {
     ]);
 
     render(<Sidebar />);
-    const label = screen.getByText("Favorites");
-    const payload = JSON.stringify(["/files/Projects", "/files/notes.txt"]);
-    fireEvent.drop(label, {
-      dataTransfer: dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }),
-    });
+    mockSectionRect(0, 200);
+    // Row rects stay 0×0 → the row zones refuse the point; the pin zone wins
+    // and the degenerate wrapper rects resolve to the append slot.
+    pointerDragTo(["/files/Projects", "/files/notes.txt"], 50, 10);
 
     await waitFor(() => {
       expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
@@ -269,17 +255,18 @@ describe("sidebar favorites drag & drop", () => {
   // FavA row spans y 100–128, FavB y 128–156 in the edge-zone tests below;
   // edge bands are the top/bottom 7px (25%) of each 28px row.
 
-  it("file-path drop on a row's edge band pins at that insertion slot", async () => {
+  it("pointer drop on a row's edge band pins at that insertion slot", async () => {
     seedListing([dirEntry(1, "Projects", "/files/Projects")]);
     render(<Sidebar />);
+    mockSectionRect(60, 200);
     mockRowRects("FavA", 100, 128);
-    const rowB = mockRowRects("FavB", 128, 156);
-    const payload = JSON.stringify(["/files/Projects"]);
+    mockRowRects("FavB", 128, 156);
 
     // y=130 is inside FavB's top edge band → insertion between A and B.
-    fireDragAt(rowB, "dragOver", 130, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    startPointerDrag(["/files/Projects"]);
+    firePointer(window, "pointermove", { clientX: 50, clientY: 130 });
     expect(screen.getByTestId("insertion-line")).toBeTruthy();
-    fireDragAt(rowB, "drop", 130, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    firePointer(window, "pointerup", { clientX: 50, clientY: 130 });
 
     await waitFor(() => {
       expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
@@ -293,34 +280,16 @@ describe("sidebar favorites drag & drop", () => {
     expect(useOps.getState().cards).toHaveLength(0);
   });
 
-  it("file-path drop on a row's center still moves into the folder", () => {
-    render(<Sidebar />);
-    const rowA = mockRowRects("FavA", 100, 128);
-    mockRowRects("FavB", 128, 156);
-    const payload = JSON.stringify(["/files/notes.txt"]);
-
-    // y=114 is FavA's center band.
-    fireDragAt(rowA, "dragOver", 114, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
-    fireDragAt(rowA, "drop", 114, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
-
-    const cards = useOps.getState().cards;
-    expect(cards).toHaveLength(1);
-    expect(cards[0].kind).toBe("move");
-    expect(cards[0].destDir).toBe("/p/A");
-    expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
-  });
-
   it("edge drop over a default row pins at slot 0", async () => {
     seedListing([dirEntry(1, "Projects", "/files/Projects")]);
     render(<Sidebar />);
+    mockSectionRect(0, 200);
     // Documents sits above the pins; its edge band clamps to slot 0.
-    const docs = mockRowRects("Documents", 40, 68);
+    mockRowRects("Documents", 40, 68);
     mockRowRects("FavA", 100, 128);
     mockRowRects("FavB", 128, 156);
-    const payload = JSON.stringify(["/files/Projects"]);
 
-    fireDragAt(docs, "dragOver", 42, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
-    fireDragAt(docs, "drop", 42, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    pointerDragTo(["/files/Projects"], 50, 42); // Documents' top edge band
 
     await waitFor(() => {
       expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
@@ -334,15 +303,19 @@ describe("sidebar favorites drag & drop", () => {
 
   it("hovering a row's center clears the insertion line from a prior edge hover", () => {
     render(<Sidebar />);
-    const rowA = mockRowRects("FavA", 100, 128);
+    mockSectionRect(60, 200);
+    mockRowRects("FavA", 100, 128);
     mockRowRects("FavB", 128, 156);
-    const payload = JSON.stringify(["/files/Projects"]);
 
+    startPointerDrag(["/files/Projects"]);
     // edge band → line
-    fireDragAt(rowA, "dragOver", 102, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    firePointer(window, "pointermove", { clientX: 50, clientY: 102 });
     expect(screen.getByTestId("insertion-line")).toBeTruthy();
     // center → line must clear
-    fireDragAt(rowA, "dragOver", 114, dt([FAZI_DND_MIME], { [FAZI_DND_MIME]: payload }));
+    firePointer(window, "pointermove", { clientX: 50, clientY: 114 });
     expect(screen.queryByTestId("insertion-line")).toBeNull();
+    // Escape cancels without dispatching anything.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useOps.getState().cards).toHaveLength(0);
   });
 });

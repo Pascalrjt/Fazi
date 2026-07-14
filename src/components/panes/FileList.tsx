@@ -33,25 +33,14 @@ import {
 import { entryKindLabel, type SortKey } from "../../lib/sort";
 import { formatBytes, formatDate, splitExt } from "../../lib/format";
 import { renameValidationError } from "../../lib/actions";
-import {
-  activeDragPaths,
-  beginInternalDrag,
-  dragHasPaths,
-  dropPaths,
-  draggedPaths,
-  endInternalDrag,
-  isInvalidDrop,
-  onDropHover,
-  registerDropZone,
-} from "../../lib/dnd";
+import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
+import { startPointerDrag } from "../../lib/pointerDrag";
 import { useSettings } from "../../stores/settings";
 import { useDirSizes } from "../../stores/dirSizes";
 import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { tagCss } from "../../lib/tags";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
-
-const SPRING_LOAD_MS = 600;
 
 /** Row height by density (Settings → Appearance). */
 export function rowHeight(density: "normal" | "compact"): number {
@@ -249,7 +238,6 @@ const FileRow = memo(function FileRow({
     (s) => s.clipboard?.mode === "cut" && s.clipboard.paths.includes(entry.path),
   );
   const [dropping, setDropping] = useState(false);
-  const springTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const isNavigableDir = entry.kind === "dir" && !entry.isPackage;
 
@@ -266,13 +254,6 @@ const FileRow = memo(function FileRow({
     );
   }, [paneId, tabId, entry.id, isNavigableDir]);
 
-  const clearSpring = () => {
-    if (springTimer.current) {
-      clearTimeout(springTimer.current);
-      springTimer.current = null;
-    }
-  };
-
   return (
     <div
       className={clsx(
@@ -286,6 +267,9 @@ const FileRow = memo(function FileRow({
       onDoubleClick={() => !isRenaming && onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onDragStart={(e) => {
+        // dragstart is only the gesture trigger: both branches preventDefault
+        // and run their own drag loop (HTML5 drops are dead under wry).
+        e.preventDefault();
         const s = usePanes.getState();
         const tab = s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
         if (!tab) return;
@@ -294,39 +278,12 @@ const FileRow = memo(function FileRow({
           : [entry.path];
         if (useSettings.getState().dragOutEnabled) {
           // Native drag: reaches Finder/Mail/…; self-drops come back through
-          // the bridge as internal moves. Kill-switch reverts to HTML5-only.
-          e.preventDefault();
+          // the bridge as internal moves.
           startNativeDrag(paths, e.altKey);
           return;
         }
-        beginInternalDrag(e, paths);
-      }}
-      onDragEnd={endInternalDrag}
-      onDragOver={(e) => {
-        if (!isNavigableDir || !dragHasPaths(e)) return;
-        const paths = draggedPaths(e);
-        if (paths.length > 0 && isInvalidDrop(paths, entry.path)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
-        setDropping(true);
-        if (!springTimer.current) {
-          springTimer.current = setTimeout(() => {
-            usePanes.getState().navigate(paneId, tabId, entry.path);
-          }, SPRING_LOAD_MS);
-        }
-      }}
-      onDragLeave={() => {
-        setDropping(false);
-        clearSpring();
-      }}
-      onDrop={(e) => {
-        if (!isNavigableDir) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setDropping(false);
-        clearSpring();
-        dropPaths(e, entry.path);
+        // Kill-switch: internal-only pointer drag through the same registry.
+        startPointerDrag(paths);
       }}
     >
       <img
@@ -768,17 +725,6 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
             if ((e.target as HTMLElement).closest("[data-row]")) return;
             e.preventDefault();
             showMenu(e.clientX, e.clientY, emptyAreaMenuItems(paneId, tabId));
-          }}
-          onDragOver={(e) => {
-            if (!dragHasPaths(e)) return;
-            const paths = draggedPaths(e);
-            if (paths.length > 0 && isInvalidDrop(paths, tab.path)) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            dropPaths(e, tab.path);
           }}
         >
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>

@@ -10,18 +10,9 @@ import { showMenu } from "../../stores/menu";
 import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
 import { clickSelect, cmdToggle, shiftRange } from "../../lib/selection";
 import { setGridColumns } from "../../lib/commands";
-import {
-  activeDragPaths,
-  beginInternalDrag,
-  dragHasPaths,
-  draggedPaths,
-  dropPaths,
-  endInternalDrag,
-  isInvalidDrop,
-  onDropHover,
-  registerDropZone,
-} from "../../lib/dnd";
+import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
+import { startPointerDrag } from "../../lib/pointerDrag";
 import { useSettings } from "../../stores/settings";
 import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
@@ -85,6 +76,9 @@ const GridCell = memo(function GridCell({
       onDoubleClick={() => onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onDragStart={(e) => {
+        // dragstart is only the gesture trigger: both branches preventDefault
+        // and run their own drag loop (HTML5 drops are dead under wry).
+        e.preventDefault();
         const s = usePanes.getState();
         const tab = s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
         if (!tab) return;
@@ -93,29 +87,12 @@ const GridCell = memo(function GridCell({
           : [entry.path];
         if (useSettings.getState().dragOutEnabled) {
           // Native drag: reaches Finder/Mail/…; self-drops come back through
-          // the bridge as internal moves. Kill-switch reverts to HTML5-only.
-          e.preventDefault();
+          // the bridge as internal moves.
           startNativeDrag(paths, e.altKey);
           return;
         }
-        beginInternalDrag(e, paths);
-      }}
-      onDragEnd={endInternalDrag}
-      onDragOver={(e) => {
-        if (!isNavigableDir || !dragHasPaths(e)) return;
-        const paths = draggedPaths(e);
-        if (paths.length > 0 && isInvalidDrop(paths, entry.path)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setDropping(true);
-      }}
-      onDragLeave={() => setDropping(false)}
-      onDrop={(e) => {
-        if (!isNavigableDir) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setDropping(false);
-        dropPaths(e, entry.path);
+        // Kill-switch: internal-only pointer drag through the same registry.
+        startPointerDrag(paths);
       }}
     >
       <div className={clsx("rounded-md p-1", selected && "bg-accent-dim")}>
@@ -319,16 +296,6 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         if ((e.target as HTMLElement).closest("[data-row]")) return;
         e.preventDefault();
         showMenu(e.clientX, e.clientY, emptyAreaMenuItems(paneId, tabId));
-      }}
-      onDragOver={(e) => {
-        if (!dragHasPaths(e)) return;
-        const paths = draggedPaths(e);
-        if (paths.length > 0 && isInvalidDrop(paths, tab.path)) return;
-        e.preventDefault();
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        dropPaths(e, tab.path);
       }}
     >
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
