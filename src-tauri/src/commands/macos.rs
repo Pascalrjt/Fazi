@@ -71,13 +71,21 @@ pub fn drag_modifiers(app: AppHandle) -> DragModifiers {
     }
 }
 
+/// Async: Tauri 2 runs sync commands on the main thread, and this one blocks
+/// up to 10 s for an AppKit completion handler that may itself be delivered
+/// on the main queue — as a sync command that froze the UI (or deadlocked).
 #[tauri::command]
-pub fn set_default_app(app: AppHandle, path: String, app_path: String) -> Result<()> {
+pub async fn set_default_app(app: AppHandle, path: String, app_path: String) -> Result<()> {
     let p = PathBuf::from(&path);
     let target = PathBuf::from(app_path);
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     on_main(&app, move || workspace::set_default_app_for_type(&p, &target, tx));
-    match rx.recv_timeout(Duration::from_secs(10)) {
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(Duration::from_secs(10))
+    })
+    .await
+    .map_err(|e| Error::msg(format!("set_default_app worker failed: {e}")))?;
+    match outcome {
         Ok(Ok(())) => Ok(()),
         Ok(Err(msg)) => Err(Error::msg(msg)),
         Err(_) => Err(Error::msg("timed out changing the default app")),
