@@ -107,7 +107,17 @@ pub fn run() {
                 });
             }
 
-            // Volume mount/unmount: 2 s poll of the mounted-path set.
+            // Volume mount/unmount: NSWorkspace notifications for instant
+            // sidebar updates (setup runs on the main thread, as required).
+            {
+                let handle = app.handle().clone();
+                macos::volumes::install_mount_observers(move || {
+                    let _ = handle.emit(VOLUMES_CHANGED, ());
+                });
+            }
+
+            // Fallback 2 s poll of the mounted-path set, for volume types
+            // that post no workspace notification.
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {

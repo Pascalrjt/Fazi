@@ -332,6 +332,21 @@ export function activeTabOf(pane: Pane): Tab {
   return pane.tabs.find((t) => t.id === pane.activeTabId) ?? pane.tabs[0];
 }
 
+/** First existing ancestor of `path` (strictly above it), else "/". Used
+ *  when a watched root vanishes — a whole volume unmounting takes the
+ *  immediate parent with it. */
+export async function nearestExistingAncestor(
+  path: string,
+  exists: (p: string) => Promise<boolean>,
+): Promise<string> {
+  let cur = dirname(path) ?? "/";
+  while (cur !== "/") {
+    if (await exists(cur)) return cur;
+    cur = dirname(cur) ?? "/";
+  }
+  return "/";
+}
+
 function snapshot(tab: Tab): HistorySnapshot {
   const nameOf = new Map(tab.entries.map((e) => [e.id, e.name]));
   return {
@@ -759,11 +774,23 @@ export const usePanes = create<PanesState>()(
           break;
         }
         case "rootGone": {
-          // walk up to the nearest surviving ancestor
+          // Walk up to the nearest SURVIVING ancestor — after an eject the
+          // immediate parent (and everything up to /Volumes) may be gone too.
           const from = tab.path;
+          const listingId = tab.listingId;
           useApp.getState().pushToast(`“${basename(from)}” is no longer available`);
-          const parent = dirname(from) ?? "/";
-          state.navigate(paneId, tabId, parent);
+          void (async () => {
+            const dest = await nearestExistingAncestor(from, (p) =>
+              ipc
+                .statPath(p, listingId)
+                .then((e) => e != null)
+                .catch(() => false),
+            );
+            const s = get();
+            const t = s.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
+            // Only navigate if the tab still shows the vanished dir.
+            if (t && t.path === from) s.navigate(paneId, tabId, dest);
+          })();
           break;
         }
         default: {
