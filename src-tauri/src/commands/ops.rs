@@ -153,7 +153,7 @@ pub fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()>
     if !pairs.is_empty() {
         let touched: Vec<PathBuf> =
             pairs.iter().flat_map(|(o, l)| [o.clone(), l.clone()]).collect();
-        state.engine.undo.lock().unwrap().push(UndoOp::Trash { pairs });
+        state.engine.push_undo(UndoOp::Trash { pairs });
         (state.engine.invalidate_fuzzy)(&touched);
     }
     if errors.is_empty() {
@@ -181,6 +181,28 @@ pub enum EmptyTrashEvent {
 pub struct TrashStats {
     pub count: u64,
     pub external_count: u64,
+    pub unreadable: Vec<TrashAccessIssue>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashAccessIssue {
+    pub path: String,
+    pub volume: String,
+    pub message: String,
+}
+
+fn trash_volume_name(dir: &Path) -> String {
+    let mut components = dir.components();
+    if components.next() == Some(std::path::Component::RootDir)
+        && components.next().and_then(|c| c.as_os_str().to_str()) == Some("Volumes")
+    {
+        return components
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_else(|| "External volume".into());
+    }
+    "Startup Disk".into()
 }
 
 /// Item counts across every user trash dir — the confirm dialog's source of
@@ -193,14 +215,24 @@ pub fn trash_stats() -> TrashStats {
         .unwrap_or_default();
     let mut count = 0u64;
     let mut external = 0u64;
+    let mut unreadable = Vec::new();
     for dir in trash::user_trash_dirs() {
-        let n = trash::trash_items(&dir).len() as u64;
-        count += n;
-        if dir != home_trash {
-            external += n;
+        match trash::trash_items(&dir) {
+            Ok(items) => {
+                let n = items.len() as u64;
+                count += n;
+                if dir != home_trash {
+                    external += n;
+                }
+            }
+            Err(error) => unreadable.push(TrashAccessIssue {
+                path: dir.to_string_lossy().into_owned(),
+                volume: trash_volume_name(&dir),
+                message: error.to_string(),
+            }),
         }
     }
-    TrashStats { count, external_count: external }
+    TrashStats { count, external_count: external, unreadable }
 }
 
 /// Permanently delete everything in the Trash (all volumes), streaming
@@ -220,7 +252,7 @@ pub fn empty_trash(state: State<'_, AppState>, channel: Channel<EmptyTrashEvent>
             &cancel,
         );
         if !outcome.deleted.is_empty() {
-            engine.undo.lock().unwrap().purge_records_under(&outcome.deleted);
+            engine.purge_undo_records_under(&outcome.deleted);
             (engine.invalidate_fuzzy)(&outcome.deleted);
         }
         let _ = channel.send(EmptyTrashEvent::Done {
@@ -328,12 +360,7 @@ pub fn batch_rename(
         .collect();
     let touched: Vec<PathBuf> =
         undo_pairs.iter().flat_map(|(f, t)| [f.clone(), t.clone()]).collect();
-    state
-        .engine
-        .undo
-        .lock()
-        .unwrap()
-        .push(UndoOp::BatchRename { pairs: undo_pairs });
+    state.engine.push_undo(UndoOp::BatchRename { pairs: undo_pairs });
     (state.engine.invalidate_fuzzy)(&touched);
     Ok(finals.iter().map(|p| p.to_string_lossy().into_owned()).collect())
 }
@@ -377,7 +404,7 @@ pub fn pb_paste_new_file(
     };
     let path = dest.join(&name);
     std::fs::write(&path, &bytes)?;
-    state.engine.undo.lock().unwrap().push(UndoOp::ProducedItems {
+    state.engine.push_undo(UndoOp::ProducedItems {
         kind: ProducedKind::Paste,
         pairs: vec![(path.clone(), None)],
     });
@@ -409,12 +436,7 @@ pub fn rename_path(state: State<'_, AppState>, path: String, new_name: String) -
         return Err(Error::msg(format!("\"{new_name}\" already exists")));
     }
     std::fs::rename(&from, &to)?;
-    state
-        .engine
-        .undo
-        .lock()
-        .unwrap()
-        .push(UndoOp::Rename { from: from.clone(), to: to.clone() });
+    state.engine.push_undo(UndoOp::Rename { from: from.clone(), to: to.clone() });
     (state.engine.invalidate_fuzzy)(&[from, to.clone()]);
     Ok(to.to_string_lossy().into_owned())
 }
@@ -427,12 +449,7 @@ pub fn new_folder(state: State<'_, AppState>, parent: String, name: String) -> R
     let unique = walker::new_folder_name(&parent, &base);
     let path = parent.join(&unique);
     std::fs::create_dir(&path)?;
-    state
-        .engine
-        .undo
-        .lock()
-        .unwrap()
-        .push(UndoOp::NewFolder { path: path.clone() });
+    state.engine.push_undo(UndoOp::NewFolder { path: path.clone() });
     (state.engine.invalidate_fuzzy)(std::slice::from_ref(&path));
     Ok(path.to_string_lossy().into_owned())
 }
@@ -471,6 +488,7 @@ pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
         touched.extend(o.restored.iter().cloned());
         (state.engine.invalidate_fuzzy)(&touched);
     }
+    state.engine.notify_undo_changed();
     Ok(outcome.map(|o| UndoResult {
         label: o.label,
         restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
@@ -493,6 +511,7 @@ pub fn redo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
         touched.extend(o.restored.iter().cloned());
         (state.engine.invalidate_fuzzy)(&touched);
     }
+    state.engine.notify_undo_changed();
     Ok(outcome.map(|o| UndoResult {
         label: o.label,
         restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),

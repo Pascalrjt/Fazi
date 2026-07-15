@@ -219,31 +219,20 @@ pub fn spawn_search(
             None => true, // whole Mac: no single volume to probe
         };
         let reader = BufReader::new(stdout);
-        let mut total = 0u64;
-        let mut capped = false;
-        for line in reader.lines() {
-            let Ok(path) = line else { break };
-            if path.is_empty() {
-                continue;
-            }
-            let p = PathBuf::from(&path);
+        let (total, capped) = stream_hits(reader, cap, |path| {
+            let p = PathBuf::from(path);
             let name = p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.clone());
+                .unwrap_or_else(|| path.to_owned());
             let is_dir = p.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
             send(SearchEvent::Hit {
                 icon: icon_token(&p),
-                path,
+                path: path.to_owned(),
                 name,
                 is_dir,
             });
-            total += 1;
-            if total >= cap {
-                capped = true;
-                break;
-            }
-        }
+        });
         // Reap (or kill, if we bailed early on the cap).
         if let Some(mut c) = handle_thread.lock().unwrap().take() {
             let _ = c.kill();
@@ -253,6 +242,25 @@ pub fn spawn_search(
     });
 
     Ok(handle)
+}
+
+/// Emit up to `cap` non-empty lines through `on_hit` and report `(emitted,
+/// capped)`. `capped` is true only when a cap+1-th result actually exists —
+/// a result set of exactly `cap` lines is complete, not truncated.
+fn stream_hits(reader: impl BufRead, cap: u64, mut on_hit: impl FnMut(&str)) -> (u64, bool) {
+    let mut total = 0u64;
+    for line in reader.lines() {
+        let Ok(path) = line else { break };
+        if path.is_empty() {
+            continue;
+        }
+        if total >= cap {
+            return (total, true); // the extra hit proves truncation; drop it
+        }
+        on_hit(&path);
+        total += 1;
+    }
+    (total, false)
 }
 
 pub fn cancel(handle: &Arc<Mutex<Option<Child>>>) {
@@ -265,6 +273,47 @@ pub fn cancel(handle: &Arc<Mutex<Option<Child>>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    fn run_stream(input: &str, cap: u64) -> (Vec<String>, u64, bool) {
+        let mut hits = Vec::new();
+        let (total, capped) = stream_hits(Cursor::new(input.to_owned()), cap, |p| {
+            hits.push(p.to_owned());
+        });
+        (hits, total, capped)
+    }
+
+    #[test]
+    fn stream_under_cap_is_not_capped() {
+        let (hits, total, capped) = run_stream("/a\n/b\n", 5);
+        assert_eq!(hits, vec!["/a", "/b"]);
+        assert_eq!(total, 2);
+        assert!(!capped);
+    }
+
+    #[test]
+    fn stream_exactly_at_cap_is_not_capped() {
+        let (hits, total, capped) = run_stream("/a\n/b\n/c\n", 3);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(total, 3);
+        assert!(!capped, "exactly-cap result sets are complete, not truncated");
+    }
+
+    #[test]
+    fn stream_one_past_cap_emits_cap_and_reports_capped() {
+        let (hits, total, capped) = run_stream("/a\n/b\n/c\n/d\n", 3);
+        assert_eq!(hits, vec!["/a", "/b", "/c"], "the cap+1-th hit is dropped");
+        assert_eq!(total, 3);
+        assert!(capped);
+    }
+
+    #[test]
+    fn stream_skips_blank_lines_before_the_cap_check() {
+        let (hits, total, capped) = run_stream("/a\n\n/b\n\n/c\n", 3);
+        assert_eq!(hits, vec!["/a", "/b", "/c"]);
+        assert_eq!(total, 3);
+        assert!(!capped);
+    }
 
     #[test]
     fn iso_conversion() {

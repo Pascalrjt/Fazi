@@ -1,5 +1,6 @@
 pub mod icons;
 pub mod main_thread;
+pub mod menu;
 pub mod pasteboard;
 pub mod share;
 pub mod thumbnails;

@@ -66,6 +66,33 @@ fn map_events<'a>(
     let mut root_gone = false;
     let mut seen = std::collections::HashSet::new();
 
+    // APFS commonly resolves a stale-cased path after foo -> Foo, so lstat on
+    // `root/foo` cannot tell whether that exact directory entry still exists.
+    // Snapshot the parent's actual dirent spellings once for the whole batch.
+    let actual_names: Vec<String> = match std::fs::read_dir(root) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(_) if root.symlink_metadata().is_err() => {
+            root_gone = true;
+            Vec::new()
+        }
+        Err(_) => {
+            return Some(WatchEvent::Batch {
+                upserted: Vec::new(),
+                removed: Vec::new(),
+                rescan: true,
+            });
+        }
+    };
+    let exact: std::collections::HashSet<&str> =
+        actual_names.iter().map(String::as_str).collect();
+    let mut case_folded = std::collections::HashMap::new();
+    for actual in &actual_names {
+        case_folded.entry(actual.to_lowercase()).or_insert_with(|| actual.clone());
+    }
+
     for p in paths {
         if p == root {
             if p.symlink_metadata().is_err() {
@@ -82,10 +109,18 @@ fn map_events<'a>(
         if !seen.insert(name.clone()) {
             continue;
         }
-        if p.symlink_metadata().is_ok() {
+        if exact.contains(name.as_str()) {
             upserted.push(name);
         } else {
-            removed.push(name);
+            removed.push(name.clone());
+            // A stale-cased rename event may be the only path FSEvents gives
+            // us. Reconcile it to the actual spelling so external case-only
+            // renames still produce the replacement row.
+            if let Some(actual) = case_folded.get(&name.to_lowercase()) {
+                if seen.insert(actual.clone()) {
+                    upserted.push(actual.clone());
+                }
+            }
         }
     }
 
@@ -102,6 +137,30 @@ fn map_events<'a>(
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn stale_case_event_uses_exact_dirent_spelling() {
+        let root = std::env::temp_dir().join(format!(
+            "fazi-watch-case-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Foo"), b"x").unwrap();
+        let stale = root.join("foo");
+
+        let event = map_events(&root, std::iter::once(&stale)).unwrap();
+        match event {
+            WatchEvent::Batch { upserted, removed, rescan } => {
+                assert!(!rescan);
+                assert_eq!(removed, vec!["foo"]);
+                assert_eq!(upserted, vec!["Foo"]);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     #[ignore = "FSEvents delivery is flaky in sandboxed environments; run with cargo test -- --ignored"]

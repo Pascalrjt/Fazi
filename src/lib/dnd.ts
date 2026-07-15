@@ -1,59 +1,20 @@
 /**
- * Within-app HTML5 drag & drop helpers, plus the drop-zone registry the
- * Finder drag-in bridge (lib/ipc/dnd.ts) hit-tests against, plus the pure
- * state machine for native drag-out sessions (tauri-plugin-drag).
+ * Drag & drop core: the drop-zone registry every drag flavor hit-tests
+ * against (Finder drag-in, native self-drops, internal pointer drags), the
+ * drag-hover broadcast + spring-load manager, and the pure state machine for
+ * native drag-out sessions (tauri-plugin-drag).
+ *
+ * There is deliberately NO HTML5 drag & drop here. With Tauri's
+ * dragDropEnabled (the default, and required for Finder drag-in), wry
+ * swallows the WKWebView's NSDraggingDestination callbacks, so the DOM never
+ * receives dragover/drop for ANY drag on macOS — HTML5 drop targets are dead
+ * in the running app. Rows keep `draggable` purely as the gesture trigger;
+ * the drag itself is a native session (lib/ipc/dnd.ts) or a pointer drag
+ * (lib/pointerDrag.ts). Sidebar-favorite reorder is pointer-based too.
  */
 import { useOps } from "../stores/ops";
 import { trashPathsWithUndo } from "./actions";
 import { pinFolders } from "./pin";
-
-export const FAZI_DND_MIME = "application/x-fazi-paths";
-
-// NOTE: sidebar-favorite reorder is deliberately NOT HTML5 drag & drop. With
-// Tauri's dragDropEnabled (the default, and required for Finder drag-in),
-// wry swallows the WKWebView's NSDraggingDestination callbacks, so the DOM
-// never receives dragover/drop for ANY drag on macOS — HTML5 drop targets
-// are dead in the running app. Reorder is pointer-event based (Sidebar.tsx).
-
-/** dataTransfer isn't readable during dragover — mirror the payload here. */
-let currentDragPaths: string[] | null = null;
-
-export function beginInternalDrag(e: React.DragEvent, paths: string[]): void {
-  currentDragPaths = paths;
-  e.dataTransfer.setData(FAZI_DND_MIME, JSON.stringify(paths));
-  e.dataTransfer.effectAllowed = "copyMove";
-  // custom drag image with a count badge for multi-item drags
-  if (paths.length > 1) {
-    const badge = document.createElement("div");
-    badge.textContent = String(paths.length);
-    badge.style.cssText =
-      "position:fixed;top:-100px;left:-100px;padding:2px 8px;border-radius:10px;" +
-      "background:var(--accent);color:white;font:600 12px -apple-system;z-index:9999";
-    document.body.appendChild(badge);
-    e.dataTransfer.setDragImage(badge, 10, 10);
-    setTimeout(() => badge.remove(), 0);
-  }
-}
-
-export function endInternalDrag(): void {
-  currentDragPaths = null;
-}
-
-export function dragHasPaths(e: React.DragEvent): boolean {
-  return e.dataTransfer.types.includes(FAZI_DND_MIME) || currentDragPaths != null;
-}
-
-export function draggedPaths(e: React.DragEvent): string[] {
-  const raw = e.dataTransfer.getData(FAZI_DND_MIME);
-  if (raw) {
-    try {
-      return JSON.parse(raw) as string[];
-    } catch {
-      /* fall through */
-    }
-  }
-  return currentDragPaths ?? [];
-}
 
 /** True if the drop would land inside one of the dragged items (or be a no-op). */
 export function isInvalidDrop(paths: string[], destDir: string): boolean {
@@ -63,28 +24,29 @@ export function isInvalidDrop(paths: string[], destDir: string): boolean {
   });
 }
 
-/** Handle an internal drop: Opt held = copy, else move. */
-export function dropPaths(e: React.DragEvent, destDir: string): void {
-  const paths = draggedPaths(e);
-  endInternalDrag();
-  if (paths.length === 0 || isInvalidDrop(paths, destDir)) return;
-  const kind = e.altKey ? "copy" : "move";
-  useOps.getState().startOp({ kind, sources: paths, destDir, policy: "ask" });
-}
-
 // ---------------------------------------------------------------------------
 // Drop-zone registry for Finder drag-in (real screen-coordinate hit tests)
 // ---------------------------------------------------------------------------
+
+/** A zone hit that should spring-open its directory after a hover dwell.
+ *  `key` identifies the hovered target (same key = same dwell); `open`
+ *  navigates the hovering pane's tab. Background zones carry no spring. */
+export interface SpringSpec {
+  key: string;
+  open(): void;
+}
 
 /**
  * What a drop on a zone means. "copyTo" starts a copy into the hit directory;
  * "trash" dispatches trash_paths — dropping onto the Trash row must keep
  * Finder Trash semantics (Put Back metadata), never copy into ~/.Trash;
  * "pin" adds dropped folders to the sidebar Favorites at `index`.
+ * `targetKey` identifies the specific hovered element (row/cell/crumb) so it
+ * can render a drop ring; pane backgrounds omit it.
  */
 export type DropHit =
-  | { action: "copyTo"; destDir: string }
-  | { action: "trash"; destDir: string }
+  | { action: "copyTo"; destDir: string; targetKey?: string; spring?: SpringSpec }
+  | { action: "trash"; destDir: string; targetKey?: string }
   | { action: "pin"; index: number };
 
 export interface DropZone {
@@ -111,35 +73,87 @@ export function hitTestDropZones(clientX: number, clientY: number): DropHit | nu
 }
 
 // ---------------------------------------------------------------------------
-// Pin-hover feedback for native drags (Finder drag-in / native self-drops)
+// Drag-hover feedback for native drags (Finder drag-in / native self-drops)
 // ---------------------------------------------------------------------------
 
-type PinHoverListener = (index: number | null) => void;
-const pinHoverListeners = new Set<PinHoverListener>();
-
-/** Subscribe to native-drag pin-hover updates (insertion index, null = none). */
-export function onPinHover(fn: PinHoverListener): () => void {
-  pinHoverListeners.add(fn);
-  return () => pinHoverListeners.delete(fn);
+/** The current drag hover: the hit under the cursor plus its client point. */
+export interface DropHover {
+  hit: DropHit;
+  x: number;
+  y: number;
 }
 
-export function emitPinHover(index: number | null): void {
-  for (const fn of pinHoverListeners) fn(index);
+type DropHoverListener = (h: DropHover | null) => void;
+const dropHoverListeners = new Set<DropHoverListener>();
+
+/** Subscribe to drag-hover updates (null = nothing hovered / drag ended).
+ *  Consumers filter by `hit.action` / `hit.targetKey`. */
+export function onDropHover(fn: DropHoverListener): () => void {
+  dropHoverListeners.add(fn);
+  return () => dropHoverListeners.delete(fn);
 }
 
-/** True while an HTML5 (within-app) drag is in flight — the native bridge
- *  must not emit hover feedback for those; they own their own feedback. */
-export function htmlDragInFlight(): boolean {
-  return currentDragPaths != null;
+/** Broadcast the current hover. Drives the spring-load timer synchronously
+ *  before notifying listeners, so ordering is deterministic. */
+export function emitDropHover(h: DropHover | null): void {
+  updateSpring(h);
+  for (const fn of dropHoverListeners) fn(h);
+}
+
+/** Subscribe to pin-hover updates (insertion index, null = none). */
+export function onPinHover(fn: (index: number | null) => void): () => void {
+  return onDropHover((h) => fn(h != null && h.hit.action === "pin" ? h.hit.index : null));
+}
+
+// ---------------------------------------------------------------------------
+// Spring-loaded folders: hover a dir row/cell for SPRING_LOAD_MS → it opens
+// ---------------------------------------------------------------------------
+
+export const SPRING_LOAD_MS = 600;
+
+let springKey: string | null = null;
+let springTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelSpring(): void {
+  if (springTimer != null) clearTimeout(springTimer);
+  springTimer = null;
+  springKey = null;
+}
+
+function updateSpring(h: DropHover | null): void {
+  const spring = h?.hit.action === "copyTo" ? h.hit.spring : undefined;
+  // Same target: keep the running timer (hover jitter must not reset it).
+  if (spring != null && spring.key === springKey) return;
+  cancelSpring();
+  if (spring == null) return;
+  springKey = spring.key;
+  springTimer = setTimeout(() => {
+    springTimer = null;
+    springKey = null;
+    spring.open();
+  }, SPRING_LOAD_MS);
+}
+
+/** Paths of whichever drag is in flight (native session or internal pointer
+ *  drag), else null. Zone hit-tests use this to refuse invalid targets. */
+export function activeDragPaths(): string[] | null {
+  return nativeDragPaths ?? pointerDragPaths;
+}
+
+let pointerDragPaths: string[] | null = null;
+
+/** Set by the pointer-drag layer while an internal pointer drag is live. */
+export function setPointerDragPaths(paths: string[] | null): void {
+  pointerDragPaths = paths;
 }
 
 // ---------------------------------------------------------------------------
 // Native drag-out session state (tauri-plugin-drag)
 // ---------------------------------------------------------------------------
 //
-// While a native drag is in flight, HTML5 drag events don't fire — the bridge
-// (lib/ipc/dnd.ts) and the plugin completion callback consult this state to
-// tell self-drops (→ internal move, ⌥ copy) from Finder drags (→ copy).
+// The bridge (lib/ipc/dnd.ts) and the plugin completion callback consult
+// this state to tell self-drops (→ internal move, ⌥ copy) from Finder
+// drags (→ copy).
 
 let nativeDragPaths: string[] | null = null;
 let nativeDropHandled = false;
@@ -152,21 +166,29 @@ export function beginNativeDragState(paths: string[], altHeld: boolean): void {
 }
 
 /** MUST run on every session end — completion callback AND startDrag
- *  rejection — or a stale flag turns the next Finder drag-in into a move. */
+ *  rejection — or a stale flag turns the next Finder drag-in into a move.
+ *  Also cancels any armed spring: an Esc-cancelled native session can end
+ *  without a "leave" event ever reaching the bridge. */
 export function endNativeDragState(): void {
   nativeDragPaths = null;
   nativeDropHandled = false;
   altDuringDrag = false;
+  cancelSpring();
 }
 
 export function nativeDragPathsNow(): string[] | null {
   return nativeDragPaths;
 }
 
-/** The bridge marks the drop consumed so the plugin's completion-callback
- *  fallback never dispatches the same drop twice. */
-export function markNativeDropHandled(): void {
+/** Atomically claim the drop for dispatch. The bridge event and the plugin
+ *  completion-callback fallback race in unspecified order, and BOTH await a
+ *  modifier query before dispatching — each must claim synchronously (before
+ *  its first await) and dispatch only if the claim succeeded, or the same
+ *  drop runs twice. */
+export function tryClaimNativeDrop(): boolean {
+  if (nativeDropHandled) return false;
   nativeDropHandled = true;
+  return true;
 }
 
 export function wasNativeDropHandled(): boolean {

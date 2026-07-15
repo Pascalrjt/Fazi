@@ -50,6 +50,7 @@ export interface OpCard {
   errors: OpError[];
   warnings: OpWarning[];
   produced: string[];
+  skipped: number;
   expanded: boolean;
   // retry material
   sources: string[];
@@ -156,6 +157,7 @@ export const useOps = create<OpsState>()(
         errors: [],
         warnings: [],
         produced: [],
+        skipped: 0,
         expanded: false,
         sources,
         destDir,
@@ -193,6 +195,7 @@ export const useOps = create<OpsState>()(
         // (each warning already arrived once as a live "warning" event).
         card.warnings = event.warnings;
         card.produced = event.produced;
+        card.skipped = event.skipped ?? 0;
         const wasVisible = card.visible;
         if (event.status === "success" && event.warnings.length === 0) {
           if (!wasVisible) {

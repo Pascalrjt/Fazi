@@ -33,16 +33,8 @@ import { useVolumes } from "../../stores/volumes";
 import { useSettings } from "../../stores/settings";
 import { useApp } from "../../stores/app";
 import { usePanes, activeTabOf } from "../../stores/panes";
-import {
-  dragHasPaths,
-  draggedPaths,
-  dropPaths,
-  endInternalDrag,
-  onPinHover,
-  registerDropZone,
-} from "../../lib/dnd";
-import { pinFolders } from "../../lib/pin";
-import { confirmEmptyTrash, ejectVolume, trashPathsWithUndo } from "../../lib/actions";
+import { onDropHover, onPinHover, registerDropZone } from "../../lib/dnd";
+import { confirmEmptyTrash, ejectVolume } from "../../lib/actions";
 import { showMenu } from "../../stores/menu";
 import { formatBytes } from "../../lib/format";
 import type { Volume } from "../../types/ipc";
@@ -89,24 +81,14 @@ interface RowSpec {
 const REORDER_THRESHOLD_PX = 4;
 
 /** Passed to rows inside the Favorites section: enables the edge-zone pin
- *  behavior, the insertion-line state, and pointer-based pin reorder. */
+ *  behavior (via the drop-zone registry) and pointer-based pin reorder. */
 interface FavSectionHooks {
-  clearInsert(): void;
   /** Path of the pin currently being pointer-reordered (for styling). */
   reorderingPath: string | null;
   beginReorder(path: string): void;
   updateReorder(clientY: number): void;
   commitReorder(path: string, clientY: number): void;
   cancelReorder(): void;
-}
-
-/** True when the pointer is in a row's top/bottom edge zone. jsdom rects are
- *  0×0 — a degenerate rect counts as center, keeping tests on the move path. */
-function inEdgeZone(e: React.DragEvent, el: HTMLElement): boolean {
-  const rect = el.getBoundingClientRect();
-  if (rect.height <= 0) return false;
-  const frac = (e.clientY - rect.top) / rect.height;
-  return frac < EDGE_FRACTION || frac > 1 - EDGE_FRACTION;
 }
 
 function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSectionHooks }) {
@@ -128,7 +110,7 @@ function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSection
         const rect = rowRef.current?.getBoundingClientRect();
         if (!rect) return null;
         return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
-          ? { action: "trash", destDir: row.path }
+          ? { action: "trash", destDir: row.path, targetKey: "sidebar:trash" }
           : null;
       },
     });
@@ -147,10 +129,19 @@ function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSection
         if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
         const frac = (y - rect.top) / rect.height;
         if (frac < EDGE_FRACTION || frac > 1 - EDGE_FRACTION) return null;
-        return { action: "copyTo", destDir: row.path };
+        return { action: "copyTo", destDir: row.path, targetKey: `fav:${row.path}` };
       },
     });
   }, [inFavSection, row.path]);
+
+  // Drop-ring during native/pointer drags, fed by the registry hover channel.
+  useEffect(() => {
+    if (!row.trash && !inFavSection) return;
+    const key = row.trash ? "sidebar:trash" : `fav:${row.path}`;
+    return onDropHover((h) =>
+      setDropping(h != null && h.hit.action !== "pin" && h.hit.targetKey === key),
+    );
+  }, [row.trash, inFavSection, row.path]);
 
   const isCurrent = tab?.path === row.path;
   // Set when a pointer-reorder happened so the click that follows the
@@ -246,38 +237,6 @@ function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSection
             : []),
         ]);
       }}
-      onDragOver={(e) => {
-        if (!dragHasPaths(e)) return;
-        if (favSection && inEdgeZone(e, e.currentTarget)) {
-          // Edge zone = pin: bubble so the section shows the insertion line.
-          setDropping(false);
-          return;
-        }
-        favSection?.clearInsert(); // center: kill a stale insertion line
-        e.preventDefault();
-        // A path drag over a row's center is move-into-that-folder; stop it
-        // here so the Favorites section container never treats it as a pin.
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
-        setDropping(true);
-      }}
-      onDragLeave={() => setDropping(false)}
-      onDrop={(e) => {
-        if (dragHasPaths(e) && favSection && inEdgeZone(e, e.currentTarget)) {
-          return; // edge drop bubbles up to the section pin handler
-        }
-        e.preventDefault();
-        e.stopPropagation();
-        setDropping(false);
-        if (row.trash) {
-          // Never a generic move into ~/.Trash — keep Finder Trash semantics.
-          const paths = draggedPaths(e);
-          endInternalDrag();
-          trashPathsWithUndo(paths);
-          return;
-        }
-        dropPaths(e, row.path);
-      }}
       title={
         row.volume
           ? `${row.label} — ${formatBytes(row.volume.availableBytes)} available`
@@ -345,7 +304,6 @@ function FavoritesSection({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const favSection: FavSectionHooks = {
-    clearInsert: () => setInsertIndex(null),
     reorderingPath,
     beginReorder: (path) => setReorderingPath(path),
     updateReorder: (clientY) =>
@@ -382,32 +340,7 @@ function FavoritesSection({
   useEffect(() => onPinHover(setInsertIndex), []);
 
   return (
-    <div
-      ref={containerRef}
-      className="rounded-md"
-      onDragOver={(e) => {
-        // Path drags over row centers were stopped at the row — reaching
-        // here means a row edge or section chrome, which is a pin.
-        if (!dragHasPaths(e)) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-        setInsertIndex(insertIndexFromPoint(containerRef.current, e.clientY));
-      }}
-      onDragLeave={(e) => {
-        if (!containerRef.current?.contains(e.relatedTarget as Node)) {
-          setInsertIndex(null);
-        }
-      }}
-      onDrop={(e) => {
-        if (!dragHasPaths(e)) return;
-        e.preventDefault();
-        const index = insertIndex ?? insertIndexFromPoint(containerRef.current, e.clientY);
-        setInsertIndex(null);
-        const paths = draggedPaths(e);
-        endInternalDrag();
-        if (paths.length > 0) void pinFolders(paths, index);
-      }}
-    >
+    <div ref={containerRef} className="rounded-md">
       <SectionLabel>Favorites</SectionLabel>
       {defaults.map((row) => (
         <SidebarRow key={row.key} row={row} favSection={favSection} />

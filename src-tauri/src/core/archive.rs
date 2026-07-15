@@ -270,6 +270,7 @@ fn journal_write_fail_fast(
             }],
             warnings: Vec::new(),
             produced: Vec::new(),
+            skipped: None,
             undoable: false,
         });
         return false;
@@ -346,6 +347,7 @@ fn run_compress_thread(
             errors,
             warnings: Vec::new(),
             produced: Vec::new(),
+            skipped: None,
             undoable: false,
         });
     };
@@ -548,6 +550,7 @@ fn run_compress_thread(
             errors: sink.errors.clone(),
             warnings: Vec::new(),
             produced: Vec::new(),
+            skipped: None,
             undoable: false,
         });
         return;
@@ -618,7 +621,7 @@ fn run_compress_thread(
     let finish = |status: &'static str, errors: Vec<OpError>, produced: Vec<PathBuf>| {
         let undoable = !produced.is_empty();
         if undoable {
-            engine.undo.lock().unwrap().push(UndoOp::ProducedItems {
+            engine.push_undo(UndoOp::ProducedItems {
                 kind: ProducedKind::Compress,
                 pairs: produced.iter().map(|p| (p.clone(), None)).collect(),
             });
@@ -632,6 +635,7 @@ fn run_compress_thread(
             errors,
             warnings: Vec::new(),
             produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+            skipped: None,
             undoable,
         });
     };
@@ -1071,7 +1075,7 @@ fn run_extract_thread(
 
     let undoable = !produced.is_empty();
     if undoable {
-        engine.undo.lock().unwrap().push(UndoOp::ProducedItems {
+        engine.push_undo(UndoOp::ProducedItems {
             kind: ProducedKind::Extract,
             pairs: produced.iter().map(|p| (p.clone(), None)).collect(),
         });
@@ -1096,6 +1100,7 @@ fn run_extract_thread(
         errors,
         warnings: Vec::new(),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+        skipped: None,
         undoable,
     });
 }

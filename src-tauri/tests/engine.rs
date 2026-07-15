@@ -125,6 +125,7 @@ fn env_full(
         icon_token: Arc::new(|_, _| String::new()),
         verify_copy_contents: verifier,
         invalidate_fuzzy: invalidator,
+        undo_changed: Arc::new(|_| {}),
     });
     Env { root, engine, trash_dir }
 }
@@ -562,8 +563,15 @@ fn case_insensitive_collision_detected() {
         Arc::new(emitter.clone()),
     );
     let events = emitter.wait_done(Duration::from_secs(10));
-    let (_, produced, _) = done_status(&events);
+    let (status, produced, undoable) = done_status(&events);
     assert!(produced.is_empty(), "case-variant name must be treated as a conflict");
+    assert_eq!(status, "success");
+    assert!(!undoable);
+    assert!(env.engine.undo.lock().unwrap().undo_top().is_none());
+    assert!(events.iter().any(|event| matches!(
+        event,
+        OpEvent::Done { skipped: Some(1), .. }
+    )));
     std::fs::remove_dir_all(&env.root).ok();
 }
 

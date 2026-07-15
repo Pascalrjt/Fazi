@@ -177,6 +177,8 @@ export type OpEvent =
       warnings: OpWarning[];
       /** Destination paths of top-level items that were produced (for selection/ghost rows). */
       produced: string[];
+      /** Conflicting items the user or policy skipped; absent on older/non-conflict producers. */
+      skipped?: number;
       undoable: boolean;
     };
 
@@ -212,6 +214,8 @@ export interface TrashStats {
   count: number;
   /** Items living in per-volume `.Trashes` (external disks). */
   externalCount: number;
+  /** Trash directories that could not be enumerated; destructive emptying is blocked. */
+  unreadable: Array<{ path: string; volume: string; message: string }>;
 }
 
 export interface InterruptedOp {
@@ -412,6 +416,8 @@ export const COMMANDS = {
   redoLast: "redo_last",
   undoStackTop: "undo_stack_top", // () -> UndoDescription | null (for menu label)
   redoStackTop: "redo_stack_top",
+  setShortcutRecording: "set_shortcut_recording",
+  setNativeMenuShortcuts: "set_native_menu_shortcuts",
   interruptedOps: "interrupted_ops", // () -> InterruptedOp[] (journal recovery report)
   // search
   search: "search",
@@ -425,6 +431,8 @@ export const COMMANDS = {
   openPaths: "open_paths",
   openWith: "open_with", // (paths, appPath)
   openWithApps: "open_with_apps", // (path) -> AppCandidate[]
+  setDefaultApp: "set_default_app", // (path, appPath) — default for path's content type (Finder "Change All…")
+  dragModifiers: "drag_modifiers", // () — current hardware modifiers (⌥ at native-drag drop time)
   shareServices: "share_services", // (paths) -> ShareServices
   sharePerform: "share_perform", // (generation, index, paths)
   sharePicker: "share_picker", // (paths, x, y) — native NSSharingServicePicker at webview coords
@@ -440,6 +448,7 @@ export const COMMANDS = {
   openFullDiskAccessSettings: "open_full_disk_access_settings",
   pbWriteFiles: "pb_write_files", // (paths, isCut)
   pbReadFiles: "pb_read_files", // () -> PasteboardContents | null
+  pbCutValid: "pb_cut_valid", // () -> bool: pasteboard still holds our cut write
   pbWriteText: "pb_write_text",
   pbPasteNewFile: "pb_paste_new_file", // (destDir) -> path | null — clipboard image/text as a new file
   quicklookPanel: "quicklook_panel", // (paths) — qlmanage -p escape hatch

@@ -4,6 +4,7 @@
  */
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   COMMANDS,
   EVENTS,
@@ -199,6 +200,16 @@ export function redoStackTop(): Promise<UndoDescription | null> {
   return invoke(COMMANDS.redoStackTop);
 }
 
+export function setShortcutRecording(recording: boolean): Promise<void> {
+  return invoke(COMMANDS.setShortcutRecording, { recording });
+}
+
+export function setNativeMenuShortcuts(
+  shortcuts: Record<string, string | null>,
+): Promise<void> {
+  return invoke(COMMANDS.setNativeMenuShortcuts, { shortcuts });
+}
+
 export function interruptedOps(): Promise<InterruptedOp[]> {
   return invoke(COMMANDS.interruptedOps);
 }
@@ -261,6 +272,14 @@ export function openWith(paths: string[], appPath: string): Promise<void> {
 
 export function openWithApps(path: string): Promise<AppCandidate[]> {
   return invoke(COMMANDS.openWithApps, { path });
+}
+
+export function setDefaultApp(path: string, appPath: string): Promise<void> {
+  return invoke(COMMANDS.setDefaultApp, { path, appPath });
+}
+
+export function dragModifiers(): Promise<{ alt: boolean }> {
+  return invoke(COMMANDS.dragModifiers);
 }
 
 export function shareServices(paths: string[]): Promise<ShareServices> {
@@ -329,6 +348,10 @@ export function pbReadFiles(): Promise<PasteboardContents | null> {
   return invoke(COMMANDS.pbReadFiles);
 }
 
+export function pbCutValid(): Promise<boolean> {
+  return invoke(COMMANDS.pbCutValid);
+}
+
 export function pbWriteText(text: string): Promise<void> {
   return invoke(COMMANDS.pbWriteText, { text });
 }
@@ -359,6 +382,18 @@ export function revokePreview(token: string): Promise<void> {
 
 export function onVolumesChanged(cb: () => void): Promise<UnlistenFn> {
   return listen(EVENTS.volumesChanged, cb);
+}
+
+/** Fires when the window regains focus (never on blur). Safe without a
+ *  backend (resolves to a no-op). */
+export function onWindowFocused(cb: () => void): Promise<UnlistenFn> {
+  try {
+    return getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) cb();
+    });
+  } catch {
+    return Promise.resolve(() => {});
+  }
 }
 
 export function onMenuCommand(cb: (commandId: string) => void): Promise<UnlistenFn> {

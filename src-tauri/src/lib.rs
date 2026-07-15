@@ -47,6 +47,8 @@ pub fn run() {
             let engine_tokens = tokens.clone();
             let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
             let fuzzy_for_ops = fuzzy.clone();
+            let native_menu = macos::menu::install(app)?;
+            let menu_for_undo = native_menu.clone();
             let engine = Arc::new(Engine {
                 trasher: Arc::new(SystemTrasher),
                 journal,
@@ -60,6 +62,7 @@ pub fn run() {
                     crate::core::verify::checksum_compare(src, dst, cancelled)
                 }),
                 invalidate_fuzzy: Arc::new(move |paths| mark_stale_under(&fuzzy_for_ops, paths)),
+                undo_changed: Arc::new(move |stack| menu_for_undo.sync_undo(stack)),
             });
 
             let thumb_cache_dir = cache_dir.join("thumbnails");
@@ -83,6 +86,7 @@ pub fn run() {
                 fuzzy_pending: Arc::new(DashMap::new()),
                 fuzzy_cache_dir,
                 engine,
+                native_menu,
                 icon_cache: Arc::new(DashMap::new()),
                 thumb_cache_dir,
                 interrupted,
@@ -103,7 +107,17 @@ pub fn run() {
                 });
             }
 
-            // Volume mount/unmount: 2 s poll of the mounted-path set.
+            // Volume mount/unmount: NSWorkspace notifications for instant
+            // sidebar updates (setup runs on the main thread, as required).
+            {
+                let handle = app.handle().clone();
+                macos::volumes::install_mount_observers(move || {
+                    let _ = handle.emit(VOLUMES_CHANGED, ());
+                });
+            }
+
+            // Fallback 2 s poll of the mounted-path set, for volume types
+            // that post no workspace notification.
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -144,6 +158,8 @@ pub fn run() {
             commands::listing::stat_path,
             commands::listing::stat_paths,
             commands::listing::hydrate_paths,
+            commands::menu::set_shortcut_recording,
+            commands::menu::set_native_menu_shortcuts,
             commands::watch::watch_dir,
             commands::watch::unwatch,
             commands::ops::run_op,
@@ -173,6 +189,8 @@ pub fn run() {
             commands::macos::open_paths,
             commands::macos::open_with,
             commands::macos::open_with_apps,
+            commands::macos::set_default_app,
+            commands::macos::drag_modifiers,
             commands::macos::share_services,
             commands::macos::share_perform,
             commands::macos::share_picker,
@@ -189,6 +207,7 @@ pub fn run() {
             commands::macos::open_full_disk_access_settings,
             commands::macos::pb_write_files,
             commands::macos::pb_read_files,
+            commands::macos::pb_cut_valid,
             commands::macos::pb_write_text,
             commands::ops::pb_paste_new_file,
             commands::macos::register_preview,

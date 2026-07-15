@@ -68,6 +68,34 @@ pub fn apps_for_path(path: &Path) -> (Vec<PathBuf>, Option<PathBuf>) {
     (out, default)
 }
 
+/// MUST run on the main thread (the completion fires later on an arbitrary
+/// queue and reports through `tx`). Sets the system-wide default app for the
+/// content type of `path` — the API behind Finder's "Change All…".
+pub fn set_default_app_for_type(
+    path: &Path,
+    app_path: &Path,
+    tx: std::sync::mpsc::SyncSender<Result<(), String>>,
+) {
+    use block2::RcBlock;
+    use objc2_foundation::NSError;
+    let ws = unsafe { NSWorkspace::sharedWorkspace() };
+    let block = RcBlock::new(move |err: *mut NSError| {
+        let res = if err.is_null() {
+            Ok(())
+        } else {
+            Err(unsafe { &*err }.localizedDescription().to_string())
+        };
+        let _ = tx.send(res);
+    });
+    unsafe {
+        ws.setDefaultApplicationAtURL_toOpenContentTypeOfFileAtURL_completionHandler(
+            &file_url(app_path),
+            &file_url(path),
+            Some(&block),
+        )
+    };
+}
+
 /// MUST run on the main thread.
 pub fn reveal_in_finder(paths: &[PathBuf]) {
     let ws = unsafe { NSWorkspace::sharedWorkspace() };

@@ -67,6 +67,20 @@ export function cutSelection(): void {
     .catch((err) => toast(`Cut failed: ${err}`, { danger: true }));
 }
 
+/** Clear the cut-dim mirror if another app has since taken the pasteboard.
+ *  Called on window focus — the backend's changeCount check is the truth;
+ *  IPC failures keep the dim (better stale than flickering). */
+export async function recheckCutMirror(): Promise<void> {
+  const app = useApp.getState();
+  if (app.clipboard?.mode !== "cut") return;
+  try {
+    const valid = await ipc.pbCutValid();
+    if (!valid) useApp.getState().setClipboard(null);
+  } catch {
+    // no backend — leave the mirror alone
+  }
+}
+
 export function pasteInto(destDir: string, forceMove = false): void {
   ipc
     .pbReadFiles()
@@ -182,6 +196,14 @@ export function confirmEmptyTrash(): void {
   ipc
     .trashStats()
     .then((stats) => {
+      if (stats.unreadable.length > 0) {
+        const volumes = [...new Set(stats.unreadable.map((issue) => issue.volume))].join(", ");
+        toast(
+          `Can't empty the Trash because it can't be read on ${volumes}. Grant Fazi Full Disk Access and try again.`,
+          { danger: true },
+        );
+        return;
+      }
       if (stats.count === 0) {
         toast("The Trash is empty");
         return;
@@ -381,6 +403,32 @@ export function openWithMenuItems(entry: Entry): () => Promise<MenuItem[]> {
           });
         },
       }));
+      // Per-type default (Finder's "Change All…") makes no sense for plain
+      // folders — public.folder would retarget every folder on the system.
+      if (entry.kind !== "dir" || entry.isPackage) {
+        const typeLabel = entry.ext ? `.${entry.ext} files` : "files of this type";
+        items.push({ type: "separator" });
+        items.push({
+          type: "item",
+          label: `Set Default for ${entry.ext ? `.${entry.ext} Files` : "This File Type"}…`,
+          submenu: apps.map(
+            (app): MenuItem => ({
+              type: "item",
+              label: app.name,
+              icon: iconUrl(app.icon, 32),
+              disabled: app.isDefault,
+              action: () => {
+                void ipc
+                  .setDefaultApp(entry.path, app.path)
+                  .then(() => toast(`${app.name} is now the default for ${typeLabel}`))
+                  .catch((err) => {
+                    toast(`Couldn't change default: ${err}`, { danger: true });
+                  });
+              },
+            }),
+          ),
+        });
+      }
       return items;
     } catch (err) {
       return [{ type: "item", label: `Unavailable: ${err}`, disabled: true }];

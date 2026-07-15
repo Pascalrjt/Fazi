@@ -54,6 +54,10 @@ function progressLine(card: OpCard): string {
 
 /** "Compressing 3 items" → "Compressed 3 items" (derived, no verb regex). */
 function doneLabel(card: OpCard): string {
+  if (card.skipped > 0) {
+    if (card.produced.length === 0) return `Skipped ${pluralize(card.skipped, "item")}`;
+    return `${opVerb(card.kind, true)} ${pluralize(card.produced.length, "item")}, skipped ${card.skipped.toLocaleString()}`;
+  }
   const running = opVerb(card.kind);
   if (card.label.startsWith(running)) {
     return opVerb(card.kind, true) + card.label.slice(running.length);
@@ -127,7 +131,9 @@ function CardView({ card }: { card: OpCard }) {
       )}
 
       {card.status === "success" && card.warnings.length === 0 && (
-        <div className="mt-1 text-[11px] text-secondary">Done</div>
+        <div className="mt-1 text-[11px] text-secondary">
+          {card.skipped > 0 && card.produced.length === 0 ? "No files changed" : "Done"}
+        </div>
       )}
 
       {card.status === "cancelled" && (

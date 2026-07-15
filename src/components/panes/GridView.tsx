@@ -10,22 +10,17 @@ import { showMenu } from "../../stores/menu";
 import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
 import { clickSelect, cmdToggle, shiftRange } from "../../lib/selection";
 import { setGridColumns } from "../../lib/commands";
-import {
-  beginInternalDrag,
-  dragHasPaths,
-  draggedPaths,
-  dropPaths,
-  endInternalDrag,
-  isInvalidDrop,
-  registerDropZone,
-} from "../../lib/dnd";
+import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
+import { startPointerDrag } from "../../lib/pointerDrag";
 import { useSettings } from "../../stores/settings";
 import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
 const CELL_W = 112;
 const CELL_H = 112;
+/** Content inset of the grid's `p-2` scroll container — must track that class. */
+const GRID_PAD = 8;
 
 const GridCell = memo(function GridCell({
   entry,
@@ -55,6 +50,18 @@ const GridCell = memo(function GridCell({
   const [dropping, setDropping] = useState(false);
   const isNavigableDir = entry.kind === "dir" && !entry.isPackage;
 
+  // Drop-ring during native/pointer drags, keyed by the registry zone's hit.
+  useEffect(() => {
+    if (!isNavigableDir) return;
+    return onDropHover((h) =>
+      setDropping(
+        h != null &&
+          h.hit.action === "copyTo" &&
+          h.hit.targetKey === `cell:${paneId}:${tabId}:${entry.id}`,
+      ),
+    );
+  }, [paneId, tabId, entry.id, isNavigableDir]);
+
   return (
     <div
       data-row
@@ -69,6 +76,9 @@ const GridCell = memo(function GridCell({
       onDoubleClick={() => onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onDragStart={(e) => {
+        // dragstart is only the gesture trigger: both branches preventDefault
+        // and run their own drag loop (HTML5 drops are dead under wry).
+        e.preventDefault();
         const s = usePanes.getState();
         const tab = s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
         if (!tab) return;
@@ -77,29 +87,12 @@ const GridCell = memo(function GridCell({
           : [entry.path];
         if (useSettings.getState().dragOutEnabled) {
           // Native drag: reaches Finder/Mail/…; self-drops come back through
-          // the bridge as internal moves. Kill-switch reverts to HTML5-only.
-          e.preventDefault();
+          // the bridge as internal moves.
           startNativeDrag(paths, e.altKey);
           return;
         }
-        beginInternalDrag(e, paths);
-      }}
-      onDragEnd={endInternalDrag}
-      onDragOver={(e) => {
-        if (!isNavigableDir || !dragHasPaths(e)) return;
-        const paths = draggedPaths(e);
-        if (paths.length > 0 && isInvalidDrop(paths, entry.path)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setDropping(true);
-      }}
-      onDragLeave={() => setDropping(false)}
-      onDrop={(e) => {
-        if (!isNavigableDir) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setDropping(false);
-        dropPaths(e, entry.path);
+        // Kill-switch: internal-only pointer drag through the same registry.
+        startPointerDrag(paths);
       }}
     >
       <div className={clsx("rounded-md p-1", selected && "bg-accent-dim")}>
@@ -185,7 +178,9 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
 
-  // Finder drag-in: whole grid drops into the tab dir
+  // Native drop zone: dir cells are individual targets (ring + spring), any
+  // other point drops into the tab dir. Cell resolution mirrors the layout
+  // arithmetic: rows of `columns` cells inside the p-2 padded container.
   useEffect(() => {
     if (!tab) return;
     return registerDropZone({
@@ -195,11 +190,33 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         if (!el) return null;
         const r = el.getBoundingClientRect();
         if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
-        const dest = usePanes
+        const t = usePanes
           .getState()
           .panes.find((p) => p.id === paneId)
-          ?.tabs.find((t) => t.id === tabId)?.path;
-        return dest != null ? { action: "copyTo", destDir: dest } : null;
+          ?.tabs.find((tt) => tt.id === tabId);
+        if (!t) return null;
+        const vis = visibleEntries(t);
+        const cols = Math.max(1, Math.floor(el.clientWidth / CELL_W));
+        const col = Math.floor((x - r.left - GRID_PAD) / CELL_W);
+        const row = Math.floor((y - r.top + el.scrollTop - GRID_PAD) / CELL_H);
+        const entry =
+          col >= 0 && col < cols && row >= 0 ? vis[row * cols + col] : undefined;
+        if (entry && entry.kind === "dir" && !entry.isPackage) {
+          const paths = activeDragPaths();
+          if (paths == null || !isInvalidDrop(paths, entry.path)) {
+            const key = `cell:${paneId}:${tabId}:${entry.id}`;
+            return {
+              action: "copyTo",
+              destDir: entry.path,
+              targetKey: key,
+              spring: {
+                key,
+                open: () => usePanes.getState().navigate(paneId, tabId, entry.path),
+              },
+            };
+          }
+        }
+        return { action: "copyTo", destDir: t.path };
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -279,16 +296,6 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         if ((e.target as HTMLElement).closest("[data-row]")) return;
         e.preventDefault();
         showMenu(e.clientX, e.clientY, emptyAreaMenuItems(paneId, tabId));
-      }}
-      onDragOver={(e) => {
-        if (!dragHasPaths(e)) return;
-        const paths = draggedPaths(e);
-        if (paths.length > 0 && isInvalidDrop(paths, tab.path)) return;
-        e.preventDefault();
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        dropPaths(e, tab.path);
       }}
     >
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>

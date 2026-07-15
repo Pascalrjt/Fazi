@@ -71,7 +71,11 @@ pub fn list_dir(
         };
 
         // ---- Pass 1: stream what readdir gives nearly free ----
-        let mut all: Vec<Entry> = Vec::new();
+        // Retain pass-1 entries only while pass 2 is still eligible. Once the
+        // threshold is crossed, drop the retained vector immediately instead
+        // of holding a second 100k-entry copy until readdir completes.
+        let mut all: Option<Vec<Entry>> = Some(Vec::new());
+        let mut total = 0u64;
         let mut chunk: Vec<Entry> = Vec::with_capacity(CHUNK);
         for (next_id, dirent) in read.flatten().enumerate() {
             if cancel.load(Ordering::Relaxed) {
@@ -86,9 +90,24 @@ pub fn list_dir(
                 Err(_) => EntryKind::Unknown,
             };
             let token = tokens.register(&listing_id, &dirent.path());
-            let entry = pass1_entry(next_id as u64, &dir, &name, kind, token);
-            chunk.push(entry.clone());
-            all.push(entry);
+            let mut entry = pass1_entry(next_id as u64, &dir, &name, kind, token);
+            // Link destinations are part of the row's primary identity, not
+            // optional metadata. Read them during pass 1 so the target is
+            // visible on first paint and remains meaningful for broken links.
+            if kind == EntryKind::Symlink {
+                entry.link_target = std::fs::read_link(dirent.path())
+                    .ok()
+                    .map(|target| target.to_string_lossy().into_owned());
+            }
+            total += 1;
+            if let Some(retained) = all.as_mut() {
+                if retained.len() < PASS2_MAX_ENTRIES {
+                    retained.push(entry.clone());
+                } else {
+                    all = None;
+                }
+            }
+            chunk.push(entry);
             if chunk.len() >= CHUNK
                 && channel.send(ListEvent::Chunk { entries: std::mem::take(&mut chunk) }).is_err()
             {
@@ -98,18 +117,17 @@ pub fn list_dir(
         if !chunk.is_empty() {
             let _ = channel.send(ListEvent::Chunk { entries: chunk });
         }
-        if channel.send(ListEvent::Listed { total: all.len() as u64 }).is_err() {
+        if channel.send(ListEvent::Listed { total }).is_err() {
             return;
         }
 
         // Big listings: ONE defined behavior — pass 2 never runs, the entry
         // vector is dropped (it exists only to feed pass 2), and the frontend
         // hydrates from the viewport outward via hydrate_paths.
-        if all.len() > PASS2_MAX_ENTRIES {
-            drop(all);
+        let Some(mut all) = all else {
             let _ = channel.send(ListEvent::Done);
             return;
-        }
+        };
 
         // ---- Pass 2: hydration in background batches ----
         for batch in all.chunks_mut(HYDRATE_BATCH) {

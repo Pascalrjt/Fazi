@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
     opts: unknown,
     cb?: (p: { result: string; cursorPos: { x: number; y: number } }) => void,
   ) => Promise<void>,
+  // Default mimics "no backend": the bridge falls back to the drag snapshot.
+  dragModifiersImpl: (() => Promise.reject(new Error("no backend"))) as () => Promise<{
+    alt: boolean;
+  }>,
 }));
 
 vi.mock("../pin", () => ({
@@ -36,6 +40,7 @@ vi.mock("../ipc", () => ({
   cancelOp: () => Promise.resolve(),
   undoLast: () => Promise.resolve(null),
   redoLast: () => Promise.resolve(null),
+  dragModifiers: () => mocks.dragModifiersImpl(),
 }));
 
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -58,15 +63,21 @@ vi.mock("@crabnebula/tauri-plugin-drag", () => ({
 }));
 
 import {
+  activeDragPaths,
   altHeldDuringDrag,
   beginNativeDragState,
   dispatchNativeSelfDrop,
+  emitDropHover,
   endNativeDragState,
-  markNativeDropHandled,
   nativeDragPathsNow,
+  onDropHover,
   onPinHover,
   registerDropZone,
+  setPointerDragPaths,
+  SPRING_LOAD_MS,
+  tryClaimNativeDrop,
   wasNativeDropHandled,
+  type DropHover,
 } from "../dnd";
 import { setupFinderDragIn, startNativeDrag } from "../ipc/dnd";
 import { useOps } from "../../stores/ops";
@@ -86,8 +97,9 @@ describe("native drag state", () => {
     expect(nativeDragPathsNow()).toEqual(["/a/x.txt"]);
     expect(altHeldDuringDrag()).toBe(true);
     expect(wasNativeDropHandled()).toBe(false);
-    markNativeDropHandled();
+    expect(tryClaimNativeDrop()).toBe(true);
     expect(wasNativeDropHandled()).toBe(true);
+    expect(tryClaimNativeDrop()).toBe(false); // second claim must lose
     endNativeDragState();
     expect(nativeDragPathsNow()).toBeNull();
     expect(wasNativeDropHandled()).toBe(false);
@@ -169,7 +181,7 @@ describe("native drag state", () => {
     };
     startNativeDrag(["/elsewhere/f.txt"], false);
     await new Promise((r) => setTimeout(r, 0));
-    markNativeDropHandled(); // the bridge claimed it
+    tryClaimNativeDrop(); // the bridge claimed it
     callback?.({ result: "Dropped", cursorPos: { x: 50, y: 50 } });
     await new Promise((r) => setTimeout(r, 200));
     expect(mocks.runOpCalls).toHaveLength(0);
@@ -280,6 +292,7 @@ describe("native pin contract (favorites zones)", () => {
     handler({
       payload: { type: "drop", paths: ["/src/Folder"], position: { x: 50, y: 114 } },
     });
+    await new Promise((r) => setTimeout(r, 0)); // modifier query resolves first
     expect(mocks.runOpCalls).toEqual([
       { kind: "move", sources: ["/src/Folder"], destDir: "/fav/A" },
     ]);
@@ -294,5 +307,270 @@ describe("native pin contract (favorites zones)", () => {
     });
     expect(mocks.pinCalls).toEqual([{ paths: ["/ext/Folder"], atIndex: 1 }]);
     expect(mocks.runOpCalls).toHaveLength(0);
+  });
+});
+
+describe("drop-time modifiers", () => {
+  const zone = {
+    priority: 1,
+    hitTest: () => ({ action: "copyTo", destDir: "/dest" }) as const,
+  };
+  let unregister: (() => void) | null = null;
+
+  beforeEach(() => {
+    mocks.runOpCalls.length = 0;
+    mocks.dragDropHandler = null;
+    mocks.dragModifiersImpl = () => Promise.reject(new Error("no backend"));
+    endNativeDragState();
+    useOps.setState({ cards: [], conflicts: [] });
+    unregister = registerDropZone(zone);
+  });
+
+  afterEach(() => {
+    unregister?.();
+    endNativeDragState();
+  });
+
+  async function bridgeDrop(): Promise<void> {
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    handler({
+      payload: { type: "drop", paths: ["/src/f.txt"], position: { x: 5, y: 5 } },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it("⌥ down at drop time makes a copy even when the dragstart snapshot was false", async () => {
+    mocks.dragModifiersImpl = () => Promise.resolve({ alt: true });
+    beginNativeDragState(["/src/f.txt"], false);
+    await bridgeDrop();
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "copy", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
+  });
+
+  it("a rejected modifier query falls back to the drag snapshot", async () => {
+    beginNativeDragState(["/src/f.txt"], true); // snapshot says ⌥
+    await bridgeDrop();
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "copy", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
+  });
+
+  it("a bridge drop arriving while the fallback awaits modifiers is not double-dispatched", async () => {
+    mocks.dragModifiersImpl = () =>
+      new Promise((resolve) => setTimeout(() => resolve({ alt: false }), 300));
+    let callback: ((p: { result: string; cursorPos: { x: number; y: number } }) => void) | undefined;
+    mocks.startDragImpl = (_o, cb) => {
+      callback = cb;
+      return Promise.resolve();
+    };
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    startNativeDrag(["/src/f.txt"], false);
+    await new Promise((r) => setTimeout(r, 0));
+    // Completion callback first: after 120ms the fallback claims the drop
+    // and suspends on the slow modifier query…
+    callback?.({ result: "Dropped", cursorPos: { x: 5, y: 5 } });
+    await new Promise((r) => setTimeout(r, 200));
+    // …then the bridge event lands mid-await. It must lose the claim.
+    handler({
+      payload: { type: "drop", paths: ["/src/f.txt"], position: { x: 5, y: 5 } },
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "move", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
+  });
+
+  it("a slow modifier query still yields exactly one dispatch with the fallback armed", async () => {
+    mocks.dragModifiersImpl = () =>
+      new Promise((resolve) => setTimeout(() => resolve({ alt: false }), 200));
+    let callback: ((p: { result: string; cursorPos: { x: number; y: number } }) => void) | undefined;
+    mocks.startDragImpl = (_o, cb) => {
+      callback = cb;
+      return Promise.resolve();
+    };
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    startNativeDrag(["/src/f.txt"], false);
+    await new Promise((r) => setTimeout(r, 0));
+    // Bridge and completion callback race: bridge claims synchronously, so
+    // the 120ms fallback must stay silent even while the query is in flight.
+    handler({
+      payload: { type: "drop", paths: ["/src/f.txt"], position: { x: 5, y: 5 } },
+    });
+    callback?.({ result: "Dropped", cursorPos: { x: 5, y: 5 } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mocks.runOpCalls).toEqual([
+      { kind: "move", sources: ["/src/f.txt"], destDir: "/dest" },
+    ]);
+  });
+});
+
+describe("drop-hover broadcast", () => {
+  beforeEach(() => {
+    mocks.dragDropHandler = null;
+    endNativeDragState();
+  });
+
+  it("over a copyTo zone broadcasts the full hit with client coords", async () => {
+    const unregister = registerDropZone({
+      priority: 1,
+      hitTest: (x, y) =>
+        x >= 0 && x <= 100 && y >= 0 && y <= 100
+          ? { action: "copyTo", destDir: "/zone", targetKey: "row:z" }
+          : null,
+    });
+    await setupFinderDragIn();
+    const handler = mocks.dragDropHandler;
+    if (!handler) throw new Error("handler not captured");
+    const seen: Array<DropHover | null> = [];
+    const off = onDropHover((h) => seen.push(h));
+    handler({ payload: { type: "over", position: { x: 50, y: 50 } } });
+    handler({ payload: { type: "over", position: { x: 500, y: 500 } } }); // off-zone
+    handler({ payload: { type: "leave" } });
+    off();
+    unregister();
+    expect(seen).toEqual([
+      { hit: { action: "copyTo", destDir: "/zone", targetKey: "row:z" }, x: 50, y: 50 },
+      null,
+      null,
+    ]);
+  });
+
+  it("onPinHover filters non-pin hovers to null", () => {
+    const seen: Array<number | null> = [];
+    const off = onPinHover((i) => seen.push(i));
+    emitDropHover({ hit: { action: "copyTo", destDir: "/d" }, x: 1, y: 1 });
+    emitDropHover({ hit: { action: "pin", index: 3 }, x: 1, y: 1 });
+    emitDropHover(null);
+    off();
+    expect(seen).toEqual([null, 3, null]);
+  });
+});
+
+describe("spring-loaded folders", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    endNativeDragState(); // also cancels any armed spring
+  });
+
+  afterEach(() => {
+    emitDropHover(null);
+    vi.useRealTimers();
+  });
+
+  function springHover(key: string, open: () => void): DropHover {
+    return {
+      hit: { action: "copyTo", destDir: `/dir/${key}`, targetKey: key, spring: { key, open } },
+      x: 10,
+      y: 10,
+    };
+  }
+
+  it("fires open() once after the dwell; jitter on the same key keeps the timer", () => {
+    const open = vi.fn();
+    emitDropHover(springHover("row:a", open));
+    vi.advanceTimersByTime(SPRING_LOAD_MS / 2);
+    emitDropHover(springHover("row:a", open)); // same key mid-dwell: no reset
+    vi.advanceTimersByTime(SPRING_LOAD_MS / 2);
+    expect(open).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("a key change restarts the dwell for the new target", () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    emitDropHover(springHover("row:a", a));
+    vi.advanceTimersByTime(SPRING_LOAD_MS - 1);
+    emitDropHover(springHover("row:b", b));
+    vi.advanceTimersByTime(SPRING_LOAD_MS - 1);
+    expect(a).not.toHaveBeenCalled();
+    expect(b).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+
+  it("null hover and endNativeDragState both cancel the dwell", () => {
+    const open = vi.fn();
+    emitDropHover(springHover("row:a", open));
+    emitDropHover(null);
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).not.toHaveBeenCalled();
+
+    emitDropHover(springHover("row:a", open));
+    endNativeDragState(); // Esc-cancelled session, no leave event
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("a background copyTo hit (no spring) never arms and cancels a running dwell", () => {
+    const open = vi.fn();
+    emitDropHover(springHover("row:a", open));
+    emitDropHover({ hit: { action: "copyTo", destDir: "/pane" }, x: 10, y: 10 });
+    vi.advanceTimersByTime(SPRING_LOAD_MS * 2);
+    expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("pointer drag cancellation", () => {
+  beforeEach(() => {
+    mocks.runOpCalls.length = 0;
+    useOps.setState({ cards: [], conflicts: [] });
+  });
+
+  function fire(type: string, init: MouseEventInit = {}) {
+    window.dispatchEvent(new MouseEvent(type, { bubbles: true, ...init }));
+  }
+
+  it("pointercancel tears the drag down: state cleared, later pointerup inert", async () => {
+    const unregister = registerDropZone({
+      priority: 1,
+      hitTest: () => ({ action: "copyTo", destDir: "/dest" }) as const,
+    });
+    const { startPointerDrag } = await import("../pointerDrag");
+    const hovers: Array<unknown> = [];
+    const off = onDropHover((h) => hovers.push(h));
+
+    startPointerDrag(["/src/f.txt"]);
+    fire("pointermove", { clientX: 5, clientY: 5 });
+    expect(activeDragPaths()).toEqual(["/src/f.txt"]);
+    expect(hovers.at(-1)).not.toBeNull();
+
+    fire("pointercancel");
+    expect(activeDragPaths()).toBeNull();
+    expect(hovers.at(-1)).toBeNull(); // rings/spring cleared
+    fire("pointerup", { clientX: 5, clientY: 5 });
+    expect(mocks.runOpCalls).toHaveLength(0); // the dead drag never dispatches
+
+    off();
+    unregister();
+  });
+
+  it("window blur mid-drag also tears down", async () => {
+    const { startPointerDrag } = await import("../pointerDrag");
+    startPointerDrag(["/src/f.txt"]);
+    expect(activeDragPaths()).toEqual(["/src/f.txt"]);
+    window.dispatchEvent(new Event("blur"));
+    expect(activeDragPaths()).toBeNull();
+  });
+});
+
+describe("activeDragPaths", () => {
+  it("reflects native session paths, then pointer-drag paths, else null", () => {
+    expect(activeDragPaths()).toBeNull();
+    beginNativeDragState(["/a"], false);
+    expect(activeDragPaths()).toEqual(["/a"]);
+    endNativeDragState();
+    expect(activeDragPaths()).toBeNull();
+    setPointerDragPaths(["/b"]);
+    expect(activeDragPaths()).toEqual(["/b"]);
+    setPointerDragPaths(null);
+    expect(activeDragPaths()).toBeNull();
   });
 });

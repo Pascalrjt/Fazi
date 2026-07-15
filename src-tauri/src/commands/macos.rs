@@ -53,6 +53,45 @@ pub fn open_with_apps(
         .collect()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DragModifiers {
+    pub alt: bool,
+}
+
+/// Current hardware modifier state. Read at drop time of a native drag
+/// session — the webview receives no key events while AppKit runs the drag,
+/// so the frontend's keydown/keyup tracker is blind then.
+#[tauri::command]
+pub fn drag_modifiers(app: AppHandle) -> DragModifiers {
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags};
+    let flags = on_main(&app, NSEvent::modifierFlags_class);
+    DragModifiers {
+        alt: flags.contains(NSEventModifierFlags::Option),
+    }
+}
+
+/// Async: Tauri 2 runs sync commands on the main thread, and this one blocks
+/// up to 10 s for an AppKit completion handler that may itself be delivered
+/// on the main queue — as a sync command that froze the UI (or deadlocked).
+#[tauri::command]
+pub async fn set_default_app(app: AppHandle, path: String, app_path: String) -> Result<()> {
+    let p = PathBuf::from(&path);
+    let target = PathBuf::from(app_path);
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    on_main(&app, move || workspace::set_default_app_for_type(&p, &target, tx));
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(Duration::from_secs(10))
+    })
+    .await
+    .map_err(|e| Error::msg(format!("set_default_app worker failed: {e}")))?;
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(Error::msg(msg)),
+        Err(_) => Err(Error::msg("timed out changing the default app")),
+    }
+}
+
 #[tauri::command]
 pub fn share_services(app: AppHandle, paths: Vec<String>) -> share::ShareServices {
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
@@ -333,6 +372,14 @@ pub fn pb_read_files(app: AppHandle, state: State<'_, AppState>) -> Option<Paste
         paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         is_cut,
     })
+}
+
+/// True while the pasteboard still holds Fazi's own cut write. Once another
+/// app bumps the changeCount, the cut marker (and the UI's dimming) is stale.
+#[tauri::command]
+pub fn pb_cut_valid(app: AppHandle, state: State<'_, AppState>) -> bool {
+    let count = on_main(&app, pasteboard::change_count);
+    matches!(*state.pb_mark.lock().unwrap(), Some((c, true)) if c == count)
 }
 
 #[tauri::command]

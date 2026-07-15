@@ -79,6 +79,7 @@ pub struct AppState {
     /// Persisted fuzzy-index snapshots (instant warm on relaunch).
     pub fuzzy_cache_dir: PathBuf,
     pub engine: Arc<Engine>,
+    pub native_menu: Arc<crate::macos::menu::NativeMenu>,
     pub icon_cache: Arc<IconCache>,
     pub thumb_cache_dir: PathBuf,
     /// Journal recovery report from startup.

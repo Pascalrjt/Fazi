@@ -1,6 +1,6 @@
 //! Mounted volumes via NSFileManager + NSURL volume resource keys.
-//! Mount/unmount detection is a 2 s poll of the volume path set (simple and
-//! robust; NSWorkspace notification observers can replace it later).
+//! Mount/unmount detection: NSWorkspace notification observers for instant
+//! updates, plus a 2 s poll of the volume path set as a fallback.
 
 // objc2 versions move methods between safe/unsafe; keep defensive `unsafe`
 // blocks without churning every call site on upgrades.
@@ -101,6 +101,38 @@ pub fn list_volumes() -> Vec<Volume> {
     // Root first, then alphabetical.
     out.sort_by(|a, b| b.is_root.cmp(&a.is_root).then(a.name.cmp(&b.name)));
     out
+}
+
+/// Install NSWorkspace mount/unmount/rename observers that fire `on_change`
+/// the instant a volume set change is posted (the 2 s poll stays as a
+/// fallback for mounts that post no workspace notification). MUST run on the
+/// main thread. Observers live for the app's lifetime — their tokens are
+/// intentionally leaked; dropping one would silently unregister it.
+pub fn install_mount_observers(on_change: impl Fn() + Send + Sync + 'static) {
+    use block2::RcBlock;
+    use objc2_app_kit::{
+        NSWorkspace, NSWorkspaceDidMountNotification, NSWorkspaceDidRenameVolumeNotification,
+        NSWorkspaceDidUnmountNotification,
+    };
+    use objc2_foundation::NSNotification;
+    use std::ptr::NonNull;
+    use std::sync::Arc;
+
+    let on_change = Arc::new(on_change);
+    let center = unsafe { NSWorkspace::sharedWorkspace().notificationCenter() };
+    let names = [
+        unsafe { NSWorkspaceDidMountNotification },
+        unsafe { NSWorkspaceDidUnmountNotification },
+        unsafe { NSWorkspaceDidRenameVolumeNotification },
+    ];
+    for name in names {
+        let cb = on_change.clone();
+        let block = RcBlock::new(move |_: NonNull<NSNotification>| cb());
+        let token = unsafe {
+            center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+        };
+        std::mem::forget(token);
+    }
 }
 
 /// Cheap poll-key: the set of mounted volume paths (no AppKit needed).

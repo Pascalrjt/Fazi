@@ -1,12 +1,13 @@
 /** Fazi application shell: layout grid, boot sequence, global overlays. */
 import { useEffect } from "react";
 import { rebuildRegistry, registerAllCommands } from "./lib/commands";
-import { runCommand } from "./lib/commands/registry";
+import { getCommand, runCommand } from "./lib/commands/registry";
 import { useSettings } from "./stores/settings";
 import { useKeyboard } from "./hooks/useKeyboard";
 import * as ipc from "./lib/ipc";
 import { setupFinderDragIn } from "./lib/ipc/dnd";
 import { setAltDuringDrag } from "./lib/dnd";
+import { recheckCutMirror } from "./lib/actions";
 import { usePanes } from "./stores/panes";
 import { useVolumes } from "./stores/volumes";
 import { useApp } from "./stores/app";
@@ -30,11 +31,25 @@ import { ContextMenuHost } from "./components/menus/ContextMenu";
 
 registerAllCommands(useSettings.getState().keybindingOverrides);
 
+const NATIVE_MENU_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "selectAll"] as const;
+
+function syncNativeMenuShortcuts(): void {
+  const shortcuts = Object.fromEntries(
+    NATIVE_MENU_COMMANDS.map((id) => [id, getCommand(id)?.shortcut ?? null]),
+  );
+  try {
+    void ipc.setNativeMenuShortcuts(shortcuts).catch(() => {});
+  } catch {
+    // Browser-only tests/dev preview have no Tauri bridge.
+  }
+}
+
 // Keybinding overrides re-register the whole command set (labels, menus, and
 // dispatch all read the registry).
 useSettings.subscribe((s, prev) => {
   if (s.keybindingOverrides !== prev.keybindingOverrides) {
     rebuildRegistry(s.keybindingOverrides);
+    syncNativeMenuShortcuts();
   }
 });
 
@@ -97,6 +112,7 @@ export default function App() {
 
   useEffect(() => {
     boot();
+    syncNativeMenuShortcuts();
     let alive = true;
     let unlistenDnd: (() => void) | undefined;
     let unlistenMenu: (() => void) | undefined;
@@ -108,6 +124,16 @@ export default function App() {
       .onMenuCommand((commandId) => runCommand(commandId))
       .then((fn) => {
         if (alive) unlistenMenu = fn;
+        else fn();
+      })
+      .catch(() => {});
+    // Cut dimming goes stale when another app takes the pasteboard while
+    // Fazi is in the background — re-validate on every focus regain.
+    let unlistenFocus: (() => void) | undefined;
+    ipc
+      .onWindowFocused(() => void recheckCutMirror())
+      .then((fn) => {
+        if (alive) unlistenFocus = fn;
         else fn();
       })
       .catch(() => {});
@@ -123,6 +149,7 @@ export default function App() {
       alive = false;
       unlistenDnd?.();
       unlistenMenu?.();
+      unlistenFocus?.();
       window.removeEventListener("keydown", onAltKey);
       window.removeEventListener("keyup", onAltKey);
     };

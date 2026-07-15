@@ -33,23 +33,14 @@ import {
 import { entryKindLabel, type SortKey } from "../../lib/sort";
 import { formatBytes, formatDate, splitExt } from "../../lib/format";
 import { renameValidationError } from "../../lib/actions";
-import {
-  beginInternalDrag,
-  dragHasPaths,
-  dropPaths,
-  draggedPaths,
-  endInternalDrag,
-  isInvalidDrop,
-  registerDropZone,
-} from "../../lib/dnd";
+import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
+import { startPointerDrag } from "../../lib/pointerDrag";
 import { useSettings } from "../../stores/settings";
 import { useDirSizes } from "../../stores/dirSizes";
 import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { tagCss } from "../../lib/tags";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
-
-const SPRING_LOAD_MS = 600;
 
 /** Row height by density (Settings → Appearance). */
 export function rowHeight(density: "normal" | "compact"): number {
@@ -201,6 +192,20 @@ interface RowProps {
   onRenameDone: (entry: Entry, committed: boolean, advance: boolean) => void;
 }
 
+/** Name column content kept separate for focused link-display coverage. */
+export function EntryName({ entry }: { entry: Entry }) {
+  return (
+    <span className="min-w-0 flex-1 truncate text-primary">
+      {entry.name}
+      {entry.kind === "symlink" && entry.linkTarget && (
+        <span className="ml-2 text-[11px] text-tertiary" title={entry.linkTarget}>
+          → {entry.linkTarget}
+        </span>
+      )}
+    </span>
+  );
+}
+
 const FileRow = memo(function FileRow({
   entry,
   paneId,
@@ -233,16 +238,21 @@ const FileRow = memo(function FileRow({
     (s) => s.clipboard?.mode === "cut" && s.clipboard.paths.includes(entry.path),
   );
   const [dropping, setDropping] = useState(false);
-  const springTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const isNavigableDir = entry.kind === "dir" && !entry.isPackage;
 
-  const clearSpring = () => {
-    if (springTimer.current) {
-      clearTimeout(springTimer.current);
-      springTimer.current = null;
-    }
-  };
+  // Drop-ring during native/pointer drags: the registry zone identifies this
+  // row by targetKey; memo'd rows only re-render on their own transition.
+  useEffect(() => {
+    if (!isNavigableDir) return;
+    return onDropHover((h) =>
+      setDropping(
+        h != null &&
+          h.hit.action === "copyTo" &&
+          h.hit.targetKey === `row:${paneId}:${tabId}:${entry.id}`,
+      ),
+    );
+  }, [paneId, tabId, entry.id, isNavigableDir]);
 
   return (
     <div
@@ -257,6 +267,9 @@ const FileRow = memo(function FileRow({
       onDoubleClick={() => !isRenaming && onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onDragStart={(e) => {
+        // dragstart is only the gesture trigger: both branches preventDefault
+        // and run their own drag loop (HTML5 drops are dead under wry).
+        e.preventDefault();
         const s = usePanes.getState();
         const tab = s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
         if (!tab) return;
@@ -265,39 +278,12 @@ const FileRow = memo(function FileRow({
           : [entry.path];
         if (useSettings.getState().dragOutEnabled) {
           // Native drag: reaches Finder/Mail/…; self-drops come back through
-          // the bridge as internal moves. Kill-switch reverts to HTML5-only.
-          e.preventDefault();
+          // the bridge as internal moves.
           startNativeDrag(paths, e.altKey);
           return;
         }
-        beginInternalDrag(e, paths);
-      }}
-      onDragEnd={endInternalDrag}
-      onDragOver={(e) => {
-        if (!isNavigableDir || !dragHasPaths(e)) return;
-        const paths = draggedPaths(e);
-        if (paths.length > 0 && isInvalidDrop(paths, entry.path)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
-        setDropping(true);
-        if (!springTimer.current) {
-          springTimer.current = setTimeout(() => {
-            usePanes.getState().navigate(paneId, tabId, entry.path);
-          }, SPRING_LOAD_MS);
-        }
-      }}
-      onDragLeave={() => {
-        setDropping(false);
-        clearSpring();
-      }}
-      onDrop={(e) => {
-        if (!isNavigableDir) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setDropping(false);
-        clearSpring();
-        dropPaths(e, entry.path);
+        // Kill-switch: internal-only pointer drag through the same registry.
+        startPointerDrag(paths);
       }}
     >
       <img
@@ -315,7 +301,7 @@ const FileRow = memo(function FileRow({
           onDone={(committed, advance) => onRenameDone(entry, committed, advance)}
         />
       ) : (
-        <span className="min-w-0 flex-1 truncate text-primary">{entry.name}</span>
+        <EntryName entry={entry} />
       )}
       <span className="flex shrink-0 items-center gap-1 text-[11px] text-tertiary">
         {entry.kind === "symlink" && <span title={entry.linkTarget ?? "Symbolic link"}>⤳</span>}
@@ -541,7 +527,19 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         const idx = Math.floor((y - rect.top + el.scrollTop) / ROW_H);
         const entry = vis[idx];
         if (entry && entry.kind === "dir" && !entry.isPackage) {
-          return { action: "copyTo", destDir: entry.path };
+          const paths = activeDragPaths();
+          if (paths == null || !isInvalidDrop(paths, entry.path)) {
+            const key = `row:${paneId}:${tabId}:${entry.id}`;
+            return {
+              action: "copyTo",
+              destDir: entry.path,
+              targetKey: key,
+              spring: {
+                key,
+                open: () => usePanes.getState().navigate(paneId, tabId, entry.path),
+              },
+            };
+          }
         }
         return { action: "copyTo", destDir: t.path };
       },
@@ -615,6 +613,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   );
 
   // marquee selection on empty-area drag
+  const marqueeTeardown = useRef<(() => void) | null>(null);
+  useEffect(() => () => marqueeTeardown.current?.(), []);
   const beginMarquee = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const el = scrollRef.current;
@@ -629,33 +629,98 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     const state = usePanes.getState();
     const t0 = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
     const base = additive && t0 ? new Set(t0.selection.selected) : null;
+    // Full snapshot (incl. anchor/lead) so Escape restores shift-range
+    // behavior exactly, not just the selected set.
+    const prior = t0
+      ? {
+          selected: new Set(t0.selection.selected),
+          anchor: t0.selection.anchor,
+          lead: t0.selection.lead,
+        }
+      : { selected: new Set<number>(), anchor: null, lead: null };
     const itemRects = visible.map((en, i) => ({
       id: en.id,
       rect: { x: 0, y: i * ROW_H, width: Math.max(el.scrollWidth, el.clientWidth), height: ROW_H },
     }));
     let moved = false;
+    // itemRects are content-space and stable while scrolling — only the
+    // pointer point needs recomputing, from its last client position.
+    const lastClient = { x: e.clientX, y: e.clientY };
 
-    const onMove = (me: MouseEvent) => {
+    const recompute = () => {
       const r = el.getBoundingClientRect();
-      const cur = { x: me.clientX - r.left + el.scrollLeft, y: me.clientY - r.top + el.scrollTop };
+      const cur = {
+        x: lastClient.x - r.left + el.scrollLeft,
+        y: lastClient.y - r.top + el.scrollTop,
+      };
       const rectSel = dragRect(start, cur);
       if (!moved && (rectSel.width > 3 || rectSel.height > 3)) moved = true;
       if (!moved) return;
       setMarquee(rectSel);
       usePanes.getState().setSelection(paneId, tabId, marqueeSelect(rectSel, itemRects, base));
     };
-    const onUp = () => {
+
+    // Edge auto-scroll: while the pointer is near/past the top or bottom
+    // edge, scroll proportionally to the overshoot and re-derive the
+    // selection each frame. Runs for the whole drag; off-edge ticks no-op.
+    const EDGE_PX = 24;
+    const MAX_STEP = 24;
+    let raf = 0;
+    const tick = () => {
+      const r = el.getBoundingClientRect();
+      const past = Math.min(0, lastClient.y - r.top - EDGE_PX) ||
+        Math.max(0, lastClient.y - r.bottom + EDGE_PX);
+      if (past !== 0 && moved) {
+        const step = Math.sign(past) * Math.min(MAX_STEP, Math.abs(past) / 2);
+        const max = el.scrollHeight - el.clientHeight;
+        const next = Math.min(max, Math.max(0, el.scrollTop + step));
+        if (next !== el.scrollTop) {
+          el.scrollTop = next;
+          recompute();
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    const onMove = (me: MouseEvent) => {
+      lastClient.x = me.clientX;
+      lastClient.y = me.clientY;
+      recompute();
+    };
+    // Wheel-scrolling mid-drag moves the content under a stationary pointer.
+    const onScroll = () => {
+      if (moved) recompute();
+    };
+    const teardown = () => {
+      marqueeTeardown.current = null;
+      cancelAnimationFrame(raf);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+      el.removeEventListener("scroll", onScroll);
       setMarquee(null);
+    };
+    const onUp = () => {
+      teardown();
       if (!moved && !additive) {
         usePanes
           .getState()
           .setSelection(paneId, tabId, { selected: new Set(), anchor: null, lead: null });
       }
     };
+    const onKey = (ke: KeyboardEvent) => {
+      if (ke.key !== "Escape") return;
+      ke.stopPropagation();
+      teardown();
+      // Cancel restores the pre-drag selection.
+      usePanes.getState().setSelection(paneId, tabId, prior);
+    };
+    marqueeTeardown.current = teardown;
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKey, true);
+    el.addEventListener("scroll", onScroll);
   };
 
   if (!tab) return null;
@@ -727,17 +792,6 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
             if ((e.target as HTMLElement).closest("[data-row]")) return;
             e.preventDefault();
             showMenu(e.clientX, e.clientY, emptyAreaMenuItems(paneId, tabId));
-          }}
-          onDragOver={(e) => {
-            if (!dragHasPaths(e)) return;
-            const paths = draggedPaths(e);
-            if (paths.length > 0 && isInvalidDrop(paths, tab.path)) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            dropPaths(e, tab.path);
           }}
         >
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
