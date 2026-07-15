@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="512" height="512" viewBox="0 0 140 140">
+  <title>Fazi — ink accent app icon</title>
+  <defs>
+    <path id="fld" d="M5 0 H25 L33 8 H59 Q64 8 64 13 V45 Q64 50 59 50 H5 Q0 50 0 45 V5 Q0 0 5 0 Z"/>
+  </defs>
+  <rect width="140" height="140" rx="32" fill="#1A1C20"/>
+  <use href="#fld" xlink:href="#fld" transform="translate(28,32)" fill="#4F8EF7" opacity="0.45"/>
+  <use href="#fld" xlink:href="#fld" transform="translate(38,45)" fill="#4F8EF7" opacity="0.7"/>
+  <use href="#fld" xlink:href="#fld" transform="translate(48,58)" fill="#4F8EF7"/>
+</svg>
