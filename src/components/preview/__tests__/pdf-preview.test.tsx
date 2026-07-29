@@ -4,7 +4,7 @@
  * task destroyed on unmount (lifecycle contract).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   workerSrc: "",
@@ -94,6 +94,29 @@ describe("PdfPreview", () => {
 
     unmount();
     expect(mocks.destroyCalls).toBe(1);
+  });
+
+  it("pages with ↑/↓ and j/k, clamped to the document", async () => {
+    render(<PdfPreview token="tok123" />);
+    await waitFor(() => {
+      expect(screen.getByText("1 / 3")).toBeTruthy();
+    });
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "j" });
+    fireEvent.keyDown(window, { key: "j" }); // clamps at the last page
+    expect(screen.getByText("3 / 3")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "k" });
+    fireEvent.keyDown(window, { key: "k" }); // clamps at page 1
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+
+    // Chorded keys fall through to the overlay/registry untouched.
+    fireEvent.keyDown(window, { key: "ArrowDown", metaKey: true });
+    expect(screen.getByText("1 / 3")).toBeTruthy();
   });
 
   it("shows an error state when the bytes can't be fetched", async () => {

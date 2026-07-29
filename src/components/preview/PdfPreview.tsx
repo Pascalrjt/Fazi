@@ -2,8 +2,8 @@
  * PDF preview: pdf.js rendered to a canvas, lazy-loaded (~1 MB chunk stays
  * out of the main bundle). Bytes arrive via fetch(preview://token) — needs
  * the CORS echo on preview:// responses plus the worker-src/connect-src CSP
- * entries. PageUp/PageDown (and on-screen arrows) page within the document;
- * ←/→ keep their file-to-file meaning in the overlay.
+ * entries. ↑/↓, j/k, and PageUp/PageDown (and on-screen arrows) page within
+ * the document; ←/→ keep their file-to-file meaning in the overlay.
  */
 import { useEffect, useRef, useState } from "react";
 import { previewUrl } from "../../types/ipc";
@@ -98,16 +98,17 @@ export function PdfPreview({ token }: { token: string }) {
     };
   }, [doc, page]);
 
-  // PageUp/PageDown page within the PDF (←/→ stay file-to-file).
+  // ↑/↓, j/k, PageUp/PageDown page within the PDF (←/→ stay file-to-file).
   useEffect(() => {
     if (!doc) return;
     const total = doc.numPages;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "PageDown") {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "PageDown" || e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
         e.stopImmediatePropagation();
         setPage((n) => Math.min(total, n + 1));
-      } else if (e.key === "PageUp") {
+      } else if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "k") {
         e.preventDefault();
         e.stopImmediatePropagation();
         setPage((n) => Math.max(1, n - 1));
@@ -139,6 +140,7 @@ export function PdfPreview({ token }: { token: string }) {
             disabled={page <= 1}
             onClick={() => setPage((n) => Math.max(1, n - 1))}
             aria-label="Previous page"
+            title="Previous page (↑, k, Page Up)"
           >
             ▲
           </button>
@@ -150,6 +152,7 @@ export function PdfPreview({ token }: { token: string }) {
             disabled={page >= doc.numPages}
             onClick={() => setPage((n) => Math.min(doc.numPages, n + 1))}
             aria-label="Next page"
+            title="Next page (↓, j, Page Down)"
           >
             ▼
           </button>

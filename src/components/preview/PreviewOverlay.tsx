@@ -72,11 +72,43 @@ function ImagePreview({ token }: { token: string }) {
 }
 
 function TextPreviewView({ entry }: { entry: Entry }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<
     | { kind: "loading" }
     | { kind: "ready"; text: string; truncated: boolean }
     | { kind: "error"; message: string }
   >({ kind: "loading" });
+
+  // ↑/↓, j/k, PageUp/PageDown, Home/End scroll (the container never has focus).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = scrollRef.current;
+      if (!el || e.metaKey || e.ctrlKey || e.altKey) return;
+      const line = 48;
+      const pg = el.clientHeight * 0.9;
+      const deltas: Record<string, number> = {
+        ArrowDown: line,
+        j: line,
+        ArrowUp: -line,
+        k: -line,
+        PageDown: pg,
+        PageUp: -pg,
+      };
+      if (e.key in deltas) {
+        el.scrollBy({ top: deltas[e.key] });
+      } else if (e.key === "Home") {
+        el.scrollTo({ top: 0 });
+      } else if (e.key === "End") {
+        el.scrollTo({ top: el.scrollHeight });
+      } else {
+        return;
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -106,7 +138,7 @@ function TextPreviewView({ entry }: { entry: Entry }) {
   }
   const lines = state.text.split("\n");
   return (
-    <div className="h-full w-full overflow-auto rounded-lg bg-pane p-4">
+    <div ref={scrollRef} className="h-full w-full overflow-auto rounded-lg bg-pane p-4">
       <pre className="select-text font-mono text-xs leading-[1.5] text-primary">
         {lines.map((line, i) => (
           <div key={i} className="flex">
