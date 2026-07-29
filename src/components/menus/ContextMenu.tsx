@@ -8,6 +8,7 @@ import clsx from "clsx";
 import { useMenu, type MenuItem } from "../../stores/menu";
 import { shortcutLabel } from "../../lib/keyboard";
 import { useSettings } from "../../stores/settings";
+import { captureBrowseFocus, restoreBrowseFocus } from "../../lib/keyboardFocus";
 
 const MENU_WIDTH = 232;
 const ITEM_H = 26;
@@ -291,14 +292,12 @@ export function ContextMenuHost() {
 
   useLayoutEffect(() => {
     if (open) {
-      if (returnFocus.current == null && document.activeElement instanceof HTMLElement) {
-        returnFocus.current = document.activeElement;
-      }
+      if (returnFocus.current == null) returnFocus.current = captureBrowseFocus();
       return;
     }
     const target = returnFocus.current;
     returnFocus.current = null;
-    if (target?.isConnected) target.focus({ preventScroll: true });
+    if (target) restoreBrowseFocus(target);
   }, [open]);
 
   useEffect(() => {

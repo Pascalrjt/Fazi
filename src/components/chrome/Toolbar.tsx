@@ -23,6 +23,7 @@ import { pathSegments } from "../../lib/format";
 import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { runCommand, allCommands } from "../../lib/commands/registry";
 import { showMenu, type MenuItem } from "../../stores/menu";
+import { captureBrowseFocus, restoreBrowseFocus } from "../../lib/keyboardFocus";
 
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -63,9 +64,18 @@ function Breadcrumbs() {
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const crumbsRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  const finishEditing = (restore: boolean) => {
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
+    setEditing(false);
+    if (restore) requestAnimationFrame(() => restoreBrowseFocus(target));
+  };
 
   useEffect(() => {
     if (editing && tab) {
+      returnFocusRef.current ??= captureBrowseFocus();
       setDraft(tab.path);
       // focus after mount
       requestAnimationFrame(() => {
@@ -122,12 +132,12 @@ function Breadcrumbs() {
             if (path.startsWith("/")) {
               navigate(pane.id, tab.id, path.length > 1 ? path.replace(/\/+$/, "") : "/");
             }
-            setEditing(false);
+            finishEditing(true);
           } else if (e.key === "Escape") {
-            setEditing(false);
+            finishEditing(true);
           }
         }}
-        onBlur={() => setEditing(false)}
+        onBlur={() => finishEditing(false)}
         className="h-7 min-w-0 flex-1 rounded-md border border-accent bg-pane px-2 font-mono text-xs text-primary outline-none"
         spellCheck={false}
         placeholder="/path/to/folder"
@@ -144,6 +154,9 @@ function Breadcrumbs() {
       ref={crumbsRef}
       className="flex h-7 min-w-0 flex-1 items-center gap-0.5 overflow-hidden rounded-md px-1 hover:bg-hov/50"
       onDoubleClick={() => setEditing(true)}
+      onMouseDownCapture={() => {
+        returnFocusRef.current = captureBrowseFocus();
+      }}
       data-tauri-drag-region
     >
       {elided && <span className="shrink-0 px-1 text-xs text-tertiary">…</span>}
@@ -186,16 +199,25 @@ function SearchField() {
   const tab = pane ? activeTabOf(pane) : null;
   const homePath = useVolumes((s) => s.folders?.home ?? null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const [value, setValue] = useState("");
   const [hintsOpen, setHintsOpen] = useState(false);
 
   useEffect(() => {
     if (focusSeq > 0) {
+      returnFocusRef.current ??= captureBrowseFocus();
       inputRef.current?.focus();
       inputRef.current?.select();
     }
   }, [focusSeq]);
+
+  const restoreSearchFocus = () => {
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
+    inputRef.current?.blur();
+    requestAnimationFrame(() => restoreBrowseFocus(target));
+  };
 
   const scopePath = (scope: SearchScope): string | null => {
     if (scope === "folder") return tab?.path ?? "/";
@@ -242,8 +264,14 @@ function SearchField() {
           value={value}
           placeholder={globalSearch.active ? "Search everywhere" : "Filter — ⏎ searches"}
           onChange={(e) => onChange(e.target.value)}
+          onPointerDown={() => {
+            returnFocusRef.current ??= captureBrowseFocus();
+          }}
           onFocus={() => useApp.getState().setSearchFieldFocused(true)}
-          onBlur={() => useApp.getState().setSearchFieldFocused(false)}
+          onBlur={() => {
+            useApp.getState().setSearchFieldFocused(false);
+            returnFocusRef.current = null;
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !globalSearch.active && value.trim() !== "") {
               // promote the filter to a global search
@@ -251,7 +279,7 @@ function SearchField() {
               kickGlobal(value, "folder");
             } else if (e.key === "Escape") {
               clear();
-              (e.target as HTMLInputElement).blur();
+              restoreSearchFocus();
             }
           }}
           className="w-full bg-transparent text-xs text-primary outline-none placeholder:text-tertiary"
@@ -392,6 +420,11 @@ export function Toolbar() {
     <div
       className="traffic-pad relative flex h-[46px] shrink-0 items-center gap-2 border-b border-edge bg-window pr-3"
       data-tauri-drag-region
+      onMouseDownCapture={(e) => {
+        // Mouse-operated toolbar buttons should not steal ownership from the
+        // current browse surface. They remain keyboard-focusable via Tab.
+        if ((e.target as HTMLElement).closest("button")) e.preventDefault();
+      }}
     >
       {loading && <div className="loading-bar" />}
       <div className="flex shrink-0 items-center">

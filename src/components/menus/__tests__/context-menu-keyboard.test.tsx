@@ -14,7 +14,14 @@ describe("context menu keyboard navigation", () => {
   it("uses Vim motions, returns from a submenu, and activates the selected item", () => {
     const action = vi.fn();
     useSettings.setState({ vimMode: true });
-    render(<ContextMenuHost />);
+    render(
+      <>
+        <div data-vim-surface="pane" data-pane-id="left" tabIndex={-1} />
+        <ContextMenuHost />
+      </>,
+    );
+    const pane = document.querySelector<HTMLElement>('[data-vim-surface="pane"]')!;
+    pane.focus();
     act(() => {
       showMenu(20, 20, [
         {
@@ -37,5 +44,6 @@ describe("context menu keyboard navigation", () => {
     fireEvent.keyDown(document.activeElement as Element, { key: "Enter", code: "Enter" });
     expect(action).toHaveBeenCalledOnce();
     expect(useMenu.getState().open).toBeNull();
+    expect(document.activeElement).toBe(pane);
   });
 });

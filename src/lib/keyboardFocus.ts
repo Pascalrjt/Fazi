@@ -6,6 +6,7 @@ import { entryMenuItems } from "../components/menus/entryMenu";
 
 const SIDEBAR_ROW = "[data-sidebar-row]";
 const ENTRY_TARGET = "[data-entry-id][data-pane-id]";
+const BROWSE_SURFACE = '[data-vim-surface="sidebar"], [data-vim-surface="pane"]';
 
 function focusElement(el: HTMLElement | null): boolean {
   if (!el) return false;
@@ -26,6 +27,39 @@ function focusPane(el: HTMLElement): boolean {
   return focusElement(el);
 }
 
+function activePaneElement(): HTMLElement | null {
+  const paneId = activePaneTab()?.pane.id;
+  if (!paneId) return null;
+  const panes = document.querySelectorAll<HTMLElement>('[data-vim-surface="pane"]');
+  return [...panes].find((el) => el.dataset.paneId === paneId) ?? null;
+}
+
+/**
+ * Remember the browse owner before a menu, input, or modal takes focus.
+ * Falls back to the active pane when focus is currently on window chrome.
+ */
+export function captureBrowseFocus(): HTMLElement | null {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement) {
+    const row = active.closest<HTMLElement>(SIDEBAR_ROW);
+    if (row) return row;
+    const surface = active.closest<HTMLElement>(BROWSE_SURFACE);
+    if (surface) return surface;
+  }
+  return activePaneElement();
+}
+
+/** Restore a remembered browse owner, with the active pane as a safe fallback. */
+export function restoreBrowseFocus(target: HTMLElement | null): boolean {
+  if (target?.isConnected) {
+    const row = target.closest<HTMLElement>(SIDEBAR_ROW);
+    if (row) return focusElement(row);
+    const surface = target.closest<HTMLElement>(BROWSE_SURFACE);
+    if (surface?.dataset.vimSurface === "pane") return focusPane(surface);
+  }
+  return focusActivePane();
+}
+
 /** Focus the sidebar's current location, falling back to its roving tab stop. */
 export function focusSidebar(): boolean {
   const current = document.querySelector<HTMLElement>(`${SIDEBAR_ROW}[aria-current="page"]`);
@@ -36,10 +70,7 @@ export function focusSidebar(): boolean {
 
 /** Return keyboard ownership to the active file pane. */
 export function focusActivePane(): boolean {
-  const paneId = activePaneTab()?.pane.id;
-  if (!paneId) return false;
-  const panes = document.querySelectorAll<HTMLElement>('[data-vim-surface="pane"]');
-  const pane = [...panes].find((el) => el.dataset.paneId === paneId);
+  const pane = activePaneElement();
   return pane ? focusPane(pane) : false;
 }
 

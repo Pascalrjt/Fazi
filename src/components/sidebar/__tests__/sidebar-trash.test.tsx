@@ -107,7 +107,8 @@ describe("sidebar Trash row", () => {
     const home = screen.getByText("Home").parentElement as HTMLElement;
     const desktop = screen.getByText("Desktop").parentElement as HTMLElement;
 
-    home.focus();
+    fireEvent.pointerDown(home, { button: 0 });
+    expect(document.activeElement).toBe(home);
     fireEvent.keyDown(home, { key: "j", code: "KeyJ" });
     expect(document.activeElement).toBe(desktop);
 

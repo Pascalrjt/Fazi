@@ -181,6 +181,7 @@ function SidebarRow({
       )}
       onFocus={() => onFocused(row.key)}
       onPointerDown={(e) => {
+        if (e.button === 0) e.currentTarget.focus({ preventScroll: true });
         // Pointer-based pin reorder (see the file header for why not HTML5).
         if (!row.favorite || !favSection || e.button !== 0) return;
         const startX = e.clientX;
