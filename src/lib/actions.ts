@@ -8,7 +8,8 @@ import * as ipc from "./ipc";
 import { basename, dirname, pluralize, splitExt } from "./format";
 import { nameRuleError } from "./batchRename";
 import { isExtractableArchive } from "./fileTypes";
-import { useApp, toast } from "../stores/app";
+import { useApp, toast, type PaneId } from "../stores/app";
+import { clickSelect } from "./selection";
 import { useSettings } from "../stores/settings";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
 import { useOps } from "../stores/ops";
@@ -351,6 +352,32 @@ export function newFolderInActive(): void {
       }
     })
     .catch((err) => toast(`Couldn't create folder: ${err}`, { danger: true }));
+}
+
+/**
+ * Close an inline rename. On Tab, advance to the next visible entry so a run
+ * of files can be renamed in series (Finder behaviour). Shared by the list and
+ * grid views — both must clear `app.renaming`, or the keyboard stays trapped
+ * in the rename context with nothing rendering an input.
+ */
+export function finishRename(
+  paneId: PaneId,
+  tabId: string,
+  entryId: number,
+  advance: boolean,
+): void {
+  const app = useApp.getState();
+  app.stopRename();
+  if (!advance) return;
+  const state = usePanes.getState();
+  const tab = state.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  const vis = visibleEntries(tab);
+  const idx = vis.findIndex((en) => en.id === entryId);
+  const next = vis[idx + 1];
+  if (!next) return;
+  state.setSelection(paneId, tabId, clickSelect(next.id));
+  app.startRename({ paneId, tabId, entryId: next.id });
 }
 
 export function startRenameSelected(): void {

@@ -1,6 +1,6 @@
 /** The single window-level keydown listener routing to the command registry. */
 import { useEffect } from "react";
-import type { KeyContext } from "../lib/keyboard";
+import { currentKeyContext } from "../lib/keyContext";
 import { dispatchKey } from "../lib/commands/registry";
 import {
   emptyTypeAhead,
@@ -9,30 +9,10 @@ import {
   type TypeAheadState,
 } from "../lib/selection";
 import { useApp } from "../stores/app";
-import { useFuzzy } from "../stores/fuzzy";
-import { useOps } from "../stores/ops";
 import { useMenu } from "../stores/menu";
 import { activePaneTab, usePanes, visibleEntries } from "../stores/panes";
 
 let typeAhead: TypeAheadState = emptyTypeAhead();
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
-}
-
-export function currentKeyContext(target: EventTarget | null = null): KeyContext {
-  const app = useApp.getState();
-  const ops = useOps.getState();
-  if (app.confirm || app.settingsOpen || app.batchRenameOpen || ops.conflicts.length > 0)
-    return "modal";
-  if (app.paletteOpen || useFuzzy.getState().open) return "palette";
-  if (app.renaming) return "rename";
-  if (app.previewOpen) return "preview";
-  if (app.searchFieldFocused || app.pathBarEditing || isEditableTarget(target)) return "search";
-  return "browse";
-}
 
 function handleTypeAhead(e: KeyboardEvent): void {
   const app = useApp.getState();
@@ -65,7 +45,15 @@ export function useKeyboard(): void {
       if (useMenu.getState().open) return; // the menu owns the keyboard
       const context = currentKeyContext(e.target);
       // modal + rename contexts are fully component-handled
-      if (context === "modal" || context === "rename") return;
+      if (context === "rename") {
+        // RenameInput stops propagation on its own keys, so a keydown reaching
+        // the window means nothing is rendering the input (view switched, row
+        // scrolled out, search took the pane). Escape must always free the
+        // keyboard — otherwise every key is swallowed with no way back.
+        if (e.key === "Escape") useApp.getState().stopRename();
+        return;
+      }
+      if (context === "modal") return;
       const cmd = dispatchKey(e, context);
       if (cmd) {
         e.preventDefault();

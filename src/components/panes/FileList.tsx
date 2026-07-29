@@ -3,23 +3,14 @@
  * full multi-select (click/cmd/shift/marquee), inline rename, drag & drop,
  * context menus, ghost rows, badges, shimmer placeholders.
  */
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Lock } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
-import * as ipc from "../../lib/ipc";
 import { usePanes, visibleEntries, type GhostEntry, type Tab } from "../../stores/panes";
-import { useApp, toast, type PaneId } from "../../stores/app";
+import { useApp, type PaneId } from "../../stores/app";
 import { showMenu } from "../../stores/menu";
 import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
 import {
@@ -31,8 +22,9 @@ import {
   type Rect,
 } from "../../lib/selection";
 import { entryKindLabel, type SortKey } from "../../lib/sort";
-import { formatBytes, formatDate, splitExt } from "../../lib/format";
-import { renameValidationError } from "../../lib/actions";
+import { formatBytes, formatDate } from "../../lib/format";
+import { finishRename } from "../../lib/actions";
+import { RenameInput } from "./RenameInput";
 import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { startNativeDrag } from "../../lib/ipc/dnd";
 import { startPointerDrag } from "../../lib/pointerDrag";
@@ -64,98 +56,6 @@ function loadCols(): ColWidths {
     /* defaults */
   }
   return DEFAULT_COLS;
-}
-
-// ---------------------------------------------------------------------------
-// Rename input
-// ---------------------------------------------------------------------------
-
-function RenameInput({
-  entry,
-  paneId,
-  tabId,
-  onDone,
-}: {
-  entry: Entry;
-  paneId: PaneId;
-  tabId: string;
-  onDone: (committed: boolean, advance: boolean) => void;
-}) {
-  const [value, setValue] = useState(entry.name);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const committedRef = useRef(false);
-  const siblings = usePanes(
-    useCallback(
-      (s) =>
-        s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId)?.entries ?? [],
-      [paneId, tabId],
-    ),
-  );
-  const error = renameValidationError(value.trim(), siblings, entry.name);
-
-  useLayoutEffect(() => {
-    const input = inputRef.current;
-    if (!input) return;
-    input.focus();
-    // preselect name sans extension (dirs: whole name)
-    const [stem] = entry.kind === "dir" && !entry.isPackage ? [entry.name] : splitExt(entry.name);
-    input.setSelectionRange(0, stem.length);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const commit = (advance: boolean) => {
-    if (committedRef.current) return;
-    const newName = value.trim();
-    if (newName === entry.name || newName === "") {
-      committedRef.current = true;
-      onDone(false, advance);
-      return;
-    }
-    if (error) return; // invalid — stay in rename mode
-    committedRef.current = true;
-    const entryId = entry.id;
-    ipc
-      .renamePath(entry.path, newName)
-      .then((newPath) => {
-        usePanes.getState().renameLocal(paneId, tabId, entryId, newName, newPath);
-      })
-      .catch((err) => {
-        toast(`Couldn't rename “${entry.name}”: ${err}`, { danger: true });
-      });
-    onDone(true, advance);
-  };
-
-  return (
-    <span className="relative flex min-w-0 flex-1 items-center" title={error ?? undefined}>
-      <input
-        ref={inputRef}
-        className={clsx("rename-input w-full", error && value !== entry.name && "invalid")}
-        value={value}
-        spellCheck={false}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          e.stopPropagation();
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit(false);
-          } else if (e.key === "Tab") {
-            e.preventDefault();
-            commit(true);
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            committedRef.current = true;
-            onDone(false, false);
-          }
-        }}
-        onBlur={() => commit(false)}
-      />
-      {error && value !== entry.name && (
-        <span className="absolute left-0 top-full z-40 mt-1 whitespace-nowrap rounded border border-edge bg-raised px-2 py-0.5 text-[11px] text-danger shadow-lg">
-          {error}
-        </span>
-      )}
-    </span>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -595,21 +495,9 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
 
   const handleRenameDone = useCallback(
     (entry: Entry, _committed: boolean, advance: boolean) => {
-      const app = useApp.getState();
-      app.stopRename();
-      if (!advance) return;
-      const state = usePanes.getState();
-      const t = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
-      if (!t) return;
-      const vis = visibleEntries(t);
-      const idx = vis.findIndex((en) => en.id === entry.id);
-      const next = vis[idx + 1];
-      if (next) {
-        setSelection(paneId, tabId, clickSelect(next.id));
-        app.startRename({ paneId, tabId, entryId: next.id });
-      }
+      finishRename(paneId, tabId, entry.id, advance);
     },
-    [paneId, tabId, setSelection],
+    [paneId, tabId],
   );
 
   // marquee selection on empty-area drag

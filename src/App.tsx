@@ -1,7 +1,8 @@
 /** Fazi application shell: layout grid, boot sequence, global overlays. */
 import { useEffect } from "react";
 import { rebuildRegistry, registerAllCommands } from "./lib/commands";
-import { getCommand, runCommand } from "./lib/commands/registry";
+import { getCommand } from "./lib/commands/registry";
+import { runMenuCommand } from "./lib/commands/menuCommand";
 import { useSettings } from "./stores/settings";
 import { useKeyboard } from "./hooks/useKeyboard";
 import * as ipc from "./lib/ipc";
@@ -121,7 +122,7 @@ export default function App() {
       else fn();
     });
     ipc
-      .onMenuCommand((commandId) => runCommand(commandId))
+      .onMenuCommand(runMenuCommand)
       .then((fn) => {
         if (alive) unlistenMenu = fn;
         else fn();
