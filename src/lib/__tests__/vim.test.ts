@@ -78,6 +78,15 @@ describe("prefix sequences (gg, yy, dd) — no timeout", () => {
     expect(feed(["d", "d"]).action).toEqual({ kind: "cut" });
   });
 
+  it("gt / gT switch tabs and return to normal", () => {
+    const t = feed(["g", "t"]);
+    expect(t.action).toEqual({ kind: "nextTab" });
+    expect(t.state.pending).toBeNull();
+    const T = feed(["v", "g", "T"]);
+    expect(T.action).toEqual({ kind: "prevTab" });
+    expect(T.state.mode).toBe("normal");
+  });
+
   it("an unknown continuation cancels the prefix and swallows the key", () => {
     const r = feed(["d", "j"]);
     expect(r.handled).toBe(true);
@@ -140,6 +149,20 @@ describe("clipboard, undo, filter", () => {
     expect(feed([{ key: "r", ctrl: true }]).action).toEqual({ kind: "redo" });
   });
 
+  it(": opens the palette, ctrl+p the fuzzy finder, ? global search", () => {
+    expect(feed([":"]).action).toEqual({ kind: "openPalette" });
+    expect(feed([{ key: "p", ctrl: true }]).action).toEqual({ kind: "openFuzzy" });
+    expect(feed(["?"]).action).toEqual({ kind: "openGlobalSearch" });
+  });
+
+  it("overlay keys exit visual mode", () => {
+    for (const key of [":", "?"]) {
+      const r = feed(["v", key]);
+      expect(r.state.mode).toBe("normal");
+      expect(r.action).toBeDefined();
+    }
+  });
+
   it("unrecognized ctrl combos pass through and clear pending", () => {
     const r = feed(["g", { key: "x", ctrl: true }]);
     expect(r.handled).toBe(false);
@@ -162,8 +185,12 @@ describe("status label", () => {
 });
 
 describe("isVimReservedShortcut", () => {
-  const reserved = ["j", "k", "h", "l", "g", "v", "y", "d", "p", "u", "/", "5", "0", "shift+g", "ctrl+r"];
-  const free = ["cmd+j", "opt+d", "ctrl+shift+r", "shift+j", "escape", "space", "enter", "cmd+shift+g"];
+  const reserved = [
+    "j", "k", "h", "l", "g", "v", "y", "d", "p", "u", "/", "5", "0",
+    "shift+g", "ctrl+r", "ctrl+p", "shift+;", "shift+/",
+  ];
+  // t is free: gt only reserves g itself — continuations never dispatch alone.
+  const free = ["cmd+j", "opt+d", "ctrl+shift+r", "shift+j", "t", "escape", "space", "enter", "cmd+shift+g", ";"];
 
   it.each(reserved)("reserves %s", (s) => {
     expect(isVimReservedShortcut(parseShortcut(s)!)).toBe(true);

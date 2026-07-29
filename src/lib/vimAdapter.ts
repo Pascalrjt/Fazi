@@ -61,6 +61,21 @@ function runVimAction(action: VimAction): void {
     case "focusFilter":
       runCommand("focusSearch");
       break;
+    case "openPalette":
+      runCommand("palette");
+      break;
+    case "openFuzzy":
+      runCommand("fuzzyFinder");
+      break;
+    case "openGlobalSearch":
+      runCommand("globalSearch");
+      break;
+    case "nextTab":
+      runCommand("nextTab");
+      break;
+    case "prevTab":
+      runCommand("prevTab");
+      break;
     case "copy":
       runCommand("copy");
       break;

@@ -64,10 +64,10 @@ export function StatusBar() {
 
   return (
     <div className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-window px-3 text-[11px] text-secondary">
+      {vimOn && <VimIndicator />}
       <span className="tnum">{text}</span>
       {sizeText && <span className="tnum">— {sizeText}</span>}
       <div className="flex-1" />
-      {vimOn && <VimIndicator />}
       {tab?.showHidden && <span className="text-tertiary">hidden files shown</span>}
       {tab?.sorting && <span className="text-tertiary">sorting…</span>}
     </div>

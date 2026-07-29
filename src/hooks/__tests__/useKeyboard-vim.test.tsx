@@ -195,6 +195,24 @@ describe("routing order", () => {
     input.remove();
   });
 
+  it(": opens the command palette; the palette then owns the keys", () => {
+    render(<Probe />);
+    press(":", "Semicolon", { shiftKey: true });
+    expect(useApp.getState().paletteOpen).toBe(true);
+    press("j", "KeyJ"); // palette context — not a motion
+    expect(selection().lead).toBeNull();
+    useApp.getState().setPaletteOpen(false);
+  });
+
+  it("? opens global search with the field focused", () => {
+    render(<Probe />);
+    const seqBefore = useApp.getState().searchFocusSeq;
+    press("?", "Slash", { shiftKey: true });
+    expect(useApp.getState().globalSearch.active).toBe(true);
+    expect(useApp.getState().searchFocusSeq).toBe(seqBefore + 1);
+    useApp.getState().closeGlobalSearch();
+  });
+
   it("escape with nothing pending falls through to the registry cascade", () => {
     render(<Probe />);
     press("j", "KeyJ");

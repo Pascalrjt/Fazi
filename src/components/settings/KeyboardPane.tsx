@@ -36,6 +36,10 @@ const VIM_CHEATS: Array<[string, string]> = [
   ["p", "paste"],
   ["u / ⌃R", "undo / redo"],
   ["/", "filter this folder (Esc returns)"],
+  ["?", "search everywhere"],
+  [":", "command palette"],
+  ["⌃P", "go to file (fuzzy finder)"],
+  ["gt / gT", "next / previous tab"],
   ["Esc", "cancel pending key, exit visual, then clear as usual"],
 ];
 

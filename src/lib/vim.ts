@@ -39,6 +39,11 @@ export type VimAction =
   | { kind: "openParent" }
   | { kind: "open" }
   | { kind: "focusFilter" }
+  | { kind: "openPalette" }
+  | { kind: "openFuzzy" }
+  | { kind: "openGlobalSearch" }
+  | { kind: "nextTab" }
+  | { kind: "prevTab" }
   | { kind: "copy" }
   | { kind: "cut" }
   | { kind: "paste" }
@@ -70,7 +75,10 @@ export function nextVimState(state: VimState, key: VimKey): VimStep {
   });
 
   if (key.ctrl) {
-    if (key.key === "r" && state.pending === null) return done({ kind: "redo" }, "normal");
+    if (state.pending === null) {
+      if (key.key === "r") return done({ kind: "redo" }, "normal");
+      if (key.key === "p") return done({ kind: "openFuzzy" }, "normal"); // ctrlp.vim heritage
+    }
     // Unrecognized ctrl-combo: not Vim's — but stale prefixes must not linger.
     return { state: clear(state.mode), handled: false };
   }
@@ -84,10 +92,13 @@ export function nextVimState(state: VimState, key: VimKey): VimStep {
   }
 
   if (state.pending !== null) {
-    if (key.key === state.pending) {
+    if (state.pending === "g") {
+      if (key.key === "g")
+        return done({ kind: "edge", edge: "first", extend: state.mode === "visual" });
+      if (key.key === "t") return done({ kind: "nextTab" }, "normal");
+      if (key.key === "T") return done({ kind: "prevTab" }, "normal");
+    } else if (key.key === state.pending) {
       switch (state.pending) {
-        case "g":
-          return done({ kind: "edge", edge: "first", extend: state.mode === "visual" });
         case "y":
           return done({ kind: "copy" }, "normal");
         case "d":
@@ -135,6 +146,11 @@ export function nextVimState(state: VimState, key: VimKey): VimStep {
       return done({ kind: "undo" }, "normal");
     case "/":
       return done({ kind: "focusFilter" }, "normal");
+    case "?":
+      // The search pair: / = narrow (filter here), ? = wide (everywhere).
+      return done({ kind: "openGlobalSearch" }, "normal");
+    case ":":
+      return done({ kind: "openPalette" }, "normal"); // the ex command line
   }
 
   // Not a Vim key: pass through, dropping any stale count.
@@ -159,7 +175,9 @@ const VIM_BARE_CODES = new Set([
  */
 export function isVimReservedShortcut(parsed: ParsedShortcut): boolean {
   if (parsed.meta || parsed.alt) return false;
-  if (parsed.ctrl) return !parsed.shift && parsed.code === "KeyR";
-  if (parsed.shift) return parsed.code === "KeyG";
+  if (parsed.ctrl) return !parsed.shift && (parsed.code === "KeyR" || parsed.code === "KeyP");
+  if (parsed.shift)
+    // G, : (shift+;), ? (shift+/) — gt/gT need no entry: only g itself is bound.
+    return parsed.code === "KeyG" || parsed.code === "Semicolon" || parsed.code === "Slash";
   return VIM_BARE_CODES.has(parsed.code);
 }
