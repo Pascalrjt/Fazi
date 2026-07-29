@@ -388,6 +388,14 @@ pub fn pb_write_text(app: AppHandle, state: State<'_, AppState>, text: String) {
     *state.pb_mark.lock().unwrap() = Some((after, false));
 }
 
+/// Plain text off the pasteboard, for ⌘V inside a focused text field. The
+/// native Edit menu eats that keystroke before the webview sees it, so the
+/// frontend has to perform the insert itself.
+#[tauri::command]
+pub fn pb_read_text(app: AppHandle) -> Option<String> {
+    on_main(&app, pasteboard::read_string)
+}
+
 // ---------------------------------------------------------------------------
 // Previews
 // ---------------------------------------------------------------------------

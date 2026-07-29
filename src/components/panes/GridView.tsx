@@ -6,6 +6,8 @@ import type { Entry } from "../../types/ipc";
 import { thumbUrl } from "../../types/ipc";
 import { usePanes, visibleEntries } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
+import { finishRename } from "../../lib/actions";
+import { RenameInput } from "./RenameInput";
 import { showMenu } from "../../stores/menu";
 import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
 import { clickSelect, cmdToggle, shiftRange } from "../../lib/selection";
@@ -29,6 +31,7 @@ const GridCell = memo(function GridCell({
   onMouseDown,
   onDoubleClick,
   onContextMenu,
+  onRenameDone,
 }: {
   entry: Entry;
   paneId: PaneId;
@@ -36,6 +39,7 @@ const GridCell = memo(function GridCell({
   onMouseDown: (e: React.MouseEvent, entry: Entry) => void;
   onDoubleClick: (entry: Entry) => void;
   onContextMenu: (e: React.MouseEvent, entry: Entry) => void;
+  onRenameDone: (entry: Entry, advance: boolean) => void;
 }) {
   const selected = usePanes(
     useCallback(
@@ -46,6 +50,13 @@ const GridCell = memo(function GridCell({
           ?.selection.selected.has(entry.id) ?? false,
       [paneId, tabId, entry.id],
     ),
+  );
+  const isRenaming = useApp(
+    (s) =>
+      s.renaming != null &&
+      s.renaming.paneId === paneId &&
+      s.renaming.tabId === tabId &&
+      s.renaming.entryId === entry.id,
   );
   const [dropping, setDropping] = useState(false);
   const isNavigableDir = entry.kind === "dir" && !entry.isPackage;
@@ -71,9 +82,9 @@ const GridCell = memo(function GridCell({
         dropping && "drop-ring",
       )}
       style={{ width: CELL_W, height: CELL_H }}
-      draggable
-      onMouseDown={(e) => onMouseDown(e, entry)}
-      onDoubleClick={() => onDoubleClick(entry)}
+      draggable={!isRenaming}
+      onMouseDown={(e) => !isRenaming && onMouseDown(e, entry)}
+      onDoubleClick={() => !isRenaming && onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onDragStart={(e) => {
         // dragstart is only the gesture trigger: both branches preventDefault
@@ -104,14 +115,26 @@ const GridCell = memo(function GridCell({
           loading="lazy"
         />
       </div>
-      <span
-        className={clsx(
-          "max-w-full truncate rounded px-1 text-center text-xs leading-tight",
-          selected ? "bg-accent text-white" : "text-primary",
-        )}
-      >
-        {entry.name}
-      </span>
+      {isRenaming ? (
+        // Replaces the label rather than nesting inside it: that span is
+        // `truncate` (overflow:hidden), which would clip the caret.
+        <RenameInput
+          entry={entry}
+          paneId={paneId}
+          tabId={tabId}
+          wrapperClassName="relative flex w-full min-w-0 justify-center"
+          onDone={(_committed, advance) => onRenameDone(entry, advance)}
+        />
+      ) : (
+        <span
+          className={clsx(
+            "max-w-full truncate rounded px-1 text-center text-xs leading-tight",
+            selected ? "bg-accent text-white" : "text-primary",
+          )}
+        >
+          {entry.name}
+        </span>
+      )}
     </div>
   );
 });
@@ -259,6 +282,13 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     [paneId, tabId, setSelection],
   );
 
+  const handleRenameDone = useCallback(
+    (entry: Entry, advance: boolean) => {
+      finishRename(paneId, tabId, entry.id, advance);
+    },
+    [paneId, tabId],
+  );
+
   if (!tab) return null;
   if (tab.error) return <ListingError code={tab.error.code} message={tab.error.message} />;
 
@@ -322,6 +352,7 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                   onMouseDown={handleMouseDown}
                   onDoubleClick={(en) => openEntry(paneId, tabId, en)}
                   onContextMenu={handleContextMenu}
+                  onRenameDone={handleRenameDone}
                 />
               ))}
             </div>

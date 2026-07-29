@@ -316,8 +316,41 @@ in `npm run tauri dev`.
 - [x] ⌘⌥V with no file paths on the pasteboard stays a no-op (never creates
       a clipboard file).
 
+## Edit shortcuts inside text fields
+The native Edit menu owns ⌘Z/⌘⇧Z/⌘X/⌘C/⌘V/⌘A as key equivalents, and AppKit
+consumes them before the webview — so these can only be verified in a real
+build, never in jsdom. The menu event is routed by `lib/commands/menuCommand.ts`.
+- [ ] Copy text in another app → ⏎ rename a file in Fazi → ⌘V inserts the text
+      into the field and **no new document appears** in the folder.
+- [ ] In that same rename field: ⌘A selects the field's text (not every file),
+      ⌘C then ⌘V round-trips, ⌘X removes the selection, ⌘Z undoes the typing
+      and **not** the last file operation.
+- [ ] Text undo works on a FRESH launch, with no filesystem history at all:
+      type in a rename field → ⌘Z undoes the typing, ⌘⇧Z redoes it. (Regression
+      guard: the Edit menu's Undo/Redo items must stay enabled even with an
+      empty undo stack — a disabled NSMenuItem swallows nothing, so greying
+      them out kills text undo everywhere.)
+- [ ] Repeat in each text surface: toolbar filter, path bar (⌘⇧G), command
+      palette (⌘K), fuzzy finder (⌘P), a Batch Rename field (⌘⇧R), Settings
+      search, and the Settings excludes textarea.
+- [ ] With a rename active, click **Edit ▸ Paste** with the mouse → inserts
+      text, does not create a file. (Clicking never blurs the field, so this
+      path is distinct from the keyboard one.)
+- [ ] Browse mode is unchanged: select files → ⌘C → navigate → ⌘V copies them;
+      ⌘Z undoes it; ⌘A selects all files; ⌘X + ⌘V moves.
+- [ ] With Settings / Batch Rename / a conflict dialog open and no field
+      focused, ⌘Z does **not** run filesystem undo.
+- [ ] Settings → Keyboard: recording a shortcut still captures ⌘C/⌘V while the
+      recorder is armed (the `set_recording` path is untouched).
+
 ## Keyboard sweep
 - [x] ⏎ rename (stem preselected), Tab serial-rename, Esc cancels.
+- [ ] Icon view (⌘2): ⏎ renames inline in the cell, Tab advances to the next
+      cell, Esc cancels; ⌘⇧N creates a folder with an editable name field;
+      dragging the cell being renamed does nothing.
+- [ ] Escape always frees the keyboard: start a rename, force the input away
+      (switch list⇄grid, or ⌘⇧F into global search) → Esc restores normal
+      shortcuts rather than leaving every key swallowed.
 - [x] ⌘⇧N new folder appears in rename mode, sorted into place.
 - [x] ⌘K palette lists every command with its shortcut; fuzzy search works.
 - [x] ⌘⇧D dual pane, Tab swaps panes, ⌘T/⌘W tabs, ⌘1/⌘2 views, ⌘⇧. hidden

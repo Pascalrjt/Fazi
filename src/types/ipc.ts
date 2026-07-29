@@ -450,6 +450,7 @@ export const COMMANDS = {
   pbReadFiles: "pb_read_files", // () -> PasteboardContents | null
   pbCutValid: "pb_cut_valid", // () -> bool: pasteboard still holds our cut write
   pbWriteText: "pb_write_text",
+  pbReadText: "pb_read_text", // () -> string | null: plain text off the pasteboard
   pbPasteNewFile: "pb_paste_new_file", // (destDir) -> path | null — clipboard image/text as a new file
   quicklookPanel: "quicklook_panel", // (paths) — qlmanage -p escape hatch
   readTextHead: "read_text_head", // (path, maxBytes) -> TextPreview

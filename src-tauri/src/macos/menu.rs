@@ -29,13 +29,20 @@ pub struct NativeMenu {
 }
 
 impl NativeMenu {
+    /// Mirror the backend undo stack into the Edit menu labels.
+    ///
+    /// Enablement is deliberately NOT tracked here. A disabled NSMenuItem does
+    /// not consume its key equivalent, and ⌘Z/⌘⇧Z are routed by the frontend to
+    /// the focused text field's own undo stack when one has focus
+    /// (`lib/commands/menuCommand.ts`). Greying these out whenever the
+    /// filesystem history is empty would silently kill text undo in every input
+    /// in the app. With nothing to undo on either side, the frontend just
+    /// toasts "Nothing to undo".
     pub fn sync_undo(&self, stack: &UndoStack) {
         let undo_label = stack.undo_top().map(|op| op.label());
         let redo_label = stack.redo_top().map(|op| op.label());
         let _ = self.undo.set_text(menu_history_label("Undo", undo_label.as_deref()));
         let _ = self.redo.set_text(menu_history_label("Redo", redo_label.as_deref()));
-        let _ = self.undo.set_enabled(undo_label.is_some());
-        let _ = self.redo.set_enabled(redo_label.is_some());
     }
 
     pub fn set_shortcuts(&self, shortcuts: HashMap<String, Option<String>>) {
@@ -109,8 +116,10 @@ pub fn to_native_accelerator(shortcut: &str) -> Option<String> {
 }
 
 pub fn install(app: &mut App<Wry>) -> tauri::Result<std::sync::Arc<NativeMenu>> {
-    let undo = MenuItem::with_id(app, UNDO_ID, "Undo", false, None::<&str>)?;
-    let redo = MenuItem::with_id(app, REDO_ID, "Redo", false, None::<&str>)?;
+    // Enabled from the start — see sync_undo: a disabled item swallows nothing,
+    // which would break ⌘Z inside text fields.
+    let undo = MenuItem::with_id(app, UNDO_ID, "Undo", true, None::<&str>)?;
+    let redo = MenuItem::with_id(app, REDO_ID, "Redo", true, None::<&str>)?;
     let cut = MenuItem::with_id(app, CUT_ID, "Cut", true, None::<&str>)?;
     let copy = MenuItem::with_id(app, COPY_ID, "Copy", true, None::<&str>)?;
     let paste = MenuItem::with_id(app, PASTE_ID, "Paste", true, None::<&str>)?;

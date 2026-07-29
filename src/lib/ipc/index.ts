@@ -356,6 +356,10 @@ export function pbWriteText(text: string): Promise<void> {
   return invoke(COMMANDS.pbWriteText, { text });
 }
 
+export function pbReadText(): Promise<string | null> {
+  return invoke(COMMANDS.pbReadText);
+}
+
 export function pbPasteNewFile(destDir: string): Promise<string | null> {
   return invoke(COMMANDS.pbPasteNewFile, { destDir });
 }
