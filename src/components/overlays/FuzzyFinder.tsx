@@ -17,6 +17,7 @@ import { usePanes, activePaneTab } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { basename, displayPath } from "../../lib/format";
 import { useVolumes } from "../../stores/volumes";
+import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
 
 function relativeAge(ms: number): string {
   const delta = Math.max(0, Date.now() - ms);
@@ -110,6 +111,7 @@ const ResultsList = memo(function ResultsList({
 
 export function FuzzyFinder() {
   const open = useFuzzy((s) => s.open);
+  useBrowseFocusRestore(open);
   const query = useFuzzy((s) => s.query);
   const hits = useFuzzy((s) => s.hits);
   const scope = useFuzzy((s) => s.scope);

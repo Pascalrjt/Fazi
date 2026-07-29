@@ -1,16 +1,20 @@
 /** cmdk command palette (⌘K) fed by the command registry. */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Command } from "cmdk";
 import { useApp } from "../../stores/app";
 import { allCommands } from "../../lib/commands/registry";
 import { shortcutLabel } from "../../lib/keyboard";
+import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
 
 export function CommandPalette() {
   const open = useApp((s) => s.paletteOpen);
   const setOpen = useApp((s) => s.setPaletteOpen);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useBrowseFocusRestore(open);
 
   useEffect(() => {
     if (!open) return;
+    requestAnimationFrame(() => inputRef.current?.focus());
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -39,7 +43,7 @@ export function CommandPalette() {
         style={{ boxShadow: "var(--shadow-overlay)" }}
       >
         <Command.Input
-          autoFocus
+          ref={inputRef}
           placeholder="Type a command…"
           className="w-full border-b border-edge bg-transparent px-4 py-3 text-[14px] text-primary outline-none placeholder:text-tertiary"
         />

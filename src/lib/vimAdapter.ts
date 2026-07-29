@@ -19,11 +19,15 @@ import {
 } from "./commands";
 import { activePaneTab, usePanes } from "../stores/panes";
 import { useApp } from "../stores/app";
+import { cycleBrowseSurface, openKeyboardContextMenu } from "./keyboardFocus";
 
 /** Returns true when Vim consumed the key (caller must preventDefault). */
 export function handleVimKey(e: KeyboardEvent): boolean {
   if (e.isComposing || e.key === "Dead" || e.key === "Process" || e.key === "Unidentified")
     return false;
+  // A modifier going down is not a key: Shift precedes ?, G, and gT, and must
+  // not cancel a pending prefix or count as an unknown continuation.
+  if (e.key === "Shift" || e.key === "CapsLock") return false;
   if (e.metaKey || e.altKey) {
     // A chord command is coming — stale prefixes must not resume after it.
     resetVimTransient();
@@ -90,6 +94,15 @@ function runVimAction(action: VimAction): void {
       break;
     case "redo":
       runCommand("redo");
+      break;
+    case "openContextMenu":
+      openKeyboardContextMenu();
+      break;
+    case "cycleBrowseSurface":
+      cycleBrowseSurface();
+      break;
+    case "openHelp":
+      runCommand("vimHelp");
       break;
   }
 }

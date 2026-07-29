@@ -28,6 +28,7 @@ import { ConflictDialog } from "./components/ops/ConflictDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
 import { FuzzyFinder } from "./components/overlays/FuzzyFinder";
 import { BatchRenameModal } from "./components/overlays/BatchRenameModal";
+import { VimCheatSheet } from "./components/overlays/VimCheatSheet";
 import { PreviewOverlay } from "./components/preview/PreviewOverlay";
 import { ContextMenuHost } from "./components/menus/ContextMenu";
 
@@ -177,6 +178,7 @@ export default function App() {
       <FuzzyFinder />
       <SettingsOverlay />
       <BatchRenameModal />
+      <VimCheatSheet />
       <ConflictDialog />
       <ConfirmDialog />
       <OpCards />

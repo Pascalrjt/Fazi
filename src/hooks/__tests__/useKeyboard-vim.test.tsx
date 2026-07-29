@@ -25,6 +25,7 @@ import { useApp } from "../../stores/app";
 import { usePanes } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVim } from "../../stores/vim";
+import { showMenu, useMenu } from "../../stores/menu";
 
 function Probe() {
   useKeyboard();
@@ -74,8 +75,8 @@ function seed(): void {
           },
         ],
       },
-      ...s.panes.slice(1),
     ],
+    split: false,
   });
 }
 
@@ -97,12 +98,14 @@ beforeEach(() => {
     batchRenameOpen: false,
     paletteOpen: false,
     previewOpen: false,
+    vimHelpOpen: false,
     confirm: null,
     searchFieldFocused: false,
     pathBarEditing: false,
   });
   seed();
   useVim.getState().reset();
+  useMenu.getState().close();
 });
 
 afterEach(() => {
@@ -128,6 +131,7 @@ describe("vim motions through the window listener", () => {
   it("gg and G jump to the edges", () => {
     render(<Probe />);
     press("j", "KeyJ");
+    press("Shift", "ShiftLeft", { shiftKey: true }); // real-keystroke prelude to G
     press("G", "KeyG", { shiftKey: true });
     expect(selection().lead).toBe(10);
     press("g", "KeyG");
@@ -211,6 +215,71 @@ describe("routing order", () => {
     expect(useApp.getState().globalSearch.active).toBe(true);
     expect(useApp.getState().searchFocusSeq).toBe(seqBefore + 1);
     useApp.getState().closeGlobalSearch();
+  });
+
+  it("g? toggles the cheat sheet; motions keep working while it's up", () => {
+    render(<Probe />);
+    press("g", "KeyG");
+    // Real keyboards send Shift's own keydown before the "?" — it must not
+    // cancel the pending prefix (the g? / gT bug).
+    press("Shift", "ShiftLeft", { shiftKey: true });
+    expect(useVim.getState().state.pending).toBe("g");
+    press("?", "Slash", { shiftKey: true });
+    expect(useApp.getState().vimHelpOpen).toBe(true);
+    expect(useApp.getState().globalSearch.active).toBe(false);
+    press("j", "KeyJ"); // not modal — practicing with the card in view works
+    expect(selection().lead).toBe(1);
+    press("g", "KeyG");
+    press("?", "Slash", { shiftKey: true });
+    expect(useApp.getState().vimHelpOpen).toBe(false);
+  });
+
+  it("m opens the lead row menu and gs cycles all visible browse surfaces", () => {
+    const left = usePanes.getState().panes[0];
+    usePanes.setState({ panes: [left, { ...left, id: "right" }], split: true });
+    render(
+      <>
+        <Probe />
+        <div data-vim-surface="sidebar">
+          <div data-sidebar-row tabIndex={-1} aria-current="page" />
+        </div>
+        <div
+          data-entry-id="1"
+          data-pane-id="left"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            showMenu(10, 10, [{ type: "item", label: "Entry action" }]);
+          }}
+        />
+        <div data-vim-surface="pane" data-pane-id="left" tabIndex={-1} />
+        <div data-vim-surface="pane" data-pane-id="right" tabIndex={-1} />
+      </>,
+    );
+
+    press("j", "KeyJ");
+    expect(selection().lead).toBe(1);
+    press("m", "KeyM");
+    expect(useMenu.getState().open?.items[0]).toMatchObject({ label: "Entry action" });
+
+    useMenu.getState().close();
+    const sidebar = document.querySelector<HTMLElement>("[data-sidebar-row]")!;
+    const leftPane = document.querySelector<HTMLElement>('[data-pane-id="left"][data-vim-surface]')!;
+    const rightPane = document.querySelector<HTMLElement>('[data-pane-id="right"][data-vim-surface]')!;
+    sidebar.focus();
+
+    press("g", "KeyG");
+    press("s", "KeyS");
+    expect(document.activeElement).toBe(leftPane);
+    expect(useApp.getState().activePaneId).toBe("left");
+
+    press("g", "KeyG");
+    press("s", "KeyS");
+    expect(document.activeElement).toBe(rightPane);
+    expect(useApp.getState().activePaneId).toBe("right");
+
+    press("g", "KeyG");
+    press("s", "KeyS");
+    expect(document.activeElement).toBe(sidebar);
   });
 
   it("escape with nothing pending falls through to the registry cascade", () => {

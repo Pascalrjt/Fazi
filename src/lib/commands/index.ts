@@ -27,6 +27,10 @@ import { useFuzzy } from "../../stores/fuzzy";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
 import { useVolumes } from "../../stores/volumes";
+import {
+  hasKeyboardContextMenuTarget,
+  openKeyboardContextMenu,
+} from "../keyboardFocus";
 
 let registered = false;
 
@@ -207,6 +211,14 @@ function buildCommandSpecs(): CommandSpec[] {
       keywords: "application app choose",
       enabled: hasSelection,
       run: () => actions.showOpenWithMenuAtCenter(),
+    },
+    {
+      id: "contextMenu",
+      title: "Show Context Menu",
+      keywords: "right click actions menu",
+      shortcut: "shift+f10",
+      enabled: hasKeyboardContextMenuTarget,
+      run: () => openKeyboardContextMenu(),
     },
     {
       id: "share",
@@ -635,12 +647,25 @@ function buildCommandSpecs(): CommandSpec[] {
       },
     },
     {
+      id: "toggleVimMode",
+      title: "Toggle Vim Mode",
+      keywords: "vim modal hjkl enable disable",
+      context: ["browse", "search", "preview", "palette"],
+      run: () => {
+        const settings = useSettings.getState();
+        settings.patch({ vimMode: !settings.vimMode });
+      },
+    },
+    {
       id: "vimHelp",
       title: "Vim Commands…",
-      keywords: "vim hjkl modal keys bindings reference",
+      keywords: "vim hjkl modal keys bindings reference cheat sheet help",
       context: ["browse", "search", "preview", "palette"],
       enabled: () => useSettings.getState().vimMode,
-      run: () => useApp.getState().openSettingsPane("keyboard"),
+      run: () => {
+        const app = useApp.getState();
+        app.setVimHelpOpen(!app.vimHelpOpen);
+      },
     },
     {
       id: "settings",

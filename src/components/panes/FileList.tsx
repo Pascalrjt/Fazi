@@ -156,6 +156,8 @@ const FileRow = memo(function FileRow({
 
   return (
     <div
+      data-entry-id={entry.id}
+      data-pane-id={paneId}
       className={clsx(
         "flex h-full items-center gap-2 rounded-[5px] px-2 text-[13px]",
         selected ? "bg-accent-dim" : "hover:bg-hov",

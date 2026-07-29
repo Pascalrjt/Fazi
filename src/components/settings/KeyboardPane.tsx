@@ -12,7 +12,7 @@ import clsx from "clsx";
 import { allCommands } from "../../lib/commands/registry";
 import { conflictsForOverrides } from "../../lib/commands";
 import { parseShortcut, shortcutFromEvent, shortcutLabel } from "../../lib/keyboard";
-import { isVimReservedShortcut } from "../../lib/vim";
+import { isVimReservedShortcut, VIM_CHEATS } from "../../lib/vim";
 import { useSettings } from "../../stores/settings";
 import { SettingRow, Toggle } from "./controls";
 import * as ipc from "../../lib/ipc";
@@ -24,25 +24,6 @@ interface Capture {
   /** Blocked because Vim mode reserves the key (no unbind escape hatch). */
   vimReserved?: boolean;
 }
-
-const VIM_CHEATS: Array<[string, string]> = [
-  ["j / k", "move down / up (counts work: 12j)"],
-  ["h", "enclosing folder"],
-  ["l", "open selection"],
-  ["gg / G", "first / last item"],
-  ["v", "visual selection (j/k/gg/G extend, v or Esc exits)"],
-  ["yy", "copy"],
-  ["dd", "cut (pairs with p to move)"],
-  ["p", "paste"],
-  ["u / ⌃R", "undo / redo"],
-  ["/", "filter this folder (Esc returns)"],
-  ["?", "search everywhere"],
-  [":", "command palette"],
-  ["⌃P", "go to file (fuzzy finder)"],
-  ["⌃J / ⌃K", "next / previous in finder and palette lists"],
-  ["gt / gT", "next / previous tab"],
-  ["Esc", "cancel pending key, exit visual, then clear as usual"],
-];
 
 function VimSection() {
   const vimMode = useSettings((s) => s.vimMode);

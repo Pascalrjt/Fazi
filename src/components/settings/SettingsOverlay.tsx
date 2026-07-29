@@ -20,6 +20,7 @@ import { useSettings, type Density, type SidebarPosition, type Theme } from "../
 import { NumberField, Segmented, SettingRow, SettingsFilterContext, Toggle } from "./controls";
 import { KeyboardPane } from "./KeyboardPane";
 import type { SortDir, SortKey } from "../../lib/sort";
+import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
 
 type PaneId =
   | "general"
@@ -155,7 +156,7 @@ function AppearancePane() {
       </SettingRow>
       <SettingRow
         label="Accent line"
-        hint="Accent-colored line above the active pane's tabs."
+        hint="Accent-colored line above the focused sidebar or explorer pane."
       >
         <Toggle checked={s.paneAccentLine} onChange={(v) => s.patch({ paneAccentLine: v })} />
       </SettingRow>
@@ -380,6 +381,7 @@ export function SettingsOverlay() {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const paneRequest = useApp((s) => s.settingsPaneRequest);
+  useBrowseFocusRestore(open);
 
   // Deep-link from the palette ("Vim Commands…" → keyboard pane).
   useEffect(() => {

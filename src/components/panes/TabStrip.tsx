@@ -10,22 +10,21 @@ import { basename } from "../../lib/format";
 import { showMenu } from "../../stores/menu";
 
 export function TabStrip({ pane }: { pane: Pane }) {
-  const activePaneId = useApp((s) => s.activePaneId);
   const setActivePane = useApp((s) => s.setActivePane);
   const paneAccentLine = useSettings((s) => s.paneAccentLine);
   const activateTab = usePanes((s) => s.activateTab);
   const closeTab = usePanes((s) => s.closeTab);
   const openTab = usePanes((s) => s.openTab);
-  const isActivePane = activePaneId === pane.id;
   const activeIdx = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
 
   return (
     <div
       className={clsx(
-        // the 2px top border is always reserved so toggling the accent line
-        // (or switching panes) never shifts the tabs vertically
+        // The 2px top border is always reserved. Pane focus colors it through
+        // .keyboard-pane-accent, so only the exact focused pane can show it.
         "flex h-8 shrink-0 items-stretch overflow-x-auto border-t-2 bg-window pt-1",
-        paneAccentLine && isActivePane ? "border-t-accent" : "border-t-transparent",
+        "border-t-transparent",
+        paneAccentLine && "keyboard-pane-accent",
       )}
       onMouseDown={() => setActivePane(pane.id as PaneId)}
     >

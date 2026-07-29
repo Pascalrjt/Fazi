@@ -78,10 +78,17 @@ describe("FuzzyFinder key dispatch", () => {
   });
 
   it("Enter opens the selected hit and closes", () => {
-    render(<FuzzyFinder />);
+    render(
+      <>
+        <div data-vim-surface="pane" data-pane-id="left" tabIndex={-1} />
+        <FuzzyFinder />
+      </>,
+    );
+    const pane = document.querySelector<HTMLElement>('[data-vim-surface="pane"]')!;
     fireEvent.keyDown(window, { key: "Enter" });
     expect(mocks.openPathsCalls).toEqual([["/Users/me/docs/notes.md"]]);
     expect(useFuzzy.getState().open).toBe(false);
+    expect(document.activeElement).toBe(pane);
   });
 
   it("⌘Enter reveals: navigates to the parent with the hit selected", () => {
