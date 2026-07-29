@@ -3,7 +3,7 @@
  * (navigate to parent + select) instead of opening.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   openPathsCalls: [] as string[][],
@@ -28,7 +28,13 @@ vi.mock("../../../lib/ipc", () => ({
 import { FuzzyFinder } from "../FuzzyFinder";
 import { useFuzzy } from "../../../stores/fuzzy";
 import { usePanes } from "../../../stores/panes";
+import { useSettings } from "../../../stores/settings";
 import { useVolumes } from "../../../stores/volumes";
+
+const HITS = [
+  { path: "/Users/me/docs/notes.md", name: "notes.md", isDir: false, icon: "t", score: 5 },
+  { path: "/Users/me/notes2.md", name: "notes2.md", isDir: false, icon: "t", score: 4 },
+];
 
 describe("FuzzyFinder key dispatch", () => {
   beforeEach(() => {
@@ -55,10 +61,7 @@ describe("FuzzyFinder key dispatch", () => {
       scope: "folder",
       root: "/Users/me",
       query: "notes",
-      hits: [
-        { path: "/Users/me/docs/notes.md", name: "notes.md", isDir: false, icon: "t", score: 5 },
-        { path: "/Users/me/notes2.md", name: "notes2.md", isDir: false, icon: "t", score: 4 },
-      ],
+      hits: HITS,
       status: "done",
       indexed: 2,
       indexing: false,
@@ -96,5 +99,33 @@ describe("FuzzyFinder key dispatch", () => {
     fireEvent.keyDown(window, { key: "ArrowDown" });
     fireEvent.keyDown(window, { key: "Enter" });
     expect(mocks.openPathsCalls).toEqual([["/Users/me/notes2.md"]]);
+  });
+
+  it("⌃J/⌃K move the selection in Vim mode only", () => {
+    render(<FuzzyFinder />);
+    // Off: ctrl+j is not list navigation — selection stays on the first hit.
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(mocks.openPathsCalls).toEqual([["/Users/me/docs/notes.md"]]);
+
+    mocks.openPathsCalls.length = 0;
+    useSettings.setState({ vimMode: true });
+    try {
+      // close() cleared the hits; act() flushes the reopen render so the
+      // window listener is re-attached before the next keydown.
+      act(() => useFuzzy.setState({ open: true, hits: HITS }));
+      fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+      fireEvent.keyDown(window, { key: "Enter" });
+      expect(mocks.openPathsCalls).toEqual([["/Users/me/notes2.md"]]);
+
+      mocks.openPathsCalls.length = 0;
+      act(() => useFuzzy.setState({ open: true, hits: HITS }));
+      fireEvent.keyDown(window, { key: "n", ctrlKey: true }); // readline alias
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true }); // and back up
+      fireEvent.keyDown(window, { key: "Enter" });
+      expect(mocks.openPathsCalls).toEqual([["/Users/me/docs/notes.md"]]);
+    } finally {
+      useSettings.setState({ vimMode: false });
+    }
   });
 });

@@ -41,6 +41,9 @@ interface SettingsState {
   paneAccentLine: boolean;
   // Keyboard
   keybindingOverrides: KeybindingOverrides;
+  /** Vim-style browsing (hjkl, visual mode, yy/dd/p). While on, Vim-reserved
+   *  bare keys are stripped from keybinding overrides. */
+  vimMode: boolean;
   // Search
   /** Global search starts in Contents mode (kMDItemTextContent) when true. */
   searchContentsDefault: boolean;
@@ -135,6 +138,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   zebraStripes: true,
   paneAccentLine: true,
   keybindingOverrides: {},
+  vimMode: false,
   searchContentsDefault: false,
   searchMaxResults: 10_000,
   fuzzyExcludes: [".git", "node_modules", "Library/Caches", ".Trash"],

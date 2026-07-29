@@ -8,8 +8,10 @@ import {
   typeAheadTarget,
   type TypeAheadState,
 } from "../lib/selection";
+import { handleVimKey, resetVimTransient } from "../lib/vimAdapter";
 import { useApp } from "../stores/app";
 import { useMenu } from "../stores/menu";
+import { useSettings } from "../stores/settings";
 import { activePaneTab, usePanes, visibleEntries } from "../stores/panes";
 
 let typeAhead: TypeAheadState = emptyTypeAhead();
@@ -44,6 +46,9 @@ export function useKeyboard(): void {
       if (e.defaultPrevented) return;
       if (useMenu.getState().open) return; // the menu owns the keyboard
       const context = currentKeyContext(e.target);
+      const vimOn = useSettings.getState().vimMode;
+      // A prefix/visual state must not survive a surface change (⌘F, rename…).
+      if (vimOn && context !== "browse") resetVimTransient();
       // modal + rename contexts are fully component-handled
       if (context === "rename") {
         // RenameInput stops propagation on its own keys, so a keydown reaching
@@ -54,13 +59,22 @@ export function useKeyboard(): void {
         return;
       }
       if (context === "modal") return;
+      // Vim reserves its bare/ctrl keys in browse; ⌘ chords fall through to
+      // the registry. Global search results own their local selection — a
+      // motion here would move the hidden directory selection beneath them.
+      if (vimOn && context === "browse" && !useApp.getState().globalSearch.active) {
+        if (handleVimKey(e)) {
+          e.preventDefault();
+          return;
+        }
+      }
       const cmd = dispatchKey(e, context);
       if (cmd) {
         e.preventDefault();
         cmd.run();
         return;
       }
-      if (context === "browse") handleTypeAhead(e);
+      if (context === "browse" && !vimOn) handleTypeAhead(e);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

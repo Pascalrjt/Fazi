@@ -14,6 +14,7 @@ import * as ipc from "../../lib/ipc";
 import { useFuzzy, type FuzzyScope } from "../../stores/fuzzy";
 import { toast } from "../../stores/app";
 import { usePanes, activePaneTab } from "../../stores/panes";
+import { useSettings } from "../../stores/settings";
 import { basename, displayPath } from "../../lib/format";
 import { useVolumes } from "../../stores/volumes";
 
@@ -159,7 +160,21 @@ export function FuzzyFinder() {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       const s = useFuzzy.getState();
-      if (e.key === "Escape") {
+      // Vim mode only: ⌃J/⌃K (+ ⌃N/⌃P readline aliases) move the list, the
+      // Telescope/fzf convention. Gated because ⌃K natively kills-to-end in
+      // macOS text fields — only Vim opt-in trades that away. Matches cmdk's
+      // built-in vimBindings in the command palette.
+      const vimCtrl =
+        e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && useSettings.getState().vimMode;
+      if (vimCtrl && (e.key === "j" || e.key === "n")) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setSelected((i) => Math.min(s.hits.length - 1, i + 1));
+      } else if (vimCtrl && (e.key === "k" || e.key === "p")) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setSelected((i) => Math.max(0, i - 1));
+      } else if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
         s.close();

@@ -11,10 +11,13 @@ import {
   type RegisteredCommand,
 } from "./registry";
 import { parseShortcut } from "../keyboard";
+import { isVimReservedShortcut } from "../vim";
 import type { KeybindingOverrides } from "../../stores/settings";
 import {
   arrowMove,
+  clickSelect,
   shiftArrowExtend,
+  shiftRange,
 } from "../selection";
 import * as actions from "../actions";
 import { isExtractableArchive } from "../fileTypes";
@@ -49,6 +52,45 @@ function isGrid(): boolean {
   return useSettings.getState().viewMode === "grid";
 }
 
+// ---------------------------------------------------------------------------
+// Semantic navigation for the Vim adapter (vimAdapter.ts) — moveLead and the
+// virtualizers stay private to their modules; these are the public verbs.
+// ---------------------------------------------------------------------------
+
+/** Move the cursor by `count` rows (grid-aware), optionally extending. */
+export function moveLeadBy(dir: 1 | -1, extend: boolean, count = 1): void {
+  moveLead(dir, extend, count * (isGrid() ? gridColumns : 1));
+}
+
+/** gg / G — the views' lead-follow effects handle the scroll. */
+export function moveLeadToEdge(edge: "first" | "last", extend: boolean): void {
+  const at = activePaneTab();
+  if (!at) return;
+  const order = visibleEntries(at.tab).map((e) => e.id);
+  if (order.length === 0) return;
+  const target = edge === "first" ? order[0] : order[order.length - 1];
+  const sel = at.tab.selection;
+  const next = extend && sel.anchor != null ? shiftRange(sel, order, target) : clickSelect(target);
+  usePanes.getState().setSelection(at.pane.id, at.tab.id, next);
+}
+
+/** Entering visual mode with no cursor selects the first visible row. */
+export function ensureLead(): void {
+  const at = activePaneTab();
+  if (!at || at.tab.selection.lead != null) return;
+  const order = visibleEntries(at.tab).map((e) => e.id);
+  if (order.length === 0) return;
+  usePanes.getState().setSelection(at.pane.id, at.tab.id, clickSelect(order[0]));
+}
+
+/** Leaving visual mode collapses the selection to the cursor row. */
+export function collapseSelectionToLead(): void {
+  const at = activePaneTab();
+  const lead = at?.tab.selection.lead;
+  if (!at || lead == null) return;
+  usePanes.getState().setSelection(at.pane.id, at.tab.id, clickSelect(lead));
+}
+
 function hasSelection(): boolean {
   return selectedEntries().length > 0;
 }
@@ -56,12 +98,16 @@ function hasSelection(): boolean {
 /**
  * Drop invalid overrides before they reach registration: unknown commandIds,
  * non-array/non-null values, and unparseable shortcut strings all fall away —
- * corrupt localStorage must never prevent startup.
+ * corrupt localStorage must never prevent startup. With Vim mode on,
+ * Vim-reserved shortcuts (a saved bare "j", say) are stripped too — the
+ * interpreter would shadow them anyway, and the command falls back to its
+ * default binding.
  */
 export function sanitizeOverrides(raw: unknown): KeybindingOverrides {
   const out: KeybindingOverrides = {};
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return out;
   const known = new Set(buildCommandSpecs().map((c) => c.id));
+  const vimOn = useSettings.getState().vimMode;
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!known.has(id)) continue;
     if (value === null) {
@@ -69,9 +115,12 @@ export function sanitizeOverrides(raw: unknown): KeybindingOverrides {
       continue;
     }
     if (Array.isArray(value)) {
-      const valid = value.filter(
-        (v): v is string => typeof v === "string" && parseShortcut(v) !== null,
-      );
+      const valid = value.filter((v): v is string => {
+        if (typeof v !== "string") return false;
+        const parsed = parseShortcut(v);
+        if (parsed === null) return false;
+        return !(vimOn && isVimReservedShortcut(parsed));
+      });
       if (valid.length > 0) out[id] = valid;
     }
   }
@@ -568,7 +617,7 @@ function buildCommandSpecs(): CommandSpec[] {
     {
       id: "fuzzyFinder",
       title: "Go to File…",
-      keywords: "fuzzy jump quick open anything",
+      keywords: "fuzzy finder jump quick open anything",
       shortcut: "cmd+p",
       context: ["browse", "search"],
       run: () => useFuzzy.getState().openFinder(),
@@ -584,6 +633,14 @@ function buildCommandSpecs(): CommandSpec[] {
         app.openGlobalSearch(app.globalSearch.query, "mac");
         app.requestSearchFocus();
       },
+    },
+    {
+      id: "vimHelp",
+      title: "Vim Commands…",
+      keywords: "vim hjkl modal keys bindings reference",
+      context: ["browse", "search", "preview", "palette"],
+      enabled: () => useSettings.getState().vimMode,
+      run: () => useApp.getState().openSettingsPane("keyboard"),
     },
     {
       id: "settings",

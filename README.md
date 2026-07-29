@@ -48,6 +48,10 @@ Finder-parity shortcuts out of the box, custom keybindings with a recorder and c
 
 ![Command palette](docs/screenshots/palette.png)
 
+### Vim mode
+
+Off by default; turn it on in Settings → Keyboard. `hjkl` moves, `gg` and `G` jump to the ends, counts work (`12j`), `v` starts a visual selection, and `yy`/`dd`/`p` copy, cut, and paste. `dd` cuts rather than trashing anything, because a two-key reflex shouldn't delete files. `/` filters the current folder, `:` opens the command palette, `⌃P` the fuzzy finder, `gt` and `gT` switch tabs. The status bar shows the mode and any pending count or prefix, and sequences never time out. Text fields are left alone, so renaming a file to "dd" does what you'd expect. Every ⌘ shortcut keeps working, and a cheat sheet lives next to the toggle.
+
 ### Search
 
 Streamed `mdfind` by filename or contents, with `kind:`, `date:`, and `size:` predicates. Volumes Spotlight hasn't indexed fall back to a fuzzy walker automatically.

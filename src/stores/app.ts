@@ -157,6 +157,8 @@ interface AppState {
   previewOpen: boolean;
   getInfoOpen: boolean;
   settingsOpen: boolean;
+  /** Pane the settings overlay should show on open (palette deep-links). */
+  settingsPaneRequest: string | null;
   batchRenameOpen: boolean;
   renaming: RenameTarget | null;
   pathBarEditing: boolean;
@@ -175,6 +177,8 @@ interface AppState {
   setPreviewOpen(open: boolean): void;
   setGetInfoOpen(open: boolean): void;
   setSettingsOpen(open: boolean): void;
+  openSettingsPane(pane: string): void;
+  clearSettingsPaneRequest(): void;
   setBatchRenameOpen(open: boolean): void;
   startRename(target: RenameTarget): void;
   stopRename(): void;
@@ -205,6 +209,7 @@ export const useApp = create<AppState>()(
     previewOpen: false,
     getInfoOpen: false,
     settingsOpen: false,
+    settingsPaneRequest: null,
     batchRenameOpen: false,
     renaming: null,
     pathBarEditing: false,
@@ -251,6 +256,8 @@ export const useApp = create<AppState>()(
     setPreviewOpen: (open) => set({ previewOpen: open }),
     setGetInfoOpen: (open) => set({ getInfoOpen: open }),
     setSettingsOpen: (open) => set({ settingsOpen: open }),
+    openSettingsPane: (pane) => set({ settingsOpen: true, settingsPaneRequest: pane }),
+    clearSettingsPaneRequest: () => set({ settingsPaneRequest: null }),
     setBatchRenameOpen: (open) => set({ batchRenameOpen: open }),
     startRename: (target) => set({ renaming: target }),
     stopRename: () => set({ renaming: null }),

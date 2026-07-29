@@ -78,6 +78,26 @@ describe("keybinding overrides", () => {
     });
   });
 
+  it("Vim mode strips reserved keys from saved overrides; off keeps them", async () => {
+    const { useSettings } = await import("../../stores/settings");
+    // Off: a previously saved bare "j" override is a valid binding.
+    useSettings.setState({ vimMode: false });
+    expect(sanitizeOverrides({ refresh: ["j"] })).toEqual({ refresh: ["j"] });
+    // On: the interpreter owns j/G/ctrl+r — strip them, keep the rest.
+    useSettings.setState({ vimMode: true });
+    try {
+      expect(sanitizeOverrides({ refresh: ["j"] })).toEqual({});
+      expect(sanitizeOverrides({ refresh: ["shift+g", "cmd+e"] })).toEqual({
+        refresh: ["cmd+e"],
+      });
+      // All bindings stripped → command falls back to its default shortcut.
+      rebuildRegistry({ refresh: ["j"] });
+      expect(allCommands().find((c) => c.id === "refresh")?.shortcut).toBe("cmd+r");
+    } finally {
+      useSettings.setState({ vimMode: false });
+    }
+  });
+
   it("prospective conflicts are detected without touching the live registry", () => {
     clearRegistry();
     rebuildRegistry();

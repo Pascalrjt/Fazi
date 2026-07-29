@@ -11,14 +11,61 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { allCommands } from "../../lib/commands/registry";
 import { conflictsForOverrides } from "../../lib/commands";
-import { shortcutFromEvent, shortcutLabel } from "../../lib/keyboard";
+import { parseShortcut, shortcutFromEvent, shortcutLabel } from "../../lib/keyboard";
+import { isVimReservedShortcut } from "../../lib/vim";
 import { useSettings } from "../../stores/settings";
+import { SettingRow, Toggle } from "./controls";
 import * as ipc from "../../lib/ipc";
 
 interface Capture {
   commandId: string;
   shortcut: string;
   conflictWith: string | null;
+  /** Blocked because Vim mode reserves the key (no unbind escape hatch). */
+  vimReserved?: boolean;
+}
+
+const VIM_CHEATS: Array<[string, string]> = [
+  ["j / k", "move down / up (counts work: 12j)"],
+  ["h", "enclosing folder"],
+  ["l", "open selection"],
+  ["gg / G", "first / last item"],
+  ["v", "visual selection (j/k/gg/G extend, v or Esc exits)"],
+  ["yy", "copy"],
+  ["dd", "cut (pairs with p to move)"],
+  ["p", "paste"],
+  ["u / ⌃R", "undo / redo"],
+  ["/", "filter this folder (Esc returns)"],
+  ["?", "search everywhere"],
+  [":", "command palette"],
+  ["⌃P", "go to file (fuzzy finder)"],
+  ["⌃J / ⌃K", "next / previous in finder and palette lists"],
+  ["gt / gT", "next / previous tab"],
+  ["Esc", "cancel pending key, exit visual, then clear as usual"],
+];
+
+function VimSection() {
+  const vimMode = useSettings((s) => s.vimMode);
+  return (
+    <div className="mb-4 border-b border-edge pb-2">
+      <SettingRow
+        label="Vim mode"
+        hint="Browse with hjkl, visual selection, yy/dd/p. Bare letters stop jumping to names; use / to filter instead."
+      >
+        <Toggle checked={vimMode} onChange={(v) => useSettings.getState().patch({ vimMode: v })} />
+      </SettingRow>
+      {vimMode && (
+        <div className="mb-2 grid grid-cols-[90px_1fr] gap-x-3 gap-y-1 rounded-md border border-edge bg-pane p-3 text-[12px]">
+          {VIM_CHEATS.map(([keys, what]) => (
+            <div key={keys} className="contents">
+              <span className="tnum text-secondary">{keys}</span>
+              <span className="text-tertiary">{what}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function KeyboardPane() {
@@ -51,6 +98,13 @@ export function KeyboardPane() {
       }
       const shortcut = shortcutFromEvent(e);
       if (shortcut == null) return; // lone modifier — keep recording
+      // With Vim mode on, its reserved keys can't be recorded — sanitize
+      // would silently strip them at registration anyway.
+      const parsed = parseShortcut(shortcut);
+      if (useSettings.getState().vimMode && parsed && isVimReservedShortcut(parsed)) {
+        setCapture({ commandId: recordingId, shortcut, conflictWith: null, vimReserved: true });
+        return;
+      }
       const prospective = { ...useSettings.getState().keybindingOverrides, [recordingId]: [shortcut] };
       const conflicts = conflictsForOverrides(prospective);
       // Find the other command named in a conflict mentioning this one.
@@ -86,6 +140,7 @@ export function KeyboardPane() {
 
   return (
     <div>
+      <VimSection />
       <div className="mb-2 text-[11px] text-tertiary">
         Click Record, then press the new shortcut. Esc cancels recording.
       </div>
@@ -113,7 +168,7 @@ export function KeyboardPane() {
                   )}
                 >
                   {rowCapture
-                    ? `${shortcutLabel(rowCapture.shortcut)} conflicts`
+                    ? `${shortcutLabel(rowCapture.shortcut)} ${rowCapture.vimReserved ? "reserved" : "conflicts"}`
                     : recording
                       ? "press keys…"
                       : unbound
@@ -159,24 +214,27 @@ export function KeyboardPane() {
                   aria-live="polite"
                 >
                   <span className="text-danger">
-                    {shortcutLabel(rowCapture.shortcut)} is taken by “
-                    {titleOf(rowCapture.conflictWith ?? "")}”.
+                    {rowCapture.vimReserved
+                      ? `${shortcutLabel(rowCapture.shortcut)} is reserved while Vim mode is on.`
+                      : `${shortcutLabel(rowCapture.shortcut)} is taken by “${titleOf(rowCapture.conflictWith ?? "")}”.`}
                   </span>
                   <div className="mt-1.5 flex gap-2">
-                    <button
-                      className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov"
-                      onClick={() => {
-                        const settings = useSettings.getState();
-                        if (rowCapture.conflictWith) {
-                          settings.setKeybindingOverride(rowCapture.conflictWith, null);
-                        }
-                        settings.setKeybindingOverride(rowCapture.commandId, [rowCapture.shortcut]);
-                        setCapture(null);
-                        setRecordingId(null);
-                      }}
-                    >
-                      Unbind “{titleOf(rowCapture.conflictWith ?? "")}” and use it here
-                    </button>
+                    {!rowCapture.vimReserved && (
+                      <button
+                        className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov"
+                        onClick={() => {
+                          const settings = useSettings.getState();
+                          if (rowCapture.conflictWith) {
+                            settings.setKeybindingOverride(rowCapture.conflictWith, null);
+                          }
+                          settings.setKeybindingOverride(rowCapture.commandId, [rowCapture.shortcut]);
+                          setCapture(null);
+                          setRecordingId(null);
+                        }}
+                      >
+                        Unbind “{titleOf(rowCapture.conflictWith ?? "")}” and use it here
+                      </button>
+                    )}
                     <button
                       className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov"
                       onClick={() => {
