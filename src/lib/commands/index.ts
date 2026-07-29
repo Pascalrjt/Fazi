@@ -637,10 +637,13 @@ function buildCommandSpecs(): CommandSpec[] {
     {
       id: "vimHelp",
       title: "Vim Commands…",
-      keywords: "vim hjkl modal keys bindings reference",
+      keywords: "vim hjkl modal keys bindings reference cheat sheet help",
       context: ["browse", "search", "preview", "palette"],
       enabled: () => useSettings.getState().vimMode,
-      run: () => useApp.getState().openSettingsPane("keyboard"),
+      run: () => {
+        const app = useApp.getState();
+        app.setVimHelpOpen(!app.vimHelpOpen);
+      },
     },
     {
       id: "settings",

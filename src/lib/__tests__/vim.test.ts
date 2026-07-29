@@ -87,6 +87,15 @@ describe("prefix sequences (gg, yy, dd) — no timeout", () => {
     expect(T.state.mode).toBe("normal");
   });
 
+  it("g? opens the cheat sheet and returns to normal", () => {
+    const r = feed(["g", "?"]);
+    expect(r.action).toEqual({ kind: "openHelp" });
+    expect(r.state.pending).toBeNull();
+    const fromVisual = feed(["v", "g", "?"]);
+    expect(fromVisual.action).toEqual({ kind: "openHelp" });
+    expect(fromVisual.state.mode).toBe("normal");
+  });
+
   it("an unknown continuation cancels the prefix and swallows the key", () => {
     const r = feed(["d", "j"]);
     expect(r.handled).toBe(true);

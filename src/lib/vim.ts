@@ -48,7 +48,8 @@ export type VimAction =
   | { kind: "cut" }
   | { kind: "paste" }
   | { kind: "undo" }
-  | { kind: "redo" };
+  | { kind: "redo" }
+  | { kind: "openHelp" };
 
 export interface VimStep {
   state: VimState;
@@ -97,6 +98,7 @@ export function nextVimState(state: VimState, key: VimKey): VimStep {
         return done({ kind: "edge", edge: "first", extend: state.mode === "visual" });
       if (key.key === "t") return done({ kind: "nextTab" }, "normal");
       if (key.key === "T") return done({ kind: "prevTab" }, "normal");
+      if (key.key === "?") return done({ kind: "openHelp" }, "normal");
     } else if (key.key === state.pending) {
       switch (state.pending) {
         case "y":
@@ -156,6 +158,32 @@ export function nextVimState(state: VimState, key: VimKey): VimStep {
   // Not a Vim key: pass through, dropping any stale count.
   return { state: state.count === "" ? state : { ...state, count: "" }, handled: false };
 }
+
+// ---------------------------------------------------------------------------
+// Cheat sheet
+// ---------------------------------------------------------------------------
+
+/** One row per binding, rendered by the g? overlay AND the settings pane —
+ *  a new key isn't done until it has a line here. */
+export const VIM_CHEATS: Array<[string, string]> = [
+  ["j / k", "move down / up (counts work: 12j)"],
+  ["h", "enclosing folder"],
+  ["l", "open selection"],
+  ["gg / G", "first / last item"],
+  ["v", "visual selection (j/k/gg/G extend, v or Esc exits)"],
+  ["yy", "copy"],
+  ["dd", "cut (pairs with p to move)"],
+  ["p", "paste"],
+  ["u / ⌃R", "undo / redo"],
+  ["/", "filter this folder (Esc returns)"],
+  ["?", "search everywhere"],
+  [":", "command palette"],
+  ["⌃P", "go to file (fuzzy finder)"],
+  ["⌃J / ⌃K", "next / previous in finder and palette lists"],
+  ["gt / gT", "next / previous tab"],
+  ["g?", "this cheat sheet"],
+  ["Esc", "cancel pending key, exit visual, then clear as usual"],
+];
 
 // ---------------------------------------------------------------------------
 // Reserved shortcuts

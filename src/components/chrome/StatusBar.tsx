@@ -17,15 +17,20 @@ function VimIndicator() {
   const pending = vimPendingLabel(vim);
   const label = filterOwns ? "FILTER" : renaming ? "RENAME" : vim.mode.toUpperCase();
   return (
-    <span
+    <button
       className={clsx(
-        "tnum font-medium tracking-wide",
+        "tnum cursor-default font-medium tracking-wide hover:text-secondary",
         vim.mode === "visual" && !filterOwns && !renaming ? "text-accent" : "text-tertiary",
       )}
+      title="Vim commands (g?)"
+      onClick={() => {
+        const app = useApp.getState();
+        app.setVimHelpOpen(!app.vimHelpOpen);
+      }}
     >
       {label}
       {!filterOwns && !renaming && pending !== "" && <span className="ml-1.5">{pending}</span>}
-    </span>
+    </button>
   );
 }
 

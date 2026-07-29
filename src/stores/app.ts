@@ -160,6 +160,8 @@ interface AppState {
   /** Pane the settings overlay should show on open (palette deep-links). */
   settingsPaneRequest: string | null;
   batchRenameOpen: boolean;
+  /** Vim cheat-sheet overlay (g? / palette / status-bar indicator). */
+  vimHelpOpen: boolean;
   renaming: RenameTarget | null;
   pathBarEditing: boolean;
   searchFieldFocused: boolean;
@@ -180,6 +182,7 @@ interface AppState {
   openSettingsPane(pane: string): void;
   clearSettingsPaneRequest(): void;
   setBatchRenameOpen(open: boolean): void;
+  setVimHelpOpen(open: boolean): void;
   startRename(target: RenameTarget): void;
   stopRename(): void;
   setPathBarEditing(v: boolean): void;
@@ -211,6 +214,7 @@ export const useApp = create<AppState>()(
     settingsOpen: false,
     settingsPaneRequest: null,
     batchRenameOpen: false,
+    vimHelpOpen: false,
     renaming: null,
     pathBarEditing: false,
     searchFieldFocused: false,
@@ -259,6 +263,7 @@ export const useApp = create<AppState>()(
     openSettingsPane: (pane) => set({ settingsOpen: true, settingsPaneRequest: pane }),
     clearSettingsPaneRequest: () => set({ settingsPaneRequest: null }),
     setBatchRenameOpen: (open) => set({ batchRenameOpen: open }),
+    setVimHelpOpen: (open) => set({ vimHelpOpen: open }),
     startRename: (target) => set({ renaming: target }),
     stopRename: () => set({ renaming: null }),
     setPathBarEditing: (v) => set({ pathBarEditing: v }),
