@@ -647,6 +647,16 @@ function buildCommandSpecs(): CommandSpec[] {
       },
     },
     {
+      id: "toggleVimMode",
+      title: "Toggle Vim Mode",
+      keywords: "vim modal hjkl enable disable",
+      context: ["browse", "search", "preview", "palette"],
+      run: () => {
+        const settings = useSettings.getState();
+        settings.patch({ vimMode: !settings.vimMode });
+      },
+    },
+    {
       id: "vimHelp",
       title: "Vim Commands…",
       keywords: "vim hjkl modal keys bindings reference cheat sheet help",

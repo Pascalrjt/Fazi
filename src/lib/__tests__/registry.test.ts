@@ -6,6 +6,7 @@ import {
   registerCommand,
 } from "../commands/registry";
 import { registerAllCommands } from "../commands";
+import { useSettings } from "../../stores/settings";
 
 describe("registry mechanics", () => {
   beforeEach(() => clearRegistry());
@@ -58,5 +59,16 @@ describe("the real command set", () => {
     expect(byId.get("swapPane")?.shortcut).toBe("tab");
     expect(byId.get("newFolder")?.shortcut).toBe("cmd+shift+n");
     expect(byId.get("openLocation")?.shortcut).toBe("cmd+shift+g");
+  });
+
+  it("exposes a palette command that toggles Vim mode", () => {
+    useSettings.setState({ vimMode: false });
+    const command = allCommands().find((candidate) => candidate.id === "toggleVimMode");
+    expect(command?.hidden).not.toBe(true);
+
+    command?.run();
+    expect(useSettings.getState().vimMode).toBe(true);
+    command?.run();
+    expect(useSettings.getState().vimMode).toBe(false);
   });
 });
