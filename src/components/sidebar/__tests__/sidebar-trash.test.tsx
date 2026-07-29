@@ -39,6 +39,8 @@ import { startPointerDrag } from "../../../lib/pointerDrag";
 import { useVolumes } from "../../../stores/volumes";
 import { useSettings } from "../../../stores/settings";
 import { useOps } from "../../../stores/ops";
+import { useMenu } from "../../../stores/menu";
+import { usePanes } from "../../../stores/panes";
 
 const FOLDERS = {
   home: "/Users/me",
@@ -80,8 +82,9 @@ describe("sidebar Trash row", () => {
     mocks.runOpCalls.length = 0;
     mocks.trashPathsCalls.length = 0;
     useVolumes.setState({ folders: FOLDERS, volumes: [], loaded: true, error: null });
-    useSettings.setState({ favorites: [] });
+    useSettings.setState({ favorites: [], vimMode: false, sidebarCollapsed: false });
     useOps.setState({ cards: [], conflicts: [] });
+    useMenu.getState().close();
   });
 
   afterEach(() => {
@@ -91,6 +94,38 @@ describe("sidebar Trash row", () => {
   it("renders the Trash row from DefaultFolders.trash", () => {
     render(<Sidebar />);
     expect(screen.getByText("Trash")).toBeTruthy();
+  });
+
+  it("navigates sidebar rows with Vim keys and opens the focused row menu", () => {
+    useSettings.setState({ vimMode: true });
+    render(
+      <>
+        <Sidebar />
+        <div data-vim-surface="pane" data-pane-id="left" tabIndex={-1} />
+      </>,
+    );
+    const home = screen.getByText("Home").parentElement as HTMLElement;
+    const desktop = screen.getByText("Desktop").parentElement as HTMLElement;
+
+    home.focus();
+    fireEvent.keyDown(home, { key: "j", code: "KeyJ" });
+    expect(document.activeElement).toBe(desktop);
+
+    fireEvent.keyDown(desktop, { key: "g", code: "KeyG" });
+    fireEvent.keyDown(desktop, { key: "s", code: "KeyS" });
+    expect((document.activeElement as HTMLElement).dataset.vimSurface).toBe("pane");
+
+    desktop.focus();
+    fireEvent.keyDown(desktop, { key: "m", code: "KeyM" });
+    expect(useMenu.getState().open?.items[0]).toMatchObject({
+      type: "item",
+      label: "Open in New Tab",
+    });
+
+    useMenu.getState().close();
+    desktop.focus();
+    fireEvent.keyDown(desktop, { key: "Enter", code: "Enter" });
+    expect(usePanes.getState().panes[0].tabs[0].path).toBe(FOLDERS.desktop);
   });
 
   it("pointer-drag drop on the Trash row dispatches trash_paths, never a move", async () => {

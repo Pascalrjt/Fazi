@@ -19,6 +19,7 @@ import {
 } from "./commands";
 import { activePaneTab, usePanes } from "../stores/panes";
 import { useApp } from "../stores/app";
+import { cycleBrowseSurface, openKeyboardContextMenu } from "./keyboardFocus";
 
 /** Returns true when Vim consumed the key (caller must preventDefault). */
 export function handleVimKey(e: KeyboardEvent): boolean {
@@ -93,6 +94,12 @@ function runVimAction(action: VimAction): void {
       break;
     case "redo":
       runCommand("redo");
+      break;
+    case "openContextMenu":
+      openKeyboardContextMenu();
+      break;
+    case "cycleBrowseSurface":
+      cycleBrowseSurface();
       break;
     case "openHelp":
       runCommand("vimHelp");

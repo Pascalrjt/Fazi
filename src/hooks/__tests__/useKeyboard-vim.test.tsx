@@ -25,6 +25,7 @@ import { useApp } from "../../stores/app";
 import { usePanes } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVim } from "../../stores/vim";
+import { showMenu, useMenu } from "../../stores/menu";
 
 function Probe() {
   useKeyboard();
@@ -74,8 +75,8 @@ function seed(): void {
           },
         ],
       },
-      ...s.panes.slice(1),
     ],
+    split: false,
   });
 }
 
@@ -104,6 +105,7 @@ beforeEach(() => {
   });
   seed();
   useVim.getState().reset();
+  useMenu.getState().close();
 });
 
 afterEach(() => {
@@ -230,6 +232,54 @@ describe("routing order", () => {
     press("g", "KeyG");
     press("?", "Slash", { shiftKey: true });
     expect(useApp.getState().vimHelpOpen).toBe(false);
+  });
+
+  it("m opens the lead row menu and gs cycles all visible browse surfaces", () => {
+    const left = usePanes.getState().panes[0];
+    usePanes.setState({ panes: [left, { ...left, id: "right" }], split: true });
+    render(
+      <>
+        <Probe />
+        <div data-vim-surface="sidebar">
+          <div data-sidebar-row tabIndex={-1} aria-current="page" />
+        </div>
+        <div
+          data-entry-id="1"
+          data-pane-id="left"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            showMenu(10, 10, [{ type: "item", label: "Entry action" }]);
+          }}
+        />
+        <div data-vim-surface="pane" data-pane-id="left" tabIndex={-1} />
+        <div data-vim-surface="pane" data-pane-id="right" tabIndex={-1} />
+      </>,
+    );
+
+    press("j", "KeyJ");
+    expect(selection().lead).toBe(1);
+    press("m", "KeyM");
+    expect(useMenu.getState().open?.items[0]).toMatchObject({ label: "Entry action" });
+
+    useMenu.getState().close();
+    const sidebar = document.querySelector<HTMLElement>("[data-sidebar-row]")!;
+    const leftPane = document.querySelector<HTMLElement>('[data-pane-id="left"][data-vim-surface]')!;
+    const rightPane = document.querySelector<HTMLElement>('[data-pane-id="right"][data-vim-surface]')!;
+    sidebar.focus();
+
+    press("g", "KeyG");
+    press("s", "KeyS");
+    expect(document.activeElement).toBe(leftPane);
+    expect(useApp.getState().activePaneId).toBe("left");
+
+    press("g", "KeyG");
+    press("s", "KeyS");
+    expect(document.activeElement).toBe(rightPane);
+    expect(useApp.getState().activePaneId).toBe("right");
+
+    press("g", "KeyG");
+    press("s", "KeyS");
+    expect(document.activeElement).toBe(sidebar);
   });
 
   it("escape with nothing pending falls through to the registry cascade", () => {

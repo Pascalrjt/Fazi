@@ -76,6 +76,8 @@ const GridCell = memo(function GridCell({
   return (
     <div
       data-row
+      data-entry-id={entry.id}
+      data-pane-id={paneId}
       className={clsx(
         "flex cursor-default flex-col items-center gap-1 rounded-lg p-2",
         entry.hidden && "opacity-60",

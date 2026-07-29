@@ -27,6 +27,10 @@ import { useFuzzy } from "../../stores/fuzzy";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
 import { useVolumes } from "../../stores/volumes";
+import {
+  hasKeyboardContextMenuTarget,
+  openKeyboardContextMenu,
+} from "../keyboardFocus";
 
 let registered = false;
 
@@ -207,6 +211,14 @@ function buildCommandSpecs(): CommandSpec[] {
       keywords: "application app choose",
       enabled: hasSelection,
       run: () => actions.showOpenWithMenuAtCenter(),
+    },
+    {
+      id: "contextMenu",
+      title: "Show Context Menu",
+      keywords: "right click actions menu",
+      shortcut: "shift+f10",
+      enabled: hasKeyboardContextMenuTarget,
+      run: () => openKeyboardContextMenu(),
     },
     {
       id: "share",

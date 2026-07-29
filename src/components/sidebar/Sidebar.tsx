@@ -38,6 +38,13 @@ import { confirmEmptyTrash, ejectVolume } from "../../lib/actions";
 import { showMenu } from "../../stores/menu";
 import { formatBytes } from "../../lib/format";
 import type { Volume } from "../../types/ipc";
+import { runCommand } from "../../lib/commands/registry";
+import {
+  cycleBrowseSurface,
+  focusActivePane,
+  openKeyboardContextMenu,
+} from "../../lib/keyboardFocus";
+import { useVim } from "../../stores/vim";
 
 /** Fraction of a row's height at top/bottom where a path drag means "pin
  *  here" (insertion) rather than "move into this folder" (center). */
@@ -91,7 +98,17 @@ interface FavSectionHooks {
   cancelReorder(): void;
 }
 
-function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSectionHooks }) {
+function SidebarRow({
+  row,
+  favSection,
+  tabStop,
+  onFocused,
+}: {
+  row: RowSpec;
+  favSection?: FavSectionHooks;
+  tabStop: boolean;
+  onFocused(key: string): void;
+}) {
   const activePaneId = useApp((s) => s.activePaneId);
   const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
   const tab = pane ? activeTabOf(pane) : null;
@@ -151,12 +168,18 @@ function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSection
   return (
     <div
       ref={rowRef}
+      data-sidebar-row
+      data-sidebar-key={row.key}
+      tabIndex={tabStop ? 0 : -1}
+      role="link"
+      aria-current={isCurrent ? "page" : undefined}
       className={clsx(
-        "group mx-2 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px]",
+        "group mx-2 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-accent",
         isCurrent ? "bg-accent-dim text-primary" : "text-secondary hover:bg-hov",
         dropping && "drop-ring",
         favSection?.reorderingPath === row.path && "opacity-60",
       )}
+      onFocus={() => onFocused(row.key)}
       onPointerDown={(e) => {
         // Pointer-based pin reorder (see the file header for why not HTML5).
         if (!row.favorite || !favSection || e.button !== 0) return;
@@ -199,6 +222,7 @@ function SidebarRow({ row, favSection }: { row: RowSpec; favSection?: FavSection
       }}
       onContextMenu={(e) => {
         e.preventDefault();
+        e.currentTarget.focus({ preventScroll: true });
         showMenu(e.clientX, e.clientY, [
           {
             type: "item",
@@ -294,9 +318,13 @@ function insertIndexFromPoint(container: HTMLElement | null, clientY: number): n
 function FavoritesSection({
   defaults,
   favorites,
+  tabStopKey,
+  onFocused,
 }: {
   defaults: RowSpec[];
   favorites: RowSpec[];
+  tabStopKey: string | null;
+  onFocused(key: string): void;
 }) {
   const moveFavorite = useSettings((s) => s.moveFavorite);
   const [insertIndex, setInsertIndex] = useState<number | null>(null);
@@ -343,13 +371,24 @@ function FavoritesSection({
     <div ref={containerRef} className="rounded-md">
       <SectionLabel>Favorites</SectionLabel>
       {defaults.map((row) => (
-        <SidebarRow key={row.key} row={row} favSection={favSection} />
+        <SidebarRow
+          key={row.key}
+          row={row}
+          favSection={favSection}
+          tabStop={row.key === tabStopKey}
+          onFocused={onFocused}
+        />
       ))}
       {favorites.map((row, i) => (
         <Fragment key={row.key}>
           {insertIndex === i && <InsertionLine />}
           <div data-fav-index={i}>
-            <SidebarRow row={row} favSection={favSection} />
+            <SidebarRow
+              row={row}
+              favSection={favSection}
+              tabStop={row.key === tabStopKey}
+              onFocused={onFocused}
+            />
           </div>
         </Fragment>
       ))}
@@ -359,9 +398,13 @@ function FavoritesSection({
 }
 
 export function Sidebar() {
+  const sidebarRef = useRef<HTMLElement>(null);
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const collapsed = useSettings((s) => s.sidebarCollapsed);
   const position = useSettings((s) => s.sidebarPosition);
   const pinned = useSettings((s) => s.favorites);
+  const showTrash = useSettings((s) => s.showTrashInSidebar);
+  const paneAccentLine = useSettings((s) => s.paneAccentLine);
   const folders = useVolumes((s) => s.folders);
   const volumes = useVolumes((s) => s.volumes);
 
@@ -390,7 +433,6 @@ export function Sidebar() {
     favorite: true,
   }));
 
-  const showTrash = useSettings((s) => s.showTrashInSidebar);
   const trashRows: RowSpec[] =
     folders && showTrash
       ? [{ key: "trash", label: "Trash", path: folders.trash, icon: Trash2, trash: true }]
@@ -404,32 +446,191 @@ export function Sidebar() {
     volume: v,
   }));
 
+  const rows = [...defaults, ...favoriteRows, ...trashRows, ...volumeRows];
+  const tabStopKey = rows.some((row) => row.key === focusedKey)
+    ? focusedKey
+    : (rows[0]?.key ?? null);
+
+  const focusRow = (index: number) => {
+    const elements = sidebarRef.current?.querySelectorAll<HTMLElement>("[data-sidebar-row]");
+    if (!elements || elements.length === 0) return;
+    const clamped = Math.max(0, Math.min(elements.length - 1, index));
+    elements[clamped].focus({ preventScroll: true });
+    elements[clamped].scrollIntoView?.({ block: "nearest" });
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
+    const target = (e.target as HTMLElement).closest<HTMLElement>("[data-sidebar-row]");
+    if (!target) return;
+    const elements = [...(sidebarRef.current?.querySelectorAll<HTMLElement>("[data-sidebar-row]") ?? [])];
+    const index = elements.indexOf(target);
+    if (index < 0) return;
+    const vimOn = useSettings.getState().vimMode;
+    const vimKey = vimOn && !e.metaKey && !e.ctrlKey && !e.altKey;
+    const vim = useVim.getState();
+    const state = vim.state;
+    const handled = () => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const reset = () => vim.reset();
+
+    if (state.pending === "g" && !vimKey) {
+      reset();
+      return;
+    }
+    if (vimKey && state.pending === "g") {
+      handled();
+      reset();
+      switch (e.key) {
+        case "g":
+          focusRow(0);
+          break;
+        case "t":
+          runCommand("nextTab");
+          break;
+        case "T":
+          runCommand("prevTab");
+          break;
+        case "?":
+          runCommand("vimHelp");
+          break;
+        case "s":
+          cycleBrowseSurface();
+          break;
+      }
+      return;
+    }
+
+    if (vimKey && (/^[1-9]$/.test(e.key) || (e.key === "0" && state.count !== ""))) {
+      handled();
+      vim.set({ ...state, count: state.count + e.key });
+      return;
+    }
+
+    const count = vimKey && state.count !== "" ? parseInt(state.count, 10) : 1;
+    switch (e.key) {
+      case "ArrowDown":
+      case "ArrowUp":
+      case "j":
+      case "k": {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if ((e.key === "j" || e.key === "k") && !vimKey) return;
+        handled();
+        reset();
+        const dir = e.key === "ArrowDown" || e.key === "j" ? 1 : -1;
+        focusRow(index + dir * count);
+        return;
+      }
+      case "Home":
+        handled();
+        reset();
+        focusRow(0);
+        return;
+      case "End":
+      case "G":
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === "G" && !vimKey) return;
+        handled();
+        reset();
+        focusRow(elements.length - 1);
+        return;
+      case "g":
+        if (!vimKey) return;
+        handled();
+        vim.set({ mode: "normal", count: state.count, pending: "g" });
+        return;
+      case "Enter":
+      case "ArrowRight":
+      case "l":
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === "l" && !vimKey) return;
+        handled();
+        reset();
+        target.click();
+        focusActivePane();
+        return;
+      case "Escape":
+      case "ArrowLeft":
+      case "h":
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === "h" && !vimKey) return;
+        handled();
+        reset();
+        focusActivePane();
+        return;
+      case "m":
+        if (!vimKey) return;
+        handled();
+        reset();
+        openKeyboardContextMenu();
+        return;
+      case "v":
+      case "y":
+      case "d":
+      case "p":
+        if (!vimKey) return;
+        handled();
+        reset();
+        return; // file-selection operations do not apply to locations
+      default:
+        if (vimKey && state.count !== "") reset();
+    }
+  };
+
   return (
-    <div
+    <nav
+      ref={sidebarRef}
+      data-vim-surface="sidebar"
+      aria-label="Locations"
+      onKeyDown={onKeyDown}
+      onFocusCapture={(e) => {
+        if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) {
+          useVim.getState().reset();
+        }
+      }}
       className={clsx(
-        "flex w-[200px] shrink-0 flex-col overflow-y-auto border-edge bg-window pb-2",
+        "keyboard-surface flex w-[200px] shrink-0 flex-col overflow-hidden border-edge bg-window",
+        paneAccentLine && "keyboard-surface-accent",
         position === "right" ? "border-l" : "border-r",
       )}
     >
-      {(defaults.length > 0 || favoriteRows.length > 0) && (
-        <FavoritesSection defaults={defaults} favorites={favoriteRows} />
-      )}
-      {trashRows.map((row) => (
-        <SidebarRow key={row.key} row={row} />
-      ))}
-      {volumeRows.length > 0 && (
-        <>
-          <SectionLabel>Volumes</SectionLabel>
-          {volumeRows.map((row) => (
-            <SidebarRow key={row.key} row={row} />
-          ))}
-        </>
-      )}
-      {defaults.length === 0 && volumeRows.length === 0 && (
-        <div className="px-4 py-6 text-xs text-tertiary">
-          Locations appear here when the backend is running.
-        </div>
-      )}
-    </div>
+      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+        {(defaults.length > 0 || favoriteRows.length > 0) && (
+          <FavoritesSection
+            defaults={defaults}
+            favorites={favoriteRows}
+            tabStopKey={tabStopKey}
+            onFocused={setFocusedKey}
+          />
+        )}
+        {trashRows.map((row) => (
+          <SidebarRow
+            key={row.key}
+            row={row}
+            tabStop={row.key === tabStopKey}
+            onFocused={setFocusedKey}
+          />
+        ))}
+        {volumeRows.length > 0 && (
+          <>
+            <SectionLabel>Volumes</SectionLabel>
+            {volumeRows.map((row) => (
+              <SidebarRow
+                key={row.key}
+                row={row}
+                tabStop={row.key === tabStopKey}
+                onFocused={setFocusedKey}
+              />
+            ))}
+          </>
+        )}
+        {defaults.length === 0 && volumeRows.length === 0 && (
+          <div className="px-4 py-6 text-xs text-tertiary">
+            Locations appear here when the backend is running.
+          </div>
+        )}
+      </div>
+    </nav>
   );
 }

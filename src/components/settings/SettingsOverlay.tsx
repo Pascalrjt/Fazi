@@ -155,7 +155,7 @@ function AppearancePane() {
       </SettingRow>
       <SettingRow
         label="Accent line"
-        hint="Accent-colored line above the active pane's tabs."
+        hint="Accent-colored line above the focused sidebar or explorer pane."
       >
         <Toggle checked={s.paneAccentLine} onChange={(v) => s.patch({ paneAccentLine: v })} />
       </SettingRow>

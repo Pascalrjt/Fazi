@@ -3,10 +3,11 @@
  * icons, shortcut hints, keyboard navigation, click-away + Esc.
  * One instance mounted in App; opened via the menu store.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useMenu, type MenuItem } from "../../stores/menu";
 import { shortcutLabel } from "../../lib/keyboard";
+import { useSettings } from "../../stores/settings";
 
 const MENU_WIDTH = 232;
 const ITEM_H = 26;
@@ -17,15 +18,22 @@ interface MenuListProps {
   y: number;
   depth: number;
   onClose: () => void;
+  onBack?: () => void;
 }
 
 function estimateHeight(items: MenuItem[]): number {
   return items.reduce((h, it) => h + (it.type === "separator" ? 9 : ITEM_H), 10);
 }
 
-function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
+function firstSelectable(items: MenuItem[]): number {
+  return items.findIndex((item) => item.type === "item" && !item.disabled);
+}
+
+function MenuList({ items, x, y, depth, onClose, onBack }: MenuListProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(-1);
+  const menuId = useId().replace(/:/g, "");
+  const [active, setActive] = useState(() => firstSelectable(items));
+  const pendingG = useRef(false);
   const [submenu, setSubmenu] = useState<{
     index: number;
     items: MenuItem[] | "loading";
@@ -40,6 +48,16 @@ function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
     const ny = Math.min(y, window.innerHeight - height - 8);
     setPos({ x: Math.max(8, nx), y: Math.max(8, ny) });
   }, [x, y, items]);
+
+  useEffect(() => {
+    ref.current?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    if (active < 0 || items[active]?.type !== "item" || items[active].disabled) {
+      setActive(firstSelectable(items));
+    }
+  }, [active, items]);
 
   const openSubmenu = useCallback(
     (index: number) => {
@@ -63,53 +81,110 @@ function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
     [items, pos],
   );
 
-  // keyboard navigation — only the deepest open menu listens
-  useEffect(() => {
-    if (submenu) return;
-    const selectable = (i: number) => {
-      const it = items[i];
-      return it.type === "item" && !it.disabled;
-    };
-    const onKey = (e: KeyboardEvent) => {
-      e.stopPropagation();
-      switch (e.key) {
-        case "Escape":
-          e.preventDefault();
-          onClose();
-          break;
-        case "ArrowDown":
-        case "ArrowUp": {
-          e.preventDefault();
-          const dir = e.key === "ArrowDown" ? 1 : -1;
-          let i = active;
-          for (let step = 0; step < items.length; step++) {
-            i = (i + dir + items.length) % items.length;
-            if (selectable(i)) break;
-          }
+  const selectable = useCallback(
+    (i: number) => items[i]?.type === "item" && !items[i].disabled,
+    [items],
+  );
+
+  const moveActive = useCallback(
+    (dir: 1 | -1) => {
+      let i = active;
+      for (let step = 0; step < items.length; step++) {
+        i = (i + dir + items.length) % items.length;
+        if (selectable(i)) {
           setActive(i);
-          break;
-        }
-        case "ArrowRight":
-          e.preventDefault();
-          if (active >= 0) openSubmenu(active);
-          break;
-        case "Enter": {
-          e.preventDefault();
-          const it = items[active];
-          if (it && it.type === "item" && !it.disabled) {
-            if (it.submenu) openSubmenu(active);
-            else {
-              onClose();
-              it.action?.();
-            }
-          }
-          break;
+          return;
         }
       }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [items, active, submenu, onClose, openSubmenu]);
+    },
+    [active, items.length, selectable],
+  );
+
+  const activate = useCallback(() => {
+    const item = items[active];
+    if (!item || item.type !== "item" || item.disabled) return;
+    if (item.submenu) openSubmenu(active);
+    else {
+      onClose();
+      item.action?.();
+    }
+  }, [active, items, onClose, openSubmenu]);
+
+  const closeSubmenu = useCallback(() => {
+    ref.current?.focus({ preventScroll: true });
+    setSubmenu(null);
+  }, []);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const vimKey =
+      useSettings.getState().vimMode && !e.metaKey && !e.ctrlKey && !e.altKey;
+
+    if (pendingG.current && !vimKey) pendingG.current = false;
+    if (vimKey && pendingG.current) {
+      pendingG.current = false;
+      e.preventDefault();
+      if (e.key === "g") setActive(firstSelectable(items));
+      return;
+    }
+    if (vimKey && e.key === "g") {
+      pendingG.current = true;
+      e.preventDefault();
+      return;
+    }
+
+    switch (e.key) {
+      case "Escape":
+        e.preventDefault();
+        onClose();
+        break;
+      case "ArrowDown":
+      case "ArrowUp":
+      case "j":
+      case "k": {
+        if ((e.key === "j" || e.key === "k") && !vimKey) break;
+        e.preventDefault();
+        moveActive(e.key === "ArrowDown" || e.key === "j" ? 1 : -1);
+        break;
+      }
+      case "Home":
+        e.preventDefault();
+        setActive(firstSelectable(items));
+        break;
+      case "End":
+      case "G": {
+        if (e.key === "G" && !vimKey) break;
+        e.preventDefault();
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (selectable(i)) {
+            setActive(i);
+            break;
+          }
+        }
+        break;
+      }
+      case "ArrowLeft":
+      case "h":
+        if (e.key === "h" && !vimKey) break;
+        e.preventDefault();
+        onBack?.();
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        if (active >= 0) openSubmenu(active);
+        break;
+      case "l":
+        if (!vimKey) break;
+        e.preventDefault();
+        activate();
+        break;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        activate();
+        break;
+    }
+  };
 
   return (
     <>
@@ -118,6 +193,9 @@ function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
         className="anim-pop fixed z-[100] rounded-lg border border-edge bg-raised py-[5px]"
         style={{ left: pos.x, top: pos.y, width: MENU_WIDTH, boxShadow: "var(--shadow-overlay)" }}
         role="menu"
+        tabIndex={-1}
+        aria-activedescendant={active >= 0 ? `${menuId}-item-${active}` : undefined}
+        onKeyDown={onKeyDown}
       >
         {items.map((item, i) => {
           if (item.type === "separator") {
@@ -127,6 +205,7 @@ function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
           return (
             <div
               key={i}
+              id={`${menuId}-item-${i}`}
               role="menuitem"
               aria-disabled={item.disabled}
               className={clsx(
@@ -140,6 +219,7 @@ function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
               )}
               onMouseEnter={() => {
                 if (item.disabled) return;
+                pendingG.current = false;
                 setActive(i);
                 if (item.submenu) openSubmenu(i);
                 else setSubmenu(null);
@@ -197,6 +277,7 @@ function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
           y={submenu.y}
           depth={depth + 1}
           onClose={onClose}
+          onBack={closeSubmenu}
         />
       )}
     </>
@@ -206,6 +287,19 @@ function MenuList({ items, x, y, depth, onClose }: MenuListProps) {
 export function ContextMenuHost() {
   const open = useMenu((s) => s.open);
   const close = useMenu((s) => s.close);
+  const returnFocus = useRef<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (open) {
+      if (returnFocus.current == null && document.activeElement instanceof HTMLElement) {
+        returnFocus.current = document.activeElement;
+      }
+      return;
+    }
+    const target = returnFocus.current;
+    returnFocus.current = null;
+    if (target?.isConnected) target.focus({ preventScroll: true });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;

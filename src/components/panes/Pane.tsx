@@ -73,11 +73,15 @@ export function Pane({ paneId }: { paneId: PaneId }) {
 
   return (
     <div
+      data-vim-surface="pane"
+      data-pane-id={pane.id}
+      tabIndex={-1}
       className={clsx(
-        "flex min-w-0 flex-1 flex-col bg-pane",
+        "keyboard-surface flex min-w-0 flex-1 flex-col bg-pane outline-none",
         !isActive && "opacity-80",
       )}
-      onMouseDownCapture={() => {
+      onMouseDownCapture={(e) => {
+        e.currentTarget.focus({ preventScroll: true });
         if (!isActive) setActivePane(paneId);
       }}
     >

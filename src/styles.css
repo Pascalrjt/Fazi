@@ -360,6 +360,33 @@ textarea {
   border-radius: 5px;
 }
 
+/* Keyboard surface ownership: a single accent rule replaces the browser's
+   full focus outline and makes gs transitions visible without shifting layout. */
+.keyboard-surface {
+  position: relative;
+}
+
+.keyboard-surface::after {
+  content: "";
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  pointer-events: none;
+  background: var(--accent);
+  opacity: 0;
+}
+
+.keyboard-surface[data-vim-surface="sidebar"].keyboard-surface-accent:focus-within::after {
+  opacity: 1;
+}
+
+.keyboard-surface[data-vim-surface="pane"]:focus > .keyboard-pane-accent {
+  border-top-color: var(--accent);
+}
+
 /* Settings search: rows filter themselves (SettingsFilterContext), so hide
    result sections whose rows all filtered out, and show the "No matching
    settings" note only when nothing matched anywhere. */

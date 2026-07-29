@@ -96,6 +96,11 @@ describe("prefix sequences (gg, yy, dd) — no timeout", () => {
     expect(fromVisual.state.mode).toBe("normal");
   });
 
+  it("m opens the context menu and gs cycles browse surfaces", () => {
+    expect(feed(["m"]).action).toEqual({ kind: "openContextMenu" });
+    expect(feed(["g", "s"]).action).toEqual({ kind: "cycleBrowseSurface" });
+  });
+
   it("an unknown continuation cancels the prefix and swallows the key", () => {
     const r = feed(["d", "j"]);
     expect(r.handled).toBe(true);
@@ -195,7 +200,7 @@ describe("status label", () => {
 
 describe("isVimReservedShortcut", () => {
   const reserved = [
-    "j", "k", "h", "l", "g", "v", "y", "d", "p", "u", "/", "5", "0",
+    "j", "k", "h", "l", "g", "v", "y", "d", "p", "u", "m", "/", "5", "0",
     "shift+g", "ctrl+r", "ctrl+p", "shift+;", "shift+/",
   ];
   // t is free: gt only reserves g itself — continuations never dispatch alone.
