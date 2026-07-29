@@ -353,6 +353,14 @@ function SearchResults({ openPane }: { openPane: (pane: PaneId) => void }) {
             Open Keyboard settings
           </button>
         </SettingRow>
+        <SettingRow label="Vim mode" hint="Browse with hjkl, visual selection, yy/dd/p.">
+          <button
+            className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov"
+            onClick={() => openPane("keyboard")}
+          >
+            Open Keyboard settings
+          </button>
+        </SettingRow>
       </SearchSection>
       <SearchSection label="Search"><SearchPane /></SearchSection>
       <SearchSection label="Operations"><OperationsPane /></SearchSection>
@@ -371,6 +379,17 @@ export function SettingsOverlay() {
   const [pane, setPane] = useState<PaneId>("general");
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
+  const paneRequest = useApp((s) => s.settingsPaneRequest);
+
+  // Deep-link from the palette ("Vim Commands…" → keyboard pane).
+  useEffect(() => {
+    if (!open || paneRequest == null) return;
+    if (PANES.some(([id]) => id === paneRequest)) {
+      setQuery("");
+      setPane(paneRequest as PaneId);
+    }
+    useApp.getState().clearSettingsPaneRequest();
+  }, [open, paneRequest]);
 
   useEffect(() => {
     if (!open) return;

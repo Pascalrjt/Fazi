@@ -12,6 +12,7 @@ import { recheckCutMirror } from "./lib/actions";
 import { usePanes } from "./stores/panes";
 import { useVolumes } from "./stores/volumes";
 import { useApp } from "./stores/app";
+import { useVim } from "./stores/vim";
 import { pluralize } from "./lib/format";
 import { Toolbar } from "./components/chrome/Toolbar";
 import { StatusBar } from "./components/chrome/StatusBar";
@@ -46,12 +47,14 @@ function syncNativeMenuShortcuts(): void {
 }
 
 // Keybinding overrides re-register the whole command set (labels, menus, and
-// dispatch all read the registry).
+// dispatch all read the registry). The Vim toggle re-registers too: sanitize
+// strips Vim-reserved overrides only while the mode is on.
 useSettings.subscribe((s, prev) => {
-  if (s.keybindingOverrides !== prev.keybindingOverrides) {
+  if (s.keybindingOverrides !== prev.keybindingOverrides || s.vimMode !== prev.vimMode) {
     rebuildRegistry(s.keybindingOverrides);
     syncNativeMenuShortcuts();
   }
+  if (s.vimMode !== prev.vimMode) useVim.getState().reset();
 });
 
 /** Apply theme + accent to the document root. */
