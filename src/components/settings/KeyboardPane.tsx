@@ -39,6 +39,7 @@ const VIM_CHEATS: Array<[string, string]> = [
   ["?", "search everywhere"],
   [":", "command palette"],
   ["⌃P", "go to file (fuzzy finder)"],
+  ["⌃J / ⌃K", "next / previous in finder and palette lists"],
   ["gt / gT", "next / previous tab"],
   ["Esc", "cancel pending key, exit visual, then clear as usual"],
 ];

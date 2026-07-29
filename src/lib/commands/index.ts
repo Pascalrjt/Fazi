@@ -617,7 +617,7 @@ function buildCommandSpecs(): CommandSpec[] {
     {
       id: "fuzzyFinder",
       title: "Go to File…",
-      keywords: "fuzzy jump quick open anything",
+      keywords: "fuzzy finder jump quick open anything",
       shortcut: "cmd+p",
       context: ["browse", "search"],
       run: () => useFuzzy.getState().openFinder(),
