@@ -15,8 +15,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useApp, type SearchScope } from "../../stores/app";
-import { usePanes, activeTabOf } from "../../stores/panes";
+import { usePanes, activePaneTab, activeTabIn } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVolumes } from "../../stores/volumes";
 import { pathSegments } from "../../lib/format";
@@ -57,9 +58,7 @@ function Breadcrumbs() {
   const activePaneId = useApp((s) => s.activePaneId);
   const editing = useApp((s) => s.pathBarEditing);
   const setEditing = useApp((s) => s.setPathBarEditing);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const navigate = usePanes((s) => s.navigate);
-  const tab = pane ? activeTabOf(pane) : null;
+  const path = usePanes((s) => activeTabIn(s, activePaneId)?.path ?? null);
   const [draft, setDraft] = useState("");
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -73,10 +72,15 @@ function Breadcrumbs() {
     if (restore) requestAnimationFrame(() => restoreBrowseFocus(target));
   };
 
+  const navigateTo = (dest: string) => {
+    const at = activePaneTab();
+    if (at) usePanes.getState().navigate(at.pane.id, at.tab.id, dest);
+  };
+
   useEffect(() => {
-    if (editing && tab) {
+    if (editing && path != null) {
       returnFocusRef.current ??= captureBrowseFocus();
-      setDraft(tab.path);
+      setDraft(path);
       // focus after mount
       requestAnimationFrame(() => {
         inputRef.current?.focus();
@@ -118,7 +122,7 @@ function Breadcrumbs() {
     );
   }, []);
 
-  if (!tab || !pane) return null;
+  if (path == null) return null;
 
   if (editing) {
     return (
@@ -128,9 +132,9 @@ function Breadcrumbs() {
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
-            const path = draft.trim().replace(/^~(?=\/|$)/, useVolumes.getState().folders?.home ?? "~");
-            if (path.startsWith("/")) {
-              navigate(pane.id, tab.id, path.length > 1 ? path.replace(/\/+$/, "") : "/");
+            const dest = draft.trim().replace(/^~(?=\/|$)/, useVolumes.getState().folders?.home ?? "~");
+            if (dest.startsWith("/")) {
+              navigateTo(dest.length > 1 ? dest.replace(/\/+$/, "") : "/");
             }
             finishEditing(true);
           } else if (e.key === "Escape") {
@@ -145,7 +149,7 @@ function Breadcrumbs() {
     );
   }
 
-  const segs = pathSegments(tab.path);
+  const segs = pathSegments(path);
   const shown = segs.length > 4 ? segs.slice(-4) : segs;
   const elided = segs.length > 4;
 
@@ -172,7 +176,7 @@ function Breadcrumbs() {
               dropTarget === seg.path && "drop-ring",
             )}
             onClick={() => {
-              if (seg.path !== tab.path) navigate(pane.id, tab.id, seg.path);
+              if (seg.path !== path) navigateTo(seg.path);
             }}
             data-crumb-path={seg.path}
           >
@@ -192,11 +196,8 @@ const PREDICATE_HINTS: Array<[string, string]> = [
 ];
 
 function SearchField() {
-  const activePaneId = useApp((s) => s.activePaneId);
   const focusSeq = useApp((s) => s.searchFocusSeq);
   const globalSearch = useApp((s) => s.globalSearch);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
   const homePath = useVolumes((s) => s.folders?.home ?? null);
   const inputRef = useRef<HTMLInputElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -220,9 +221,14 @@ function SearchField() {
   };
 
   const scopePath = (scope: SearchScope): string | null => {
-    if (scope === "folder") return tab?.path ?? "/";
+    if (scope === "folder") return activePaneTab()?.tab.path ?? "/";
     if (scope === "home") return homePath;
     return null;
+  };
+
+  const setActiveFilter = (query: string) => {
+    const at = activePaneTab();
+    if (at) usePanes.getState().setFilter(at.pane.id, at.tab.id, query);
   };
 
   const kickGlobal = (query: string, scope: SearchScope) => {
@@ -238,8 +244,8 @@ function SearchField() {
     setValue(query);
     if (globalSearch.active) {
       kickGlobal(query, globalSearch.scope);
-    } else if (tab && pane) {
-      usePanes.getState().setFilter(pane.id, tab.id, query);
+    } else {
+      setActiveFilter(query);
     }
   };
 
@@ -247,7 +253,7 @@ function SearchField() {
     setValue("");
     if (debounceRef.current) clearTimeout(debounceRef.current);
     useApp.getState().closeGlobalSearch();
-    if (tab && pane) usePanes.getState().setFilter(pane.id, tab.id, "");
+    setActiveFilter("");
   };
 
   return (
@@ -275,7 +281,7 @@ function SearchField() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !globalSearch.active && value.trim() !== "") {
               // promote the filter to a global search
-              if (tab && pane) usePanes.getState().setFilter(pane.id, tab.id, "");
+              setActiveFilter("");
               kickGlobal(value, "folder");
             } else if (e.key === "Escape") {
               clear();
@@ -408,13 +414,18 @@ function toolbarMenuItems(): MenuItem[] {
 
 export function Toolbar() {
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  const { loading, canBack, canForward } = usePanes(
+    useShallow((s) => {
+      const tab = activeTabIn(s, activePaneId);
+      return {
+        loading: tab?.loading ?? false,
+        canBack: (tab?.back.length ?? 0) > 0,
+        canForward: (tab?.forward.length ?? 0) > 0,
+      };
+    }),
+  );
   const viewMode = useSettings((s) => s.viewMode);
   const setViewMode = useSettings((s) => s.setViewMode);
-  const back = usePanes((s) => s.back);
-  const forward = usePanes((s) => s.forward);
-  const loading = tab?.loading ?? false;
 
   return (
     <div
@@ -431,14 +442,20 @@ export function Toolbar() {
         <NavButton
           icon={ChevronLeft}
           title="Back (⌘[)"
-          disabled={!tab || tab.back.length === 0}
-          onClick={() => pane && tab && back(pane.id, tab.id)}
+          disabled={!canBack}
+          onClick={() => {
+            const at = activePaneTab();
+            if (at) usePanes.getState().back(at.pane.id, at.tab.id);
+          }}
         />
         <NavButton
           icon={ChevronRight}
           title="Forward (⌘])"
-          disabled={!tab || tab.forward.length === 0}
-          onClick={() => pane && tab && forward(pane.id, tab.id)}
+          disabled={!canForward}
+          onClick={() => {
+            const at = activePaneTab();
+            if (at) usePanes.getState().forward(at.pane.id, at.tab.id);
+          }}
         />
       </div>
       <Breadcrumbs />

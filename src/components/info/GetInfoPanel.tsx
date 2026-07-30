@@ -4,12 +4,13 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
 import type { Entry, GetInfoResult } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
 import * as ipc from "../../lib/ipc";
 import { safeIpc } from "../../lib/safeIpc";
 import { useApp } from "../../stores/app";
-import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
+import { usePanes, activeTabIn, visibleEntries } from "../../stores/panes";
 import { entryKindLabel } from "../../lib/sort";
 import { formatBytes, formatDateFull, pluralize } from "../../lib/format";
 import { FINDER_TAG_COLORS } from "../../lib/tags";
@@ -206,19 +207,37 @@ function MultiInfo({ entries }: { entries: Entry[] }) {
   );
 }
 
+/** Mount-gate: while the panel is closed nothing subscribes to the panes
+ *  store, so the O(n) selection work below costs nothing per store tick. */
 export function GetInfoPanel() {
   const open = useApp((s) => s.getInfoOpen);
+  if (!open) return null;
+  return <PanelBody />;
+}
+
+function PanelBody() {
   const setOpen = useApp((s) => s.setGetInfoOpen);
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  const { entries, filter, showHidden, selection } = usePanes(
+    useShallow((s) => {
+      const tab = activeTabIn(s, activePaneId);
+      return {
+        entries: tab?.entries ?? null,
+        filter: tab?.filter ?? "",
+        showHidden: tab?.showHidden ?? false,
+        selection: tab?.selection ?? null,
+      };
+    }),
+  );
 
   const selected = useMemo(() => {
-    if (!tab) return [];
-    return visibleEntries(tab).filter((e) => tab.selection.selected.has(e.id));
-  }, [tab]);
+    if (!entries || !selection) return [];
+    return visibleEntries({ entries, filter, showHidden }).filter((e) =>
+      selection.selected.has(e.id),
+    );
+  }, [entries, filter, showHidden, selection]);
 
-  if (!open || !tab) return null;
+  if (!entries) return null;
 
   return (
     <div className="anim-slide-left flex w-[280px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-raised py-3">

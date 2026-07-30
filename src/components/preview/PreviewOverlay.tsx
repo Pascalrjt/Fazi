@@ -4,11 +4,12 @@
  * numbers), everything else a large thumbnail with an info caption.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { Entry } from "../../types/ipc";
 import { previewUrl, thumbUrl } from "../../types/ipc";
 import * as ipc from "../../lib/ipc";
 import { useApp } from "../../stores/app";
-import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
+import { usePanes, activeTabIn, visibleEntries } from "../../stores/panes";
 import { previewModeFor } from "../../lib/fileTypes";
 import { entryKindLabel } from "../../lib/sort";
 import { formatBytes, formatDateFull } from "../../lib/format";
@@ -243,35 +244,47 @@ function PreviewContent({ entry }: { entry: Entry }) {
   }
 }
 
+/** Mount-gate: while the preview is closed nothing subscribes to the panes
+ *  store, so the O(n) list work below costs nothing per store tick. */
 export function PreviewOverlay() {
   const open = useApp((s) => s.previewOpen);
+  if (!open) return null;
+  return <OverlayBody />;
+}
+
+function OverlayBody() {
   const setOpen = useApp((s) => s.setPreviewOpen);
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  const { entries, filter, showHidden, selection } = usePanes(
+    useShallow((s) => {
+      const tab = activeTabIn(s, activePaneId);
+      return {
+        entries: tab?.entries ?? null,
+        filter: tab?.filter ?? "",
+        showHidden: tab?.showHidden ?? false,
+        selection: tab?.selection ?? null,
+      };
+    }),
+  );
 
   // the list we walk: the selection if >1, else the whole visible dir
   const list = useMemo(() => {
-    if (!tab) return [];
-    const vis = visibleEntries(tab);
-    const sel = vis.filter((e) => tab.selection.selected.has(e.id));
+    if (!entries) return [];
+    const vis = visibleEntries({ entries, filter, showHidden });
+    const sel = selection ? vis.filter((e) => selection.selected.has(e.id)) : [];
     return sel.length > 1 ? sel : vis;
-  }, [tab]);
+  }, [entries, filter, showHidden, selection]);
 
-  const [index, setIndex] = useState(0);
-
-  useEffect(() => {
-    if (!open || !tab) return;
-    const leadId = tab.selection.lead ?? [...tab.selection.selected][0];
+  // start at the lead row — evaluated once, on mount = on open
+  const [index, setIndex] = useState(() => {
+    const leadId = selection?.lead ?? (selection ? [...selection.selected][0] : undefined);
     const idx = list.findIndex((e) => e.id === leadId);
-    setIndex(idx >= 0 ? idx : 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    return idx >= 0 ? idx : 0;
+  });
 
   const close = useCallback(() => setOpen(false), [setOpen]);
 
   useEffect(() => {
-    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return; // let ⌘Y etc. through
       switch (e.key) {
@@ -295,9 +308,8 @@ export function PreviewOverlay() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, list.length, close]);
+  }, [list.length, close]);
 
-  if (!open) return null;
   const entry = list[index];
   if (!entry) {
     return null;

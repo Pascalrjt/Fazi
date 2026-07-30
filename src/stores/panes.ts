@@ -68,7 +68,6 @@ export interface Tab {
   filter: string;
   showHidden: boolean;
   selection: SelectionState;
-  scrollTop: number;
   pendingRestore: PendingRestore | null;
   ghosts: GhostEntry[];
 }
@@ -111,7 +110,6 @@ interface PanesState {
   setSort(paneId: PaneId, tabId: string, key: SortKey, dir?: SortDir): void;
   setFilter(paneId: PaneId, tabId: string, filter: string): void;
   setTabShowHidden(paneId: PaneId, tabId: string, show: boolean): void;
-  setScrollTop(paneId: PaneId, tabId: string, px: number): void;
 
   // --- selection ---------------------------------------------------------
   setSelection(paneId: PaneId, tabId: string, next: SelectionState): void;
@@ -148,6 +146,28 @@ interface ListingIngest {
 const INGEST_COMMIT_MS = 100;
 const listingIngest = new Map<string, ListingIngest>();
 const listingIndexes = new Map<string, Map<number, number>>();
+
+/**
+ * Scroll offsets live outside the store: they are written on every scroll
+ * throttle tick but only read at listing-settle (restore) and snapshot time,
+ * so keeping them in state re-rendered every pane subscriber for nothing.
+ * Keyed by tab id; a miss means 0. Entries are dropped when a tab (or its
+ * pane) closes.
+ */
+const tabScrollTops = new Map<string, number>();
+
+export function getTabScrollTop(tabId: string): number {
+  return tabScrollTops.get(tabId) ?? 0;
+}
+
+export function setTabScrollTop(tabId: string, px: number): void {
+  tabScrollTops.set(tabId, px);
+}
+
+/** Test-only: whether a tab still has a stored scroll offset. */
+export function hasTabScrollTop(tabId: string): boolean {
+  return tabScrollTops.has(tabId);
+}
 
 function entryIndex(entries: readonly Entry[]): Map<number, number> {
   return new Map(entries.map((entry, index) => [entry.id, index]));
@@ -314,7 +334,6 @@ function newTab(path: string): Tab {
     filter: "",
     showHidden: settings.showHidden,
     selection: emptySelection(),
-    scrollTop: 0,
     pendingRestore: null,
     ghosts: [],
   };
@@ -330,6 +349,13 @@ function findTab(s: { panes: Pane[] }, paneId: PaneId, tabId: string): Tab | und
 
 export function activeTabOf(pane: Pane): Tab {
   return pane.tabs.find((t) => t.id === pane.activeTabId) ?? pane.tabs[0];
+}
+
+/** The active tab of `paneId` (falling back to the first pane), for use in
+ *  fine-grained selectors — pick scalars off the result, never return it. */
+export function activeTabIn(s: { panes: Pane[] }, paneId: PaneId): Tab | undefined {
+  const pane = s.panes.find((p) => p.id === paneId) ?? s.panes[0];
+  return pane ? activeTabOf(pane) : undefined;
 }
 
 /** First existing ancestor of `path` (strictly above it), else "/". Used
@@ -351,7 +377,7 @@ function snapshot(tab: Tab): HistorySnapshot {
   const nameOf = new Map(tab.entries.map((e) => [e.id, e.name]));
   return {
     path: tab.path,
-    scrollTop: tab.scrollTop,
+    scrollTop: getTabScrollTop(tab.id),
     selectedNames: [...tab.selection.selected]
       .map((id) => nameOf.get(id))
       .filter((n): n is string => n != null),
@@ -376,7 +402,7 @@ function applyRestore(tab: Tab): void {
       tab.selection = { selected, anchor: lead, lead };
     }
   }
-  if (restore.scrollTop != null) tab.scrollTop = restore.scrollTop;
+  if (restore.scrollTop != null) setTabScrollTop(tab.id, restore.scrollTop);
   tab.pendingRestore = null;
 }
 
@@ -429,7 +455,7 @@ function resetForNavigation(tab: Tab, path: string): void {
   tab.error = null;
   tab.filter = "";
   tab.selection = emptySelection();
-  tab.scrollTop = 0;
+  tabScrollTops.delete(tab.id);
   tab.ghosts = [];
 }
 
@@ -443,6 +469,7 @@ export const usePanes = create<PanesState>()(
     split: false,
 
     boot: (homePath) => {
+      tabScrollTops.clear();
       set((s) => {
         const tab = newTab(homePath);
         s.panes = [{ id: "left", tabs: [tab], activeTabId: tab.id }];
@@ -481,7 +508,7 @@ export const usePanes = create<PanesState>()(
         if (!tab) return;
         stopListing(tab);
         const keep: PendingRestore = {
-          scrollTop: tab.scrollTop,
+          scrollTop: getTabScrollTop(tab.id),
           selectNames: snapshot(tab).selectedNames,
           leadName: snapshot(tab).leadName ?? undefined,
         };
@@ -577,6 +604,7 @@ export const usePanes = create<PanesState>()(
         if (state.split) {
           const tab = pane.tabs[0];
           stopListing(tab);
+          tabScrollTops.delete(tab.id);
           set((s) => {
             s.panes = s.panes.filter((p) => p.id !== paneId);
             s.split = false;
@@ -593,6 +621,7 @@ export const usePanes = create<PanesState>()(
         const idx = p.tabs.findIndex((t) => t.id === tabId);
         if (idx === -1) return;
         stopListing(p.tabs[idx]);
+        tabScrollTops.delete(tabId);
         p.tabs.splice(idx, 1);
         if (p.activeTabId === tabId) {
           p.activeTabId = p.tabs[Math.min(idx, p.tabs.length - 1)].id;
@@ -633,7 +662,12 @@ export const usePanes = create<PanesState>()(
         useApp.getState().setActivePane("right");
       } else {
         const right = findPane(state, "right");
-        if (right) for (const t of right.tabs) stopListing(t);
+        if (right) {
+          for (const t of right.tabs) {
+            stopListing(t);
+            tabScrollTops.delete(t.id);
+          }
+        }
         set((s) => {
           s.panes = s.panes.filter((p) => p.id !== "right");
           s.split = false;
@@ -827,13 +861,6 @@ export const usePanes = create<PanesState>()(
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (tab) tab.showHidden = show;
-      });
-    },
-
-    setScrollTop: (paneId, tabId, px) => {
-      set((s) => {
-        const tab = findTab(s, paneId, tabId);
-        if (tab) tab.scrollTop = px;
       });
     },
 

@@ -32,7 +32,7 @@ import {
 import { useVolumes } from "../../stores/volumes";
 import { useSettings } from "../../stores/settings";
 import { useApp } from "../../stores/app";
-import { usePanes, activeTabOf } from "../../stores/panes";
+import { usePanes, activePaneTab, activeTabIn } from "../../stores/panes";
 import { onDropHover, onPinHover, registerDropZone } from "../../lib/dnd";
 import { confirmEmptyTrash, ejectVolume } from "../../lib/actions";
 import { showMenu } from "../../stores/menu";
@@ -110,10 +110,9 @@ function SidebarRow({
   onFocused(key: string): void;
 }) {
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
-  const navigate = usePanes((s) => s.navigate);
-  const openTab = usePanes((s) => s.openTab);
+  // isCurrent needs only the active tab's path — never the pane/tab objects,
+  // whose identities change on every store tick.
+  const activeTabPath = usePanes((s) => activeTabIn(s, activePaneId)?.path ?? null);
   const removeFavorite = useSettings((s) => s.removeFavorite);
   const [dropping, setDropping] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -160,7 +159,7 @@ function SidebarRow({
     );
   }, [row.trash, inFavSection, row.path]);
 
-  const isCurrent = tab?.path === row.path;
+  const isCurrent = activeTabPath === row.path;
   // Set when a pointer-reorder happened so the click that follows the
   // pointerup doesn't also navigate.
   const suppressClick = useRef(false);
@@ -219,7 +218,8 @@ function SidebarRow({
           suppressClick.current = false;
           return;
         }
-        if (pane && tab) navigate(pane.id, tab.id, row.path);
+        const at = activePaneTab();
+        if (at) usePanes.getState().navigate(at.pane.id, at.tab.id, row.path);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -228,7 +228,10 @@ function SidebarRow({
           {
             type: "item",
             label: "Open in New Tab",
-            action: () => pane && openTab(pane.id, row.path),
+            action: () => {
+              const at = activePaneTab();
+              if (at) usePanes.getState().openTab(at.pane.id, row.path);
+            },
           },
           ...(row.favorite
             ? [

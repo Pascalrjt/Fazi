@@ -1,7 +1,9 @@
 /** "14 items, 3 selected — 2.4 GB" + hidden-files and Vim-mode indicators. */
+import { useMemo } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
 import { useApp } from "../../stores/app";
-import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
+import { usePanes, activeTabIn, visibleEntries } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVim } from "../../stores/vim";
 import { vimPendingLabel } from "../../lib/vim";
@@ -41,8 +43,36 @@ export function StatusBar() {
   const searchStatus = useApp((s) => s.globalSearch.status);
   const vimOn = useSettings((s) => s.vimMode);
 
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  // Narrowed inputs: entry-array identity, filter/hidden, and selection —
+  // scroll and unrelated tab changes no longer reach this component.
+  const { hasTab, entries, filter, showHidden, selection, sorting } = usePanes(
+    useShallow((s) => {
+      const tab = activeTabIn(s, activePaneId);
+      return {
+        hasTab: tab != null,
+        entries: tab?.entries ?? null,
+        filter: tab?.filter ?? "",
+        showHidden: tab?.showHidden ?? false,
+        selection: tab?.selection ?? null,
+        sorting: tab?.sorting ?? false,
+      };
+    }),
+  );
+
+  const visibleCount = useMemo(
+    () => (entries ? visibleEntries({ entries, filter, showHidden }).length : 0),
+    [entries, filter, showHidden],
+  );
+  const selectedIds = selection?.selected ?? null;
+  const selectedBytes = useMemo(() => {
+    if (!entries || !selectedIds || selectedIds.size === 0) return null;
+    return entries
+      .filter((e) => selectedIds.has(e.id))
+      .reduce<number | null>(
+        (acc, e) => (e.size == null ? acc : (acc ?? 0) + e.size),
+        null,
+      );
+  }, [entries, selectedIds]);
 
   let text = "";
   let sizeText = "";
@@ -51,19 +81,11 @@ export function StatusBar() {
       searchStatus === "searching"
         ? `Searching… ${pluralize(hitCount, "result")}`
         : pluralize(hitCount, "result");
-  } else if (tab) {
-    const visible = visibleEntries(tab);
-    const selectedIds = tab.selection.selected;
-    text = pluralize(visible.length, "item");
-    if (selectedIds.size > 0) {
-      text = `${visible.length} items, ${selectedIds.size} selected`;
-      const bytes = tab.entries
-        .filter((e) => selectedIds.has(e.id))
-        .reduce<number | null>(
-          (acc, e) => (e.size == null ? acc : (acc ?? 0) + e.size),
-          null,
-        );
-      if (bytes != null) sizeText = formatBytes(bytes);
+  } else if (hasTab) {
+    text = pluralize(visibleCount, "item");
+    if (selectedIds != null && selectedIds.size > 0) {
+      text = `${visibleCount} items, ${selectedIds.size} selected`;
+      if (selectedBytes != null) sizeText = formatBytes(selectedBytes);
     }
   }
 
@@ -73,8 +95,8 @@ export function StatusBar() {
       <span className="tnum">{text}</span>
       {sizeText && <span className="tnum">— {sizeText}</span>}
       <div className="flex-1" />
-      {tab?.showHidden && <span className="text-tertiary">hidden files shown</span>}
-      {tab?.sorting && <span className="text-tertiary">sorting…</span>}
+      {showHidden && <span className="text-tertiary">hidden files shown</span>}
+      {sorting && <span className="text-tertiary">sorting…</span>}
     </div>
   );
 }

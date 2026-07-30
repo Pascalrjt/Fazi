@@ -9,7 +9,14 @@ import { Lock } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
-import { usePanes, visibleEntries, type GhostEntry, type Tab } from "../../stores/panes";
+import {
+  getTabScrollTop,
+  setTabScrollTop,
+  usePanes,
+  visibleEntries,
+  type GhostEntry,
+  type Tab,
+} from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
 import { showMenu } from "../../stores/menu";
 import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
@@ -377,11 +384,12 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
 
   // scroll restore once per listing settle
   useEffect(() => {
-    if (!tab || !tab.listed) return;
+    if (!tab?.listed) return;
     if (restoredListing.current === tab.listingId) return;
     restoredListing.current = tab.listingId;
-    if (scrollRef.current) scrollRef.current.scrollTop = tab.scrollTop;
-  }, [tab, tab?.listed, tab?.listingId, tab?.scrollTop]);
+    if (scrollRef.current) scrollRef.current.scrollTop = getTabScrollTop(tabId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab?.listed, tab?.listingId, tabId]);
 
   // keep the keyboard lead row in view
   const leadId = tab?.selection.lead ?? null;
@@ -401,15 +409,11 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     }
   }, [cols]);
 
-  // report scroll position (throttled) for history snapshots
-  const scrollReport = useRef<ReturnType<typeof setTimeout>>(null);
+  // report scroll position for history snapshots — a plain Map write, so no
+  // store commit (and no subscriber re-render) per scroll event
   const onScroll = () => {
-    if (scrollReport.current) return;
-    scrollReport.current = setTimeout(() => {
-      scrollReport.current = null;
-      const el = scrollRef.current;
-      if (el && tab) usePanes.getState().setScrollTop(paneId, tabId, el.scrollTop);
-    }, 150);
+    const el = scrollRef.current;
+    if (el) setTabScrollTop(tabId, el.scrollTop);
   };
 
   // Finder drag-in drop zone: row-level dir targeting, else this tab's dir
