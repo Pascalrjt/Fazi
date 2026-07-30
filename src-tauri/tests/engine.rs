@@ -433,6 +433,45 @@ fn conflict_ask_keep_both_and_apply_to_all() {
     std::fs::remove_dir_all(&env.root).ok();
 }
 
+/// Pasting several same-named items into a conflicting destination: each
+/// later item must see the names earlier items claimed (snapshot + insert,
+/// no rescan) — "report 2.txt", "report 3.txt", …
+#[test]
+fn keep_both_policy_sequences_names_across_items() {
+    let env = env("kbseq");
+    let s1 = env.root.join("from1");
+    let s2 = env.root.join("from2");
+    std::fs::create_dir_all(&s1).unwrap();
+    std::fs::create_dir_all(&s2).unwrap();
+    std::fs::write(s1.join("report.txt"), b"one").unwrap();
+    std::fs::write(s2.join("report.txt"), b"two").unwrap();
+    let dst = env.root.join("to");
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(dst.join("report.txt"), b"old").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_op(
+        env.engine.clone(),
+        OpArgs {
+            op_id: "op-kbseq".into(),
+            kind: OpKind::Copy,
+            sources: vec![s1.join("report.txt"), s2.join("report.txt")],
+            dest_dir: dst.clone(),
+            policy: Policy::KeepBoth,
+            verify: false,
+        },
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, produced, _) = done_status(&events);
+    assert_eq!(status, "success");
+    assert_eq!(produced.len(), 2);
+    assert_eq!(std::fs::read(dst.join("report.txt")).unwrap(), b"old");
+    assert_eq!(std::fs::read(dst.join("report 2.txt")).unwrap(), b"one");
+    assert_eq!(std::fs::read(dst.join("report 3.txt")).unwrap(), b"two");
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
 #[test]
 fn replace_policy_trashes_original_and_is_not_undoable() {
     let env = env("replace");
@@ -750,6 +789,36 @@ fn duplicate_uses_copy_naming() {
     assert!(undoable);
     assert_eq!(produced, vec![env.root.join("report copy.pdf").to_string_lossy().into_owned()]);
     assert_eq!(std::fs::read(env.root.join("report copy.pdf")).unwrap(), b"pdf-bytes");
+    std::fs::remove_dir_all(&env.root).ok();
+}
+
+/// Later items in one duplicate batch must see earlier items' landed names
+/// (snapshot + insert, no rescan): the same source twice yields
+/// "name copy", "name copy 2".
+#[test]
+fn duplicate_same_item_twice_sequences_copy_names() {
+    let env = env("dupseq");
+    let f = env.root.join("report.pdf");
+    std::fs::write(&f, b"pdf-bytes").unwrap();
+
+    let emitter = TestEmitter::new();
+    spawn_duplicate(
+        env.engine.clone(),
+        "op-dupseq".into(),
+        vec![f.clone(), f.clone()],
+        Arc::new(emitter.clone()),
+    );
+    let events = emitter.wait_done(Duration::from_secs(10));
+    let (status, produced, _) = done_status(&events);
+    assert_eq!(status, "success");
+    assert_eq!(
+        produced,
+        vec![
+            env.root.join("report copy.pdf").to_string_lossy().into_owned(),
+            env.root.join("report copy 2.pdf").to_string_lossy().into_owned(),
+        ]
+    );
+    assert_eq!(std::fs::read(env.root.join("report copy 2.pdf")).unwrap(), b"pdf-bytes");
     std::fs::remove_dir_all(&env.root).ok();
 }
 

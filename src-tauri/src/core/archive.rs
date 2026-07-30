@@ -28,7 +28,7 @@ use crate::core::op_queue::{
 };
 use crate::core::undo::{ProducedKind, UndoOp};
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, Outcome, Resolution, WalkSink,
+    self, keep_both_name_in, staging_name, ConflictKind, NameSet, Outcome, Resolution, WalkSink,
 };
 
 const DITTO: &str = "/usr/bin/ditto";
@@ -258,15 +258,17 @@ impl WalkSink for ArchiveSink {
 // ---------------------------------------------------------------------------
 
 /// Promote `stage_item` into `dest_dir` under `base`, uniquifying with
-/// `unique` and retrying the keep-both computation once on an EEXIST race.
+/// `unique` and retrying the candidate computation once on an EEXIST race
+/// (NameSet race policy: rename_excl is the atomic authority).
 fn promote_unique(
     stage_item: &Path,
     dest_dir: &Path,
     base: &str,
-    unique: &dyn Fn(&Path, &str) -> String,
+    unique: &dyn Fn(&NameSet, &str) -> String,
 ) -> io::Result<PathBuf> {
-    let mut name = if walker::exists_ci(dest_dir, base) {
-        unique(dest_dir, base)
+    let mut names = NameSet::load(dest_dir).unwrap_or_default();
+    let mut name = if names.contains_ci(base) {
+        unique(&names, base)
     } else {
         base.to_string()
     };
@@ -275,8 +277,9 @@ fn promote_unique(
         match copier::rename_excl(stage_item, &dest) {
             Ok(()) => return Ok(dest),
             Err(e) if e.raw_os_error() == Some(libc::EEXIST) && attempt == 0 => {
-                // Race: something claimed the name after the check.
-                name = unique(dest_dir, base);
+                // Race: something claimed the name after the snapshot.
+                names.insert(&name);
+                name = unique(&names, base);
             }
             Err(e) => return Err(e),
         }
@@ -383,10 +386,13 @@ fn run_compress_thread(
     } else {
         "Archive.zip".to_string()
     };
-    let zip_name = if walker::exists_ci(&dest_dir, &base_zip_name) {
-        keep_both_name(&dest_dir, &base_zip_name)
-    } else {
-        base_zip_name.clone()
+    let zip_name = {
+        let names = NameSet::load(&dest_dir).unwrap_or_default();
+        if names.contains_ci(&base_zip_name) {
+            keep_both_name_in(&names, &base_zip_name)
+        } else {
+            base_zip_name.clone()
+        }
     };
     let stage_zip = dest_dir.join(staging_name(&zip_name, &op_id));
     let multi = sources.len() > 1;
@@ -447,6 +453,8 @@ fn run_compress_thread(
             sink.item_error(&stage_contents, &e);
             staging_failed = true;
         } else {
+            // Private staging dir: track landed names instead of rescanning.
+            let mut stage_names = NameSet::default();
             for source in &sources {
                 if handle.cancel.load(Ordering::SeqCst) {
                     cancelled = true;
@@ -463,11 +471,12 @@ fn run_compress_thread(
                 let name = name_os.to_string_lossy().into_owned();
                 // Duplicate top-level basenames from different parents get
                 // keep-both names inside the archive (Finder behavior).
-                let target_name = if walker::exists_ci(&stage_contents, &name) {
-                    keep_both_name(&stage_contents, &name)
+                let target_name = if stage_names.contains_ci(&name) {
+                    keep_both_name_in(&stage_names, &name)
                 } else {
                     name
                 };
+                stage_names.insert(&target_name);
                 // All-or-nothing backstop: `copy_fresh` records child failures
                 // via the sink but still returns Done for a directory with
                 // failed children — snapshot the error count around each copy.
@@ -639,7 +648,7 @@ fn run_compress_thread(
                 journal_entry.pop_staging(&stage_contents);
                 let _ = engine.journal.write(&journal_entry);
             }
-            match promote_unique(&stage_zip, &dest_dir, &zip_name, &keep_both_name) {
+            match promote_unique(&stage_zip, &dest_dir, &zip_name, &keep_both_name_in) {
                 Ok(dest) => {
                     journal_entry.pop_staging(&stage_zip);
                     journal_entry.completed.push(dest.to_string_lossy().into_owned());
@@ -984,13 +993,13 @@ fn run_extract_thread(
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                promote_unique(inner, &dest_dir, &inner_name, &keep_both_name)
+                promote_unique(inner, &dest_dir, &inner_name, &keep_both_name_in)
             } else {
                 // Multi-entry: strip metadata, then promote the whole staging
                 // dir under the archive's stem.
                 strip_metadata(&staging);
                 let folder = archive_stem(&name).to_string();
-                promote_unique(&staging, &dest_dir, &folder, &walker::new_folder_name)
+                promote_unique(&staging, &dest_dir, &folder, &walker::new_folder_name_in)
             };
 
             match promoted {

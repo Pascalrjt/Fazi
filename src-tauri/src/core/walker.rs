@@ -164,12 +164,57 @@ pub fn exists_ci(dir: &Path, name: &str) -> bool {
     }
 }
 
+/// One `read_dir` snapshot of a directory's entry names (lowercased →
+/// actual) for O(1) case-insensitive probes during candidate-name selection.
+///
+/// Race policy: a snapshot can go stale, so it is used for CANDIDATE
+/// SELECTION only — atomicity comes from the caller's final create/promote
+/// step (`rename_excl`, `create_dir`, `OpenOptions::create_new`). On
+/// AlreadyExists/EEXIST the caller `insert`s the losing candidate and
+/// retries with the next one (bounded). Long-running ops also `insert` each
+/// name they create, so later items in the same batch see earlier items'
+/// names without rescanning.
+#[derive(Default)]
+pub struct NameSet {
+    names: HashMap<String, String>,
+}
+
+impl NameSet {
+    pub fn load(dir: &Path) -> io::Result<NameSet> {
+        let names = std::fs::read_dir(dir)?
+            .flatten()
+            .map(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                (n.to_lowercase(), n)
+            })
+            .collect();
+        Ok(NameSet { names })
+    }
+
+    pub fn contains_ci(&self, name: &str) -> bool {
+        self.names.contains_key(&name.to_lowercase())
+    }
+
+    /// The on-disk casing of `name`, if present.
+    pub fn actual(&self, name: &str) -> Option<&str> {
+        self.names.get(&name.to_lowercase()).map(String::as_str)
+    }
+
+    pub fn insert(&mut self, name: &str) {
+        self.names.insert(name.to_lowercase(), name.to_string());
+    }
+}
+
 /// "name.ext" → "name 2.ext", "name 3.ext", … first available (Keep Both).
 pub fn keep_both_name(dir: &Path, name: &str) -> String {
+    keep_both_name_in(&NameSet::load(dir).unwrap_or_default(), name)
+}
+
+pub fn keep_both_name_in(names: &NameSet, name: &str) -> String {
     let (stem, ext) = split_name(name);
     for n in 2..10_000 {
         let candidate = format!("{} {}{}", stem, n, ext);
-        if !exists_ci(dir, &candidate) {
+        if !names.contains_ci(&candidate) {
             return candidate;
         }
     }
@@ -178,14 +223,18 @@ pub fn keep_both_name(dir: &Path, name: &str) -> String {
 
 /// "name.ext" → "name copy.ext", "name copy 2.ext", … (Duplicate).
 pub fn duplicate_name(dir: &Path, name: &str) -> String {
+    duplicate_name_in(&NameSet::load(dir).unwrap_or_default(), name)
+}
+
+pub fn duplicate_name_in(names: &NameSet, name: &str) -> String {
     let (stem, ext) = split_name(name);
     let first = format!("{} copy{}", stem, ext);
-    if !exists_ci(dir, &first) {
+    if !names.contains_ci(&first) {
         return first;
     }
     for n in 2..10_000 {
         let candidate = format!("{} copy {}{}", stem, n, ext);
-        if !exists_ci(dir, &candidate) {
+        if !names.contains_ci(&candidate) {
             return candidate;
         }
     }
@@ -194,16 +243,75 @@ pub fn duplicate_name(dir: &Path, name: &str) -> String {
 
 /// "untitled folder", "untitled folder 2", …
 pub fn new_folder_name(dir: &Path, base: &str) -> String {
-    if !exists_ci(dir, base) {
+    new_folder_name_in(&NameSet::load(dir).unwrap_or_default(), base)
+}
+
+pub fn new_folder_name_in(names: &NameSet, base: &str) -> String {
+    if !names.contains_ci(base) {
         return base.to_string();
     }
     for n in 2..10_000 {
         let candidate = format!("{} {}", base, n);
-        if !exists_ci(dir, &candidate) {
+        if !names.contains_ci(&candidate) {
             return candidate;
         }
     }
     format!("{} {}", base, uuid::Uuid::new_v4().simple())
+}
+
+/// Create `base` (or its next free "base N" variant) as a directory in
+/// `parent`. `create_dir` is the atomic step; per the NameSet race policy a
+/// stale candidate fails AlreadyExists and the next one is tried (bounded).
+pub fn create_dir_unique(parent: &Path, base: &str, names: &mut NameSet) -> io::Result<PathBuf> {
+    let mut name = new_folder_name_in(names, base);
+    for _ in 0..5 {
+        let path = parent.join(&name);
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                names.insert(&name);
+                return Ok(path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                names.insert(&name);
+                name = new_folder_name_in(names, base);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::from_raw_os_error(libc::EEXIST))
+}
+
+/// Write `bytes` to `base` (or its first free Keep Both variant) in `dir`.
+/// `create_new` is the atomic step; per the NameSet race policy a stale
+/// candidate fails AlreadyExists and the next one is tried (bounded).
+pub fn create_new_file_unique(
+    dir: &Path,
+    base: &str,
+    bytes: &[u8],
+    names: &mut NameSet,
+) -> io::Result<PathBuf> {
+    use std::io::Write;
+    let mut name = if names.contains_ci(base) {
+        keep_both_name_in(names, base)
+    } else {
+        base.to_string()
+    };
+    for _ in 0..5 {
+        let path = dir.join(&name);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                f.write_all(bytes)?;
+                names.insert(&name);
+                return Ok(path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                names.insert(&name);
+                name = keep_both_name_in(names, base);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::from_raw_os_error(libc::EEXIST))
 }
 
 pub fn remove_tree_best_effort(path: &Path) {
@@ -579,12 +687,8 @@ pub fn merge_into(
     ctx: &MergeCtx,
     sink: &mut dyn WalkSink,
 ) -> io::Result<Outcome> {
-    // Build the case-insensitive name map for this destination dir once.
-    let mut existing: HashMap<String, String> = HashMap::new();
-    for e in std::fs::read_dir(dst)?.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        existing.insert(n.to_lowercase(), n);
-    }
+    // Build the case-insensitive name snapshot for this destination dir once.
+    let mut existing = NameSet::load(dst)?;
 
     let mut children: Vec<_> = std::fs::read_dir(src)?.flatten().collect();
     children.sort_by_key(|e| e.file_name());
@@ -609,7 +713,7 @@ pub fn merge_into(
             continue;
         }
 
-        let existing_name = existing.get(&name.to_lowercase()).cloned();
+        let existing_name = existing.actual(&name).map(str::to_string);
         match existing_name {
             None => {
                 // No conflict: stage + promote (or plain rename for moves).
@@ -617,7 +721,7 @@ pub fn merge_into(
                 match transfer_entry(&spath, &dpath, ctx, sink)? {
                     Outcome::Cancelled => return Ok(Outcome::Cancelled),
                     Outcome::Done => {
-                        existing.insert(name.to_lowercase(), name);
+                        existing.insert(&name);
                     }
                 }
             }
@@ -659,12 +763,12 @@ pub fn merge_into(
                     Resolution::Skip => continue,
                     Resolution::Cancel => return Ok(Outcome::Cancelled),
                     Resolution::KeepBoth => {
-                        let kb = keep_both_name(dst, &name);
+                        let kb = keep_both_name_in(&existing, &name);
                         let dpath = dst.join(&kb);
                         match transfer_entry(&spath, &dpath, ctx, sink)? {
                             Outcome::Cancelled => return Ok(Outcome::Cancelled),
                             Outcome::Done => {
-                                existing.insert(kb.to_lowercase(), kb);
+                                existing.insert(&kb);
                             }
                         }
                     }
@@ -1238,6 +1342,73 @@ mod tests {
         assert_eq!(new_folder_name(&d, "untitled folder"), "untitled folder 2");
         // Case-insensitive collision detection.
         assert_eq!(keep_both_name(&d, "REPORT.PDF"), "REPORT 3.PDF");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn name_set_contains_insert_and_actual() {
+        let d = tmp("nameset");
+        fs::write(d.join("Report.PDF"), b"1").unwrap();
+        let mut names = NameSet::load(&d).unwrap();
+        assert!(names.contains_ci("report.pdf"));
+        assert!(names.contains_ci("REPORT.pdf"));
+        assert_eq!(names.actual("report.pdf"), Some("Report.PDF"));
+        assert!(!names.contains_ci("notes.txt"));
+        // Insert visibility, case-insensitively.
+        names.insert("Notes.txt");
+        assert!(names.contains_ci("NOTES.TXT"));
+        assert_eq!(names.actual("notes.txt"), Some("Notes.txt"));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn candidate_generation_against_snapshot() {
+        let mut names = NameSet::default();
+        names.insert("name.txt");
+        assert_eq!(keep_both_name_in(&names, "name.txt"), "name 2.txt");
+        names.insert("name 2.txt");
+        assert_eq!(keep_both_name_in(&names, "name.txt"), "name 3.txt");
+
+        assert_eq!(duplicate_name_in(&names, "name.txt"), "name copy.txt");
+        names.insert("name copy.txt");
+        assert_eq!(duplicate_name_in(&names, "name.txt"), "name copy 2.txt");
+        names.insert("name copy 2.txt");
+        assert_eq!(duplicate_name_in(&names, "name.txt"), "name copy 3.txt");
+
+        assert_eq!(new_folder_name_in(&names, "untitled folder"), "untitled folder");
+        names.insert("untitled folder");
+        assert_eq!(new_folder_name_in(&names, "untitled folder"), "untitled folder 2");
+        names.insert("untitled folder 2");
+        assert_eq!(new_folder_name_in(&names, "untitled folder"), "untitled folder 3");
+    }
+
+    #[test]
+    fn create_dir_unique_retries_when_snapshot_goes_stale() {
+        let d = tmp("dirretry");
+        let mut names = NameSet::load(&d).unwrap();
+        // Snapshot goes stale: the base name appears on disk after the scan.
+        fs::create_dir(d.join("untitled folder")).unwrap();
+        let path = create_dir_unique(&d, "untitled folder", &mut names).unwrap();
+        assert_eq!(path, d.join("untitled folder 2"));
+        assert!(path.is_dir());
+        assert!(names.contains_ci("untitled folder 2"));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn create_new_file_unique_picks_base_then_retries_on_race() {
+        let d = tmp("fileretry");
+        let mut names = NameSet::load(&d).unwrap();
+        let first = create_new_file_unique(&d, "Pasted Text.txt", b"one", &mut names).unwrap();
+        assert_eq!(first, d.join("Pasted Text.txt"));
+        assert_eq!(fs::read(&first).unwrap(), b"one");
+        // Race: another writer claims the next candidate after the snapshot.
+        fs::write(d.join("Pasted Text 2.txt"), b"raced").unwrap();
+        let second = create_new_file_unique(&d, "Pasted Text.txt", b"two", &mut names).unwrap();
+        assert_eq!(second, d.join("Pasted Text 3.txt"));
+        assert_eq!(fs::read(&second).unwrap(), b"two");
+        // The raced file was never clobbered.
+        assert_eq!(fs::read(d.join("Pasted Text 2.txt")).unwrap(), b"raced");
         fs::remove_dir_all(&d).ok();
     }
 

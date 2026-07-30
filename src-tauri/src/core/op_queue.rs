@@ -23,8 +23,9 @@ use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
 use crate::core::verify::ChecksumReport;
 use crate::core::walker::{
-    self, keep_both_name, rescue_failed_warning, staging_name, trash_failed_warning, ConflictKind,
-    MergeCtx, Outcome, ReplaceOutcome, Resolution, Trasher, WalkSink, WarnSeverity,
+    self, keep_both_name_in, rescue_failed_warning, staging_name, trash_failed_warning,
+    ConflictKind, MergeCtx, NameSet, Outcome, ReplaceOutcome, Resolution, Trasher, WalkSink,
+    WarnSeverity,
 };
 
 // ---------------------------------------------------------------------------
@@ -629,14 +630,9 @@ fn run_op_thread(
         args.sources.len(),
     );
 
-    // Cheap conflict pre-scan: top-level destination names only (one readdir).
-    let mut dest_names: HashMap<String, String> = HashMap::new();
-    if let Ok(rd) = std::fs::read_dir(&args.dest_dir) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            dest_names.insert(n.to_lowercase(), n);
-        }
-    }
+    // Cheap conflict pre-scan and Keep Both candidate snapshot: top-level
+    // destination names only (one readdir; see NameSet for the race policy).
+    let mut dest_names = NameSet::load(&args.dest_dir).unwrap_or_default();
 
     let tol_ms = walker::mtime_tolerance_ms(&args.dest_dir);
     let mut produced: Vec<PathBuf> = Vec::new();
@@ -685,7 +681,7 @@ fn run_op_thread(
         }
 
         // Conflict?
-        let existing = dest_names.get(&name.to_lowercase()).cloned();
+        let existing = dest_names.actual(&name).map(str::to_string);
         let mut final_name = name.clone();
         let mut resolution: Option<Resolution> = None;
         if let Some(actual) = &existing {
@@ -705,14 +701,14 @@ fn run_op_thread(
                 }
                 Resolution::Skip => continue,
                 Resolution::KeepBoth => {
-                    final_name = keep_both_name(&args.dest_dir, &name);
+                    final_name = keep_both_name_in(&dest_names, &name);
                     resolution = None; // proceeds as a fresh transfer
                 }
                 Resolution::Replace | Resolution::Merge => resolution = Some(r),
             }
         }
 
-        let dest = args.dest_dir.join(&final_name);
+        let mut dest = args.dest_dir.join(&final_name);
         let item_result: Result<Option<PathBuf>, ()> = match resolution {
             Some(Resolution::Merge) => {
                 // Per-entry staging tier; journal records the merge root.
@@ -764,7 +760,24 @@ fn run_op_thread(
             }
             _ => {
                 // Fresh transfer (no conflict, or Keep Both name).
-                match transfer_toplevel(&engine, &args, source, &dest, &mut journal_entry, tol_ms, &mut sink) {
+                let mut result =
+                    transfer_toplevel(&engine, &args, source, &dest, &mut journal_entry, tol_ms, &mut sink);
+                // A Keep Both candidate can lose a post-snapshot race: the
+                // atomic promote fails AlreadyExists — record the loser and
+                // retry under the next candidate (NameSet race policy).
+                let mut attempts = 0;
+                while existing.is_some()
+                    && attempts < 3
+                    && matches!(&result, Err(e) if e.kind() == io::ErrorKind::AlreadyExists)
+                {
+                    dest_names.insert(&final_name);
+                    final_name = keep_both_name_in(&dest_names, &name);
+                    dest = args.dest_dir.join(&final_name);
+                    result =
+                        transfer_toplevel(&engine, &args, source, &dest, &mut journal_entry, tol_ms, &mut sink);
+                    attempts += 1;
+                }
+                match result {
                     Ok(true) => Ok(Some(dest.clone())),
                     Ok(false) => {
                         cancelled = true;
@@ -779,7 +792,7 @@ fn run_op_thread(
         };
 
         if let Ok(Some(dest_path)) = item_result {
-            dest_names.insert(final_name.to_lowercase(), final_name.clone());
+            dest_names.insert(&final_name);
             journal_entry.completed.push(dest_path.to_string_lossy().into_owned());
             let _ = engine.journal.write(&journal_entry);
             produced.push(dest_path.clone());
@@ -841,7 +854,10 @@ fn transfer_toplevel(
 ) -> io::Result<bool> {
     if args.kind == OpKind::Move {
         // Rung 1: atomic rename. Genuinely instant — the headline win.
-        match copier::rename(source, dest) {
+        // rename_excl so a name that appeared after the dest_names snapshot
+        // fails AlreadyExists (retried for Keep Both candidates) instead of
+        // silently clobbering it.
+        match copier::rename_excl(source, dest) {
             Ok(()) => {
                 sink.progress(0, 1, source, true);
                 sink.emit_progress(source, true);
@@ -1081,6 +1097,9 @@ fn run_duplicate_thread(
 
     let mut produced = Vec::new();
     let mut cancelled = false;
+    // One name snapshot per parent dir for the whole batch; each landed name
+    // is inserted so later duplicates see it without rescanning (NameSet).
+    let mut name_sets: HashMap<PathBuf, NameSet> = HashMap::new();
     for source in &paths {
         if sink.cancelled() {
             cancelled = true;
@@ -1092,8 +1111,12 @@ fn run_duplicate_thread(
         let Some(name) = source.file_name() else {
             continue;
         };
-        let dup = walker::duplicate_name(parent, &name.to_string_lossy());
-        let dest = parent.join(&dup);
+        let names = name_sets
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| NameSet::load(parent).unwrap_or_default());
+        let base = name.to_string_lossy();
+        let mut dup = walker::duplicate_name_in(names, &base);
+        let mut dest = parent.join(&dup);
         let stage = parent.join(staging_name(&dup, &op_id));
         walker::remove_tree_best_effort(&stage);
         // Fail-fast: an unrecorded staging path would be invisible to recovery.
@@ -1111,19 +1134,35 @@ fn run_duplicate_thread(
         }
 
         match walker::copy_fresh(source, &stage, &mut sink) {
-            Ok(Outcome::Done) => match copier::rename_excl(&stage, &dest) {
-                Ok(()) => {
-                    journal_entry.pop_staging(&stage);
-                    journal_entry.completed.push(dest.to_string_lossy().into_owned());
-                    let _ = engine.journal.write(&journal_entry);
-                    produced.push(dest);
+            Ok(Outcome::Done) => {
+                let mut promote = copier::rename_excl(&stage, &dest);
+                // Candidate lost a post-snapshot race — record the loser and
+                // promote under the next candidate (NameSet race policy).
+                let mut attempts = 0;
+                while attempts < 3
+                    && matches!(&promote, Err(e) if e.kind() == io::ErrorKind::AlreadyExists)
+                {
+                    names.insert(&dup);
+                    dup = walker::duplicate_name_in(names, &base);
+                    dest = parent.join(&dup);
+                    promote = copier::rename_excl(&stage, &dest);
+                    attempts += 1;
                 }
-                Err(e) => {
-                    walker::remove_tree_best_effort(&stage);
-                    journal_entry.pop_staging(&stage);
-                    sink.item_error(source, &e);
+                match promote {
+                    Ok(()) => {
+                        names.insert(&dup);
+                        journal_entry.pop_staging(&stage);
+                        journal_entry.completed.push(dest.to_string_lossy().into_owned());
+                        let _ = engine.journal.write(&journal_entry);
+                        produced.push(dest);
+                    }
+                    Err(e) => {
+                        walker::remove_tree_best_effort(&stage);
+                        journal_entry.pop_staging(&stage);
+                        sink.item_error(source, &e);
+                    }
                 }
-            },
+            }
             Ok(Outcome::Cancelled) => {
                 walker::remove_tree_best_effort(&stage);
                 journal_entry.pop_staging(&stage);

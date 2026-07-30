@@ -397,7 +397,6 @@ pub async fn pb_paste_new_file(
     dest_dir: String,
 ) -> Result<Option<String>> {
     use crate::core::undo::ProducedKind;
-    use crate::core::walker::{exists_ci, keep_both_name};
     use crate::macos::main_thread::on_main;
     use crate::macos::pasteboard;
 
@@ -418,13 +417,8 @@ pub async fn pb_paste_new_file(
                 return Ok(None);
             };
 
-        let name = if exists_ci(&dest, base_name) {
-            keep_both_name(&dest, base_name)
-        } else {
-            base_name.to_string()
-        };
-        let path = dest.join(&name);
-        std::fs::write(&path, &bytes)?;
+        let mut names = walker::NameSet::load(&dest).unwrap_or_default();
+        let path = walker::create_new_file_unique(&dest, base_name, &bytes, &mut names)?;
         engine.push_undo(UndoOp::ProducedItems {
             kind: ProducedKind::Paste,
             pairs: vec![(path.clone(), None)],
@@ -483,9 +477,8 @@ pub async fn new_folder(
         let parent = PathBuf::from(&parent);
         let base = if name.is_empty() { "untitled folder".to_string() } else { name };
         validate_name(&base)?;
-        let unique = walker::new_folder_name(&parent, &base);
-        let path = parent.join(&unique);
-        std::fs::create_dir(&path)?;
+        let mut names = walker::NameSet::load(&parent).unwrap_or_default();
+        let path = walker::create_dir_unique(&parent, &base, &mut names)?;
         engine.push_undo(UndoOp::NewFolder { path: path.clone() });
         (engine.invalidate_fuzzy)(std::slice::from_ref(&path));
         Ok(path.to_string_lossy().into_owned())
