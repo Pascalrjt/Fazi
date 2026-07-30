@@ -642,7 +642,10 @@ fn run_compress_thread(
             finish("failed", errors, Vec::new());
         }
         Ok(_) => {
-            // Promote the staged zip; contents dir is now disposable.
+            // Promote the staged zip; contents dir is now disposable. This
+            // write is NOT coalesced with the post-promote write below: the
+            // promote sits between them, so each write records the journal
+            // state on its own side of the rename.
             if multi {
                 walker::remove_tree_best_effort(&stage_contents);
                 journal_entry.pop_staging(&stage_contents);
@@ -1005,8 +1008,14 @@ fn run_extract_thread(
             match promoted {
                 Ok(dest) => {
                     // Single-entry promote leaves the (metadata-only) staging
-                    // shell behind; multi-entry promote consumed it.
-                    cleanup(&mut journal_entry);
+                    // shell behind; multi-entry promote consumed it. Pop the
+                    // staging path and record the completion in ONE durable
+                    // write — the invariant only requires journaling BEFORE a
+                    // staging path is written to. A crash in this window is
+                    // harmless: recovery re-deletes a staging path that no
+                    // longer exists and never touches the promoted dest.
+                    walker::remove_tree_best_effort(&staging);
+                    journal_entry.pop_staging(&staging);
                     journal_entry.completed.push(dest.to_string_lossy().into_owned());
                     let _ = engine.journal.write(&journal_entry);
                     produced.push(dest);

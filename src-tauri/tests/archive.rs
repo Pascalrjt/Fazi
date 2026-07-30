@@ -1017,3 +1017,65 @@ fn journal_recovery_deletes_fake_staged_zip() {
     assert!(!staged_contents.exists());
     std::fs::remove_dir_all(&e.root).ok();
 }
+
+#[test]
+fn journal_recovery_after_extract_success_never_deletes_promoted_output() {
+    let e = env("recovercoalesced");
+    let dest = e.root.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    // The promoted output of a successful per-archive extract: the staging
+    // dir was renamed away (or its shell deleted), so no staging exists on
+    // disk anymore.
+    let promoted = dest.join("Bundle");
+    std::fs::create_dir_all(&promoted).unwrap();
+    std::fs::write(promoted.join("a.txt"), b"promoted").unwrap();
+
+    // Crash right AFTER the coalesced post-success write: staging popped and
+    // completion recorded in the same journal write.
+    e.engine
+        .journal
+        .write(&OpJournalEntry {
+            op_id: "op-after".into(),
+            kind: "extract".into(),
+            sources: vec!["/somewhere/Bundle.zip".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            staging: vec![],
+            merge_roots: vec![],
+            completed: vec![promoted.to_string_lossy().into_owned()],
+            total: 1,
+            started_at_ms: 0,
+        })
+        .unwrap();
+    // Crash just BEFORE that write (after the promote): the journal still
+    // lists a staging path that no longer exists on disk.
+    let gone_staging = dest.join(".Bundle.zip.0.fazi-partial-op-before");
+    assert!(!gone_staging.exists());
+    e.engine
+        .journal
+        .write(&OpJournalEntry {
+            op_id: "op-before".into(),
+            kind: "extract".into(),
+            sources: vec!["/somewhere/Bundle.zip".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            staging: vec![gone_staging.to_string_lossy().into_owned()],
+            merge_roots: vec![],
+            completed: vec![],
+            total: 1,
+            started_at_ms: 0,
+        })
+        .unwrap();
+
+    let report = e.engine.journal.recover();
+    assert_eq!(report.len(), 2);
+    let after = report.iter().find(|r| r.op_id == "op-after").unwrap();
+    assert_eq!(after.completed, 1, "toast must read \"1 of 1 item\"");
+    assert_eq!(after.total, 1);
+    let before = report.iter().find(|r| r.op_id == "op-before").unwrap();
+    assert_eq!(before.completed, 0);
+    // Both windows are harmless no-ops: the promoted output survives intact.
+    assert_eq!(std::fs::read(promoted.join("a.txt")).unwrap(), b"promoted");
+    assert_eq!(names_in(&dest), vec!["Bundle"]);
+    // Journal cleared: second recovery reports nothing.
+    assert!(e.engine.journal.recover().is_empty());
+    std::fs::remove_dir_all(&e.root).ok();
+}
