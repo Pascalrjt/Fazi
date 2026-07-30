@@ -10,6 +10,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
 import {
+  findTab,
   getTabScrollTop,
   setTabScrollTop,
   usePanes,
@@ -19,22 +20,13 @@ import {
 } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
 import { showMenu } from "../../stores/menu";
-import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
-import {
-  clickSelect,
-  cmdToggle,
-  dragRect,
-  marqueeSelect,
-  shiftRange,
-  type Rect,
-} from "../../lib/selection";
+import { emptyAreaMenuItems } from "../menus/entryMenu";
+import { dragRect, marqueeSelect, type Rect } from "../../lib/selection";
 import { entryKindLabel, type SortKey } from "../../lib/sort";
 import { formatBytes, formatDate } from "../../lib/format";
-import { finishRename } from "../../lib/actions";
 import { RenameInput } from "./RenameInput";
 import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
-import { startNativeDrag } from "../../lib/ipc/dnd";
-import { startPointerDrag } from "../../lib/pointerDrag";
+import { beginEntryDrag, usePaneInteractions } from "../../hooks/usePaneInteractions";
 import { useSettings } from "../../stores/settings";
 import { useDirSizes } from "../../stores/dirSizes";
 import { useViewportHydration } from "../../hooks/useViewportHydration";
@@ -96,7 +88,7 @@ interface RowProps {
   onMouseDown: (e: React.MouseEvent, entry: Entry) => void;
   onDoubleClick: (entry: Entry) => void;
   onContextMenu: (e: React.MouseEvent, entry: Entry) => void;
-  onRenameDone: (entry: Entry, committed: boolean, advance: boolean) => void;
+  onRenameDone: (entry: Entry, advance: boolean) => void;
 }
 
 /** Name column content kept separate for focused link-display coverage. */
@@ -126,11 +118,7 @@ const FileRow = memo(function FileRow({
   // perf rule: rows subscribe to their own selection state only
   const selected = usePanes(
     useCallback(
-      (s) =>
-        s.panes
-          .find((p) => p.id === paneId)
-          ?.tabs.find((t) => t.id === tabId)
-          ?.selection.selected.has(entry.id) ?? false,
+      (s) => findTab(s, paneId, tabId)?.selection.selected.has(entry.id) ?? false,
       [paneId, tabId, entry.id],
     ),
   );
@@ -176,23 +164,10 @@ const FileRow = memo(function FileRow({
       onDoubleClick={() => !isRenaming && onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onDragStart={(e) => {
-        // dragstart is only the gesture trigger: both branches preventDefault
-        // and run their own drag loop (HTML5 drops are dead under wry).
+        // dragstart is only the gesture trigger — beginEntryDrag runs the
+        // real drag loop (HTML5 drops are dead under wry).
         e.preventDefault();
-        const s = usePanes.getState();
-        const tab = s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
-        if (!tab) return;
-        const paths = tab.selection.selected.has(entry.id)
-          ? tab.entries.filter((en) => tab.selection.selected.has(en.id)).map((en) => en.path)
-          : [entry.path];
-        if (useSettings.getState().dragOutEnabled) {
-          // Native drag: reaches Finder/Mail/…; self-drops come back through
-          // the bridge as internal moves.
-          startNativeDrag(paths, e.altKey);
-          return;
-        }
-        // Kill-switch: internal-only pointer drag through the same registry.
-        startPointerDrag(paths);
+        beginEntryDrag(paneId, tabId, entry, e.altKey);
       }}
     >
       <img
@@ -207,7 +182,7 @@ const FileRow = memo(function FileRow({
           entry={entry}
           paneId={paneId}
           tabId={tabId}
-          onDone={(committed, advance) => onRenameDone(entry, committed, advance)}
+          onDone={(_committed, advance) => onRenameDone(entry, advance)}
         />
       ) : (
         <EntryName entry={entry} />
@@ -337,10 +312,7 @@ function HeaderCell({
 
 export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const tab = usePanes(
-    useCallback(
-      (s) => s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId),
-      [paneId, tabId],
-    ),
+    useCallback((s) => findTab(s, paneId, tabId), [paneId, tabId]),
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState<ColWidths>(loadCols);
@@ -430,8 +402,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         if (!el) return null;
         const rect = el.getBoundingClientRect();
         if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
-        const state = usePanes.getState();
-        const t = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
+        const t = findTab(usePanes.getState(), paneId, tabId);
         if (!t) return null;
         const idx = Math.floor((y - rect.top + el.scrollTop) / ROW_H);
         const entry = visibleRef.current[idx];
@@ -457,57 +428,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneId, tabId, tab != null, ROW_H]);
 
-  const setSelection = usePanes((s) => s.setSelection);
-  const openEntry = usePanes((s) => s.openEntry);
-
-  const handleRowMouseDown = useCallback(
-    (e: React.MouseEvent, entry: Entry) => {
-      if (e.button === 2) return; // context menu handles its own selection
-      useApp.getState().setActivePane(paneId);
-      const state = usePanes.getState();
-      const t = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
-      if (!t) return;
-      const order = visibleEntries(t).map((en) => en.id);
-      const sel = t.selection;
-      if (e.shiftKey) {
-        setSelection(paneId, tabId, shiftRange(sel, order, entry.id));
-      } else if (e.metaKey) {
-        setSelection(paneId, tabId, cmdToggle(sel, entry.id));
-      } else if (!sel.selected.has(entry.id)) {
-        setSelection(paneId, tabId, clickSelect(entry.id));
-      }
-      // clicking an already-selected row keeps the multi-selection (drag support)
-    },
-    [paneId, tabId, setSelection],
-  );
-
-  const handleDoubleClick = useCallback(
-    (entry: Entry) => openEntry(paneId, tabId, entry),
-    [openEntry, paneId, tabId],
-  );
-
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent, entry: Entry) => {
-      e.preventDefault();
-      e.stopPropagation();
-      useApp.getState().setActivePane(paneId);
-      const state = usePanes.getState();
-      const t = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
-      if (!t) return;
-      if (!t.selection.selected.has(entry.id)) {
-        setSelection(paneId, tabId, clickSelect(entry.id));
-      }
-      showMenu(e.clientX, e.clientY, entryMenuItems(paneId, tabId, entry));
-    },
-    [paneId, tabId, setSelection],
-  );
-
-  const handleRenameDone = useCallback(
-    (entry: Entry, _committed: boolean, advance: boolean) => {
-      finishRename(paneId, tabId, entry.id, advance);
-    },
-    [paneId, tabId],
-  );
+  const { handleMouseDown, handleDoubleClick, handleContextMenu, handleRenameDone } =
+    usePaneInteractions(paneId, tabId);
 
   // marquee selection on empty-area drag
   const marqueeTeardown = useRef<(() => void) | null>(null);
@@ -523,8 +445,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     const rect = el.getBoundingClientRect();
     const start = { x: e.clientX - rect.left + el.scrollLeft, y: e.clientY - rect.top + el.scrollTop };
     const additive = e.metaKey || e.shiftKey;
-    const state = usePanes.getState();
-    const t0 = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
+    const t0 = findTab(usePanes.getState(), paneId, tabId);
     const base = additive && t0 ? new Set(t0.selection.selected) : null;
     // Full snapshot (incl. anchor/lead) so Escape restores shift-range
     // behavior exactly, not just the selected set.
@@ -717,7 +638,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                     paneId={paneId}
                     tabId={tabId}
                     cols={cols}
-                    onMouseDown={handleRowMouseDown}
+                    onMouseDown={handleMouseDown}
                     onDoubleClick={handleDoubleClick}
                     onContextMenu={handleContextMenu}
                     onRenameDone={handleRenameDone}

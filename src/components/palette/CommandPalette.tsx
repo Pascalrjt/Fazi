@@ -1,10 +1,12 @@
 /** cmdk command palette (⌘K) fed by the command registry. */
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Command } from "cmdk";
 import { useApp } from "../../stores/app";
 import { allCommands } from "../../lib/commands/registry";
 import { shortcutLabel } from "../../lib/keyboard";
 import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
+import { useCaptureEscape } from "../../hooks/useCaptureEscape";
+import { Scrim } from "../overlays/Scrim";
 
 export function CommandPalette() {
   const open = useApp((s) => s.paletteOpen);
@@ -13,30 +15,20 @@ export function CommandPalette() {
   useBrowseFocusRestore(open);
 
   useEffect(() => {
-    if (!open) return;
-    requestAnimationFrame(() => inputRef.current?.focus());
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        setOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, setOpen]);
+    if (open) requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open]);
+
+  useCaptureEscape(
+    open,
+    useCallback(() => setOpen(false), [setOpen]),
+  );
 
   if (!open) return null;
 
   const commands = allCommands().filter((c) => !c.hidden);
 
   return (
-    <div
-      className="anim-fade fixed inset-0 z-[85] flex items-start justify-center bg-black/30 pt-[12vh]"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setOpen(false);
-      }}
-    >
+    <Scrim className="pt-[12vh]" onClose={() => setOpen(false)}>
       <Command
         label="Command palette"
         className="anim-pop w-[520px] overflow-hidden rounded-xl border border-edge bg-raised"
@@ -75,6 +67,6 @@ export function CommandPalette() {
           })}
         </Command.List>
       </Command>
-    </div>
+    </Scrim>
   );
 }

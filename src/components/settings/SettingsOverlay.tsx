@@ -2,7 +2,7 @@
  * In-app settings overlay (⌘,): left nav, one pane per section. Opens as a
  * modal (KeyContext "modal" — browse shortcuts don't fire underneath).
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
 import {
   ArrowRightLeft,
@@ -21,6 +21,8 @@ import { NumberField, Segmented, SettingRow, SettingsFilterContext, Toggle } fro
 import { KeyboardPane } from "./KeyboardPane";
 import type { SortDir, SortKey } from "../../lib/sort";
 import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
+import { useCaptureEscape } from "../../hooks/useCaptureEscape";
+import { Scrim } from "../overlays/Scrim";
 
 type PaneId =
   | "general"
@@ -393,30 +395,19 @@ export function SettingsOverlay() {
     useApp.getState().clearSettingsPaneRequest();
   }, [open, paneRequest]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        // Esc clears an active search first; a second press closes.
-        if (query !== "") setQuery("");
-        else setOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, setOpen, query]);
+  useCaptureEscape(
+    open,
+    useCallback(() => {
+      // Esc clears an active search first; a second press closes.
+      if (query !== "") setQuery("");
+      else setOpen(false);
+    }, [setOpen, query]),
+  );
 
   if (!open) return null;
 
   return (
-    <div
-      className="anim-fade fixed inset-0 z-[85] flex items-start justify-center bg-black/30 pt-[9vh]"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setOpen(false);
-      }}
-    >
+    <Scrim className="pt-[9vh]" onClose={() => setOpen(false)}>
       <div
         className="anim-pop flex h-[70vh] w-[720px] overflow-hidden rounded-xl border border-edge bg-raised"
         style={{ boxShadow: "var(--shadow-overlay)" }}
@@ -476,6 +467,6 @@ export function SettingsOverlay() {
           </SettingsFilterContext.Provider>
         </div>
       </div>
-    </div>
+    </Scrim>
   );
 }

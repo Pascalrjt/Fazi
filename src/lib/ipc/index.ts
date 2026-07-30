@@ -37,6 +37,17 @@ import {
   type WatchEvent,
 } from "../../types/ipc";
 
+/** Invoke a command that streams `TEvent`s back over a `channel` argument. */
+function invokeStreaming<TEvent>(
+  cmd: string,
+  args: object,
+  onEvent: (e: TEvent) => void,
+): Promise<void> {
+  const channel = new Channel<TEvent>();
+  channel.onmessage = onEvent;
+  return invoke(cmd, { ...args, channel });
+}
+
 // ---------------------------------------------------------------------------
 // Listing
 // ---------------------------------------------------------------------------
@@ -46,10 +57,8 @@ export function listDir(
   listingId: string,
   onEvent: (e: ListEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<ListEvent>();
-  channel.onmessage = onEvent;
   const args: ListDirArgs = { path, listingId };
-  return invoke(COMMANDS.listDir, { ...args, channel });
+  return invokeStreaming(COMMANDS.listDir, args, onEvent);
 }
 
 export function cancelListing(listingId: string): Promise<void> {
@@ -80,9 +89,7 @@ export function watchDir(
   watchId: string,
   onEvent: (e: WatchEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<WatchEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.watchDir, { path, watchId, channel });
+  return invokeStreaming(COMMANDS.watchDir, { path, watchId }, onEvent);
 }
 
 export function unwatch(watchId: string): Promise<void> {
@@ -97,9 +104,7 @@ export function runOp(
   args: RunOpArgs,
   onEvent: (e: OpEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<OpEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.runOp, { ...args, channel });
+  return invokeStreaming(COMMANDS.runOp, args, onEvent);
 }
 
 export function cancelOp(opId: string): Promise<void> {
@@ -125,9 +130,7 @@ export function trashStats(): Promise<TrashStats> {
 }
 
 export function emptyTrash(onEvent: (e: EmptyTrashEvent) => void): Promise<void> {
-  const channel = new Channel<EmptyTrashEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.emptyTrash, { channel });
+  return invokeStreaming(COMMANDS.emptyTrash, {}, onEvent);
 }
 
 export function deletePermanent(paths: string[]): Promise<void> {
@@ -153,9 +156,7 @@ export function duplicatePaths(
   paths: string[],
   onEvent: (e: OpEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<OpEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.duplicatePaths, { opId, paths, channel });
+  return invokeStreaming(COMMANDS.duplicatePaths, { opId, paths }, onEvent);
 }
 
 export function compressPaths(
@@ -164,9 +165,7 @@ export function compressPaths(
   destDir: string,
   onEvent: (e: OpEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<OpEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.compressPaths, { opId, sources, destDir, channel });
+  return invokeStreaming(COMMANDS.compressPaths, { opId, sources, destDir }, onEvent);
 }
 
 export function extractPaths(
@@ -175,9 +174,7 @@ export function extractPaths(
   destDir: string,
   onEvent: (e: OpEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<OpEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.extractPaths, { opId, sources, destDir, channel });
+  return invokeStreaming(COMMANDS.extractPaths, { opId, sources, destDir }, onEvent);
 }
 
 export function undoLast(): Promise<UndoResult | null> {
@@ -207,9 +204,7 @@ export function interruptedOps(): Promise<InterruptedOp[]> {
 // ---------------------------------------------------------------------------
 
 export function search(args: SearchArgs, onEvent: (e: SearchEvent) => void): Promise<void> {
-  const channel = new Channel<SearchEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.search, { ...args, channel });
+  return invokeStreaming(COMMANDS.search, args, onEvent);
 }
 
 export function cancelSearch(searchId: string): Promise<void> {
@@ -233,9 +228,7 @@ export function fuzzyQuery(
   args: FuzzyQueryArgs,
   onEvent: (e: FuzzyEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<FuzzyEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.fuzzyQuery, { ...args, channel });
+  return invokeStreaming(COMMANDS.fuzzyQuery, args, onEvent);
 }
 
 export function fuzzyCancel(queryId: string): Promise<void> {
@@ -295,9 +288,7 @@ export function getInfo(path: string): Promise<GetInfoResult> {
 }
 
 export function dirSize(path: string, onEvent: (e: DirSizeEvent) => void): Promise<void> {
-  const channel = new Channel<DirSizeEvent>();
-  channel.onmessage = onEvent;
-  return invoke(COMMANDS.dirSize, { path, channel });
+  return invokeStreaming(COMMANDS.dirSize, { path }, onEvent);
 }
 
 export function listVolumes(): Promise<Volume[]> {

@@ -15,9 +15,10 @@ import { useFuzzy, type FuzzyScope } from "../../stores/fuzzy";
 import { toast } from "../../stores/app";
 import { usePanes, activePaneTab } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
-import { basename, displayPath } from "../../lib/format";
+import { basename, dirname, displayPath } from "../../lib/format";
 import { useVolumes } from "../../stores/volumes";
 import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
+import { Scrim } from "./Scrim";
 
 function relativeAge(ms: number): string {
   const delta = Math.max(0, Date.now() - ms);
@@ -157,7 +158,7 @@ export function FuzzyFinder() {
     useFuzzy.getState().close();
     const at = activePaneTab();
     if (!at) return;
-    const parent = hit.path.slice(0, hit.path.lastIndexOf("/")) || "/";
+    const parent = dirname(hit.path) ?? "/";
     usePanes
       .getState()
       .navigate(at.pane.id, at.tab.id, parent, { selectName: basename(hit.path) });
@@ -216,12 +217,7 @@ export function FuzzyFinder() {
   if (!open) return null;
 
   return (
-    <div
-      className="anim-fade fixed inset-0 z-[85] flex items-start justify-center bg-black/30 pt-[12vh]"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) useFuzzy.getState().close();
-      }}
-    >
+    <Scrim className="pt-[12vh]" onClose={() => useFuzzy.getState().close()}>
       <div
         className="anim-pop flex max-h-[60vh] w-[560px] flex-col overflow-hidden rounded-xl border border-edge bg-raised"
         style={{ boxShadow: "var(--shadow-overlay)" }}
@@ -300,6 +296,6 @@ export function FuzzyFinder() {
           <span>⏎ open · ⌘⏎ reveal · ⇥ scope</span>
         </div>
       </div>
-    </div>
+    </Scrim>
   );
 }

@@ -4,18 +4,14 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { thumbUrl } from "../../types/ipc";
-import { usePanes, visibleEntries } from "../../stores/panes";
+import { findTab, usePanes, visibleEntries } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
-import { finishRename } from "../../lib/actions";
 import { RenameInput } from "./RenameInput";
 import { showMenu } from "../../stores/menu";
-import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
-import { clickSelect, cmdToggle, shiftRange } from "../../lib/selection";
+import { emptyAreaMenuItems } from "../menus/entryMenu";
 import { setGridColumns } from "../../lib/commands";
 import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
-import { startNativeDrag } from "../../lib/ipc/dnd";
-import { startPointerDrag } from "../../lib/pointerDrag";
-import { useSettings } from "../../stores/settings";
+import { beginEntryDrag, usePaneInteractions } from "../../hooks/usePaneInteractions";
 import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
@@ -43,11 +39,7 @@ const GridCell = memo(function GridCell({
 }) {
   const selected = usePanes(
     useCallback(
-      (s) =>
-        s.panes
-          .find((p) => p.id === paneId)
-          ?.tabs.find((t) => t.id === tabId)
-          ?.selection.selected.has(entry.id) ?? false,
+      (s) => findTab(s, paneId, tabId)?.selection.selected.has(entry.id) ?? false,
       [paneId, tabId, entry.id],
     ),
   );
@@ -89,23 +81,10 @@ const GridCell = memo(function GridCell({
       onDoubleClick={() => !isRenaming && onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onDragStart={(e) => {
-        // dragstart is only the gesture trigger: both branches preventDefault
-        // and run their own drag loop (HTML5 drops are dead under wry).
+        // dragstart is only the gesture trigger — beginEntryDrag runs the
+        // real drag loop (HTML5 drops are dead under wry).
         e.preventDefault();
-        const s = usePanes.getState();
-        const tab = s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
-        if (!tab) return;
-        const paths = tab.selection.selected.has(entry.id)
-          ? tab.entries.filter((en) => tab.selection.selected.has(en.id)).map((en) => en.path)
-          : [entry.path];
-        if (useSettings.getState().dragOutEnabled) {
-          // Native drag: reaches Finder/Mail/…; self-drops come back through
-          // the bridge as internal moves.
-          startNativeDrag(paths, e.altKey);
-          return;
-        }
-        // Kill-switch: internal-only pointer drag through the same registry.
-        startPointerDrag(paths);
+        beginEntryDrag(paneId, tabId, entry, e.altKey);
       }}
     >
       <div className={clsx("rounded-md p-1", selected && "bg-accent-dim")}>
@@ -143,10 +122,7 @@ const GridCell = memo(function GridCell({
 
 export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const tab = usePanes(
-    useCallback(
-      (s) => s.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId),
-      [paneId, tabId],
-    ),
+    useCallback((s) => findTab(s, paneId, tabId), [paneId, tabId]),
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(4);
@@ -219,10 +195,7 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         if (!el) return null;
         const r = el.getBoundingClientRect();
         if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
-        const t = usePanes
-          .getState()
-          .panes.find((p) => p.id === paneId)
-          ?.tabs.find((tt) => tt.id === tabId);
+        const t = findTab(usePanes.getState(), paneId, tabId);
         if (!t) return null;
         const cols = Math.max(1, Math.floor(el.clientWidth / CELL_W));
         const col = Math.floor((x - r.left - GRID_PAD) / CELL_W);
@@ -251,53 +224,8 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   }, [paneId, tabId, tab != null]);
 
   const setSelection = usePanes((s) => s.setSelection);
-  const openEntry = usePanes((s) => s.openEntry);
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent, entry: Entry) => {
-      if (e.button === 2) return;
-      useApp.getState().setActivePane(paneId);
-      const t = usePanes
-        .getState()
-        .panes.find((p) => p.id === paneId)
-        ?.tabs.find((tt) => tt.id === tabId);
-      if (!t) return;
-      const order = visibleEntries(t).map((en) => en.id);
-      const sel = t.selection;
-      if (e.shiftKey) setSelection(paneId, tabId, shiftRange(sel, order, entry.id));
-      else if (e.metaKey) setSelection(paneId, tabId, cmdToggle(sel, entry.id));
-      else if (!sel.selected.has(entry.id)) setSelection(paneId, tabId, clickSelect(entry.id));
-    },
-    [paneId, tabId, setSelection],
-  );
-
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent, entry: Entry) => {
-      e.preventDefault();
-      e.stopPropagation();
-      useApp.getState().setActivePane(paneId);
-      const t = usePanes
-        .getState()
-        .panes.find((p) => p.id === paneId)
-        ?.tabs.find((tt) => tt.id === tabId);
-      if (!t) return;
-      if (!t.selection.selected.has(entry.id)) setSelection(paneId, tabId, clickSelect(entry.id));
-      showMenu(e.clientX, e.clientY, entryMenuItems(paneId, tabId, entry));
-    },
-    [paneId, tabId, setSelection],
-  );
-
-  const handleDoubleClick = useCallback(
-    (entry: Entry) => openEntry(paneId, tabId, entry),
-    [openEntry, paneId, tabId],
-  );
-
-  const handleRenameDone = useCallback(
-    (entry: Entry, advance: boolean) => {
-      finishRename(paneId, tabId, entry.id, advance);
-    },
-    [paneId, tabId],
-  );
+  const { handleMouseDown, handleDoubleClick, handleContextMenu, handleRenameDone } =
+    usePaneInteractions(paneId, tabId);
 
   if (!tab) return null;
   if (tab.error) return <ListingError code={tab.error.code} message={tab.error.message} />;

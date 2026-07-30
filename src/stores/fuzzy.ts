@@ -64,6 +64,13 @@ export const useFuzzy = create<FuzzyState>()(
       }
     }
 
+    /** Drop the debounced keystroke and cancel any in-flight query. */
+    function cancelActiveQuery(): void {
+      cancelPendingQuery();
+      const { queryId } = get();
+      if (queryId) void ipc.fuzzyCancel(queryId).catch(() => {});
+    }
+
     function warm(root: string, force: boolean): void {
       const settings = useSettings.getState();
       safeIpc(() =>
@@ -176,9 +183,7 @@ export const useFuzzy = create<FuzzyState>()(
       },
 
       close: () => {
-        cancelPendingQuery();
-        const { queryId } = get();
-        if (queryId) void ipc.fuzzyCancel(queryId).catch(() => {});
+        cancelActiveQuery();
         set((s) => {
           s.open = false;
           s.queryId = null;
@@ -191,9 +196,7 @@ export const useFuzzy = create<FuzzyState>()(
       setScope: (scope) => {
         const root = scopeRoot(scope);
         if (!root) return;
-        cancelPendingQuery();
-        const { queryId } = get();
-        if (queryId) void ipc.fuzzyCancel(queryId).catch(() => {});
+        cancelActiveQuery();
         set((s) => {
           s.scope = scope;
           s.root = root;

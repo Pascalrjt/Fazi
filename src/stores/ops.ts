@@ -23,9 +23,13 @@ import { useApp } from "./app";
 import { useDirSizes } from "./dirSizes";
 import { useFuzzy } from "./fuzzy";
 import { useSettings } from "./settings";
-import { basename, pluralize } from "../lib/format";
+import { basename, dirname, pluralize } from "../lib/format";
 
 const CARD_DELAY_MS = 250;
+
+function findCard(cards: OpCard[], opId: string): OpCard | undefined {
+  return cards.find((c) => c.opId === opId);
+}
 
 export type CardStatus = "running" | OpStatus;
 
@@ -171,7 +175,7 @@ export const useOps = create<OpsState>()(
         setTimeout(() => {
           visibilityTimers.delete(opId);
           set((s) => {
-            const card = s.cards.find((c) => c.opId === opId);
+            const card = findCard(s.cards, opId);
             if (card && card.status === "running") card.visible = true;
           });
         }, CARD_DELAY_MS),
@@ -185,10 +189,11 @@ export const useOps = create<OpsState>()(
         visibilityTimers.delete(opId);
       }
       rateSamples.delete(opId);
-      const destDir = get().cards.find((c) => c.opId === opId)?.destDir;
+      let destDir: string | undefined;
       set((s) => {
-        const card = s.cards.find((c) => c.opId === opId);
+        const card = findCard(s.cards, opId);
         if (!card) return;
+        destDir = card.destDir;
         card.status = event.status;
         card.errors = event.errors;
         // Done's list is authoritative and complete — assign, never append
@@ -220,7 +225,7 @@ export const useOps = create<OpsState>()(
       // A completed op under a warm fuzzy root makes that index stale, and
       // cached folder sizes containing touched paths are dropped.
       if (event.status !== "cancelled") {
-        const card = get().cards.find((c) => c.opId === opId);
+        const card = findCard(get().cards, opId);
         const touched = [
           ...event.produced,
           ...(card ? [...card.sources, card.destDir] : []),
@@ -241,7 +246,7 @@ export const useOps = create<OpsState>()(
           break;
         case "enumerated":
           set((s) => {
-            const card = s.cards.find((c) => c.opId === opId);
+            const card = findCard(s.cards, opId);
             if (card) {
               card.totalBytes = event.totalBytes;
               card.totalEntries = event.totalEntries;
@@ -258,7 +263,7 @@ export const useOps = create<OpsState>()(
           }
           rateSamples.set(opId, { at: now, bytes: event.bytesDone });
           set((s) => {
-            const card = s.cards.find((c) => c.opId === opId);
+            const card = findCard(s.cards, opId);
             if (!card) return;
             card.bytesDone = event.bytesDone;
             card.entriesDone = event.entriesDone;
@@ -285,13 +290,13 @@ export const useOps = create<OpsState>()(
           break;
         case "itemError":
           set((s) => {
-            const card = s.cards.find((c) => c.opId === opId);
+            const card = findCard(s.cards, opId);
             if (card) card.errors.push({ path: event.path, message: event.message });
           });
           break;
         case "warning":
           set((s) => {
-            const card = s.cards.find((c) => c.opId === opId);
+            const card = findCard(s.cards, opId);
             if (card)
               card.warnings.push({
                 path: event.path,
@@ -319,7 +324,7 @@ export const useOps = create<OpsState>()(
         visibilityTimers.delete(opId);
       }
       set((s) => {
-        const card = s.cards.find((c) => c.opId === opId);
+        const card = findCard(s.cards, opId);
         if (!card) return;
         card.status = "failed";
         card.visible = true;
@@ -352,7 +357,7 @@ export const useOps = create<OpsState>()(
 
       duplicate: (paths) => {
         const opId = crypto.randomUUID();
-        const destDir = paths.length > 0 ? (paths[0].slice(0, paths[0].lastIndexOf("/")) || "/") : "/";
+        const destDir = paths.length > 0 ? (dirname(paths[0]) ?? "/") : "/";
         const label = `${opVerb("duplicate")} ${pluralize(paths.length, "item")}`;
         set((s) => {
           s.cards.push(makeCard(opId, "duplicate", label, paths, destDir, "keepBoth"));
@@ -415,13 +420,13 @@ export const useOps = create<OpsState>()(
 
       toggleExpanded: (opId) => {
         set((s) => {
-          const card = s.cards.find((c) => c.opId === opId);
+          const card = findCard(s.cards, opId);
           if (card) card.expanded = !card.expanded;
         });
       },
 
       retry: (opId) => {
-        const card = get().cards.find((c) => c.opId === opId);
+        const card = findCard(get().cards, opId);
         if (!card) return;
         const failedPaths = card.errors.map((e) => e.path).filter((p) => p !== "");
         const sources = failedPaths.length > 0 ? failedPaths : card.sources;
@@ -476,7 +481,7 @@ export const useOps = create<OpsState>()(
             useApp.getState().pushToast(`Undid ${result.label}`);
             if (result.restored.length > 0) {
               usePanes.getState().addGhosts(
-                result.restored[0].slice(0, result.restored[0].lastIndexOf("/")) || "/",
+                dirname(result.restored[0]) ?? "/",
                 result.restored,
               );
             }

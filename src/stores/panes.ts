@@ -350,7 +350,7 @@ function findPane(s: { panes: Pane[] }, paneId: PaneId): Pane | undefined {
   return s.panes.find((p) => p.id === paneId);
 }
 
-function findTab(s: { panes: Pane[] }, paneId: PaneId, tabId: string): Tab | undefined {
+export function findTab(s: { panes: Pane[] }, paneId: PaneId, tabId: string): Tab | undefined {
   return findPane(s, paneId)?.tabs.find((t) => t.id === tabId);
 }
 
@@ -361,7 +361,7 @@ export function activeTabOf(pane: Pane): Tab {
 /** The active tab of `paneId` (falling back to the first pane), for use in
  *  fine-grained selectors — pick scalars off the result, never return it. */
 export function activeTabIn(s: { panes: Pane[] }, paneId: PaneId): Tab | undefined {
-  const pane = s.panes.find((p) => p.id === paneId) ?? s.panes[0];
+  const pane = findPane(s, paneId) ?? s.panes[0];
   return pane ? activeTabOf(pane) : undefined;
 }
 
@@ -450,6 +450,50 @@ function stopListing(tab: Tab): void {
   }
 }
 
+/** Remove entries by name from a tab draft: filter rows + ghosts, keep the
+ *  total in sync, and prune the selection to the surviving ids. */
+function removeNamesFromTab(tab: Tab, names: ReadonlySet<string>): void {
+  const before = tab.entries.length;
+  tab.entries = tab.entries.filter((e) => !names.has(e.name));
+  tab.ghosts = tab.ghosts.filter((g) => !names.has(g.name));
+  if (tab.entries.length !== before) {
+    if (tab.total != null) tab.total -= before - tab.entries.length;
+    tab.selection = pruneSelection(
+      tab.selection,
+      new Set(tab.entries.map((e) => e.id)),
+    );
+  }
+}
+
+/** Shared back/forward: pop the target off one stack, snapshot onto the other. */
+function goHistory(
+  set: (fn: (s: PanesState) => void) => void,
+  get: () => PanesState,
+  paneId: PaneId,
+  tabId: string,
+  dir: "back" | "forward",
+): void {
+  let target: HistorySnapshot | undefined;
+  set((s) => {
+    const tab = findTab(s, paneId, tabId);
+    if (!tab) return;
+    const from = dir === "back" ? tab.back : tab.forward;
+    const to = dir === "back" ? tab.forward : tab.back;
+    if (from.length === 0) return;
+    target = from.pop();
+    to.push(snapshot(tab));
+    if (!target) return;
+    stopListing(tab);
+    resetForNavigation(tab, target.path);
+    tab.pendingRestore = {
+      scrollTop: target.scrollTop,
+      selectNames: target.selectedNames,
+      leadName: target.leadName ?? undefined,
+    };
+  });
+  if (target) startListing(set, get, paneId, tabId);
+}
+
 function resetForNavigation(tab: Tab, path: string): void {
   tab.path = path;
   tab.listingId = crypto.randomUUID();
@@ -514,10 +558,11 @@ export const usePanes = create<PanesState>()(
         const tab = findTab(s, paneId, tabId);
         if (!tab) return;
         stopListing(tab);
+        const snap = snapshot(tab);
         const keep: PendingRestore = {
           scrollTop: getTabScrollTop(tab.id),
-          selectNames: snapshot(tab).selectedNames,
-          leadName: snapshot(tab).leadName ?? undefined,
+          selectNames: snap.selectedNames,
+          leadName: snap.leadName ?? undefined,
         };
         resetForNavigation(tab, tab.path);
         tab.pendingRestore = keep;
@@ -525,43 +570,9 @@ export const usePanes = create<PanesState>()(
       startListing(set, get, paneId, tabId);
     },
 
-    back: (paneId, tabId) => {
-      let target: HistorySnapshot | undefined;
-      set((s) => {
-        const tab = findTab(s, paneId, tabId);
-        if (!tab || tab.back.length === 0) return;
-        target = tab.back.pop();
-        tab.forward.push(snapshot(tab));
-        if (!target) return;
-        stopListing(tab);
-        resetForNavigation(tab, target.path);
-        tab.pendingRestore = {
-          scrollTop: target.scrollTop,
-          selectNames: target.selectedNames,
-          leadName: target.leadName ?? undefined,
-        };
-      });
-      if (target) startListing(set, get, paneId, tabId);
-    },
+    back: (paneId, tabId) => goHistory(set, get, paneId, tabId, "back"),
 
-    forward: (paneId, tabId) => {
-      let target: HistorySnapshot | undefined;
-      set((s) => {
-        const tab = findTab(s, paneId, tabId);
-        if (!tab || tab.forward.length === 0) return;
-        target = tab.forward.pop();
-        tab.back.push(snapshot(tab));
-        if (!target) return;
-        stopListing(tab);
-        resetForNavigation(tab, target.path);
-        tab.pendingRestore = {
-          scrollTop: target.scrollTop,
-          selectNames: target.selectedNames,
-          leadName: target.leadName ?? undefined,
-        };
-      });
-      if (target) startListing(set, get, paneId, tabId);
-    },
+    forward: (paneId, tabId) => goHistory(set, get, paneId, tabId, "forward"),
 
     up: (paneId, tabId) => {
       const tab = findTab(get(), paneId, tabId);
@@ -780,31 +791,22 @@ export const usePanes = create<PanesState>()(
             set((s) => {
               const t = findTab(s, paneId, tabId);
               if (!t || t.watchId !== watchId) return;
-              const gone = new Set(event.removed);
-              const before = t.entries.length;
-              t.entries = t.entries.filter((e) => !gone.has(e.name));
-              t.ghosts = t.ghosts.filter((g) => !gone.has(g.name));
-              if (t.entries.length !== before) {
-                if (t.total != null) t.total -= before - t.entries.length;
-                t.selection = pruneSelection(
-                  t.selection,
-                  new Set(t.entries.map((e) => e.id)),
-                );
-              }
+              removeNamesFromTab(t, new Set(event.removed));
             });
             const updated = findTab(get(), paneId, tabId);
             if (updated) listingIndexes.set(updated.listingId, entryIndex(updated.entries));
           }
-          const changed = [...event.upserted, ...event.removed].map((name) =>
-            joinPath(tab.path, name),
-          );
+          const upsertedPaths = event.upserted.map((name) => joinPath(tab.path, name));
+          const changed = [
+            ...upsertedPaths,
+            ...event.removed.map((name) => joinPath(tab.path, name)),
+          ];
           if (changed.length > 0) useDirSizes.getState().invalidate(changed);
-          if (event.upserted.length > 0) {
+          if (upsertedPaths.length > 0) {
             // One bulk stat per batch — hot dirs no longer fan out one IPC
             // call per changed name.
-            const paths = event.upserted.map((name) => joinPath(tab.path, name));
             ipc
-              .statPaths(tab.listingId, paths)
+              .statPaths(tab.listingId, upsertedPaths)
               .then((entries) => {
                 const fresh = entries.filter((e): e is Entry => e != null);
                 if (fresh.length > 0) get().upsertEntriesNow(paneId, tabId, fresh);
@@ -827,7 +829,7 @@ export const usePanes = create<PanesState>()(
                 .catch(() => false),
             );
             const s = get();
-            const t = s.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
+            const t = findTab(s, paneId, tabId);
             // Only navigate if the tab still shows the vanished dir.
             if (t && t.path === from) s.navigate(paneId, tabId, dest);
           })();
@@ -931,17 +933,7 @@ export const usePanes = create<PanesState>()(
         for (const pane of s.panes) {
           for (const tab of pane.tabs) {
             const names = byDir.get(tab.path);
-            if (!names) continue;
-            const before = tab.entries.length;
-            tab.entries = tab.entries.filter((e) => !names.has(e.name));
-            tab.ghosts = tab.ghosts.filter((g) => !names.has(g.name));
-            if (tab.entries.length !== before) {
-              if (tab.total != null) tab.total -= before - tab.entries.length;
-              tab.selection = pruneSelection(
-                tab.selection,
-                new Set(tab.entries.map((e) => e.id)),
-              );
-            }
+            if (names) removeNamesFromTab(tab, names);
           }
         }
       });
@@ -1029,7 +1021,7 @@ export function visibleEntries(tab: Pick<Tab, "entries" | "filter" | "showHidden
 export function activePaneTab(): { pane: Pane; tab: Tab } | null {
   const paneId = useApp.getState().activePaneId;
   const s = usePanes.getState();
-  const pane = s.panes.find((p) => p.id === paneId) ?? s.panes[0];
+  const pane = findPane(s, paneId) ?? s.panes[0];
   if (!pane || pane.tabs.length === 0) return null;
   return { pane, tab: activeTabOf(pane) };
 }

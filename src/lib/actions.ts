@@ -11,11 +11,18 @@ import { isExtractableArchive } from "./fileTypes";
 import { useApp, toast, type PaneId } from "../stores/app";
 import { clickSelect, selectAll } from "./selection";
 import { useSettings } from "../stores/settings";
-import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
+import { activePaneTab, findTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
 import { useOps } from "../stores/ops";
 import { useVolumes } from "../stores/volumes";
 import { showMenu, type MenuItem } from "../stores/menu";
 import { iconUrl } from "../types/ipc";
+
+/** Refresh every pane's active tab — the rollback path after an optimistic
+ *  removal fails, and the settle-up after Empty Trash. */
+function refreshAllPanes(): void {
+  const s = usePanes.getState();
+  for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+}
 
 // ---------------------------------------------------------------------------
 // open
@@ -168,8 +175,7 @@ export function trashPathsWithUndo(paths: string[]): void {
     })
     .catch((err) => {
       // roll back by refreshing every pane that lost rows
-      const s = usePanes.getState();
-      for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+      refreshAllPanes();
       toast(`Couldn't move to Trash: ${err}`, { danger: true });
     });
 }
@@ -212,8 +218,7 @@ export function confirmEmptyTrash(): void {
                 { danger: true },
               );
             }
-            const s = usePanes.getState();
-            for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+            refreshAllPanes();
           })
           .catch((err) => toast(`Empty Trash failed: ${err}`, { danger: true }));
       };
@@ -244,8 +249,7 @@ export function deleteSelectionPermanently(): void {
       .deletePermanent(paths)
       .then(() => toast(`Deleted ${pluralize(paths.length, "item")}`))
       .catch((err) => {
-        const s = usePanes.getState();
-        for (const pane of s.panes) s.refresh(pane.id, pane.activeTabId);
+        refreshAllPanes();
         toast(`Delete failed: ${err}`, { danger: true });
       });
   };
@@ -352,7 +356,7 @@ export function finishRename(
   app.stopRename();
   if (!advance) return;
   const state = usePanes.getState();
-  const tab = state.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
+  const tab = findTab(state, paneId, tabId);
   if (!tab) return;
   const vis = visibleEntries(tab);
   const idx = vis.findIndex((en) => en.id === entryId);

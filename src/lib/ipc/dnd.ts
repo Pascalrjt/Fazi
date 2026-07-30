@@ -32,6 +32,7 @@ import {
 } from "../dnd";
 import { useOps } from "../../stores/ops";
 import { trashPathsWithUndo } from "../actions";
+import { dirname } from "../format";
 import { pinFolders } from "../pin";
 import { dragModifiers } from "./index";
 
@@ -102,10 +103,7 @@ export async function setupFinderDragIn(): Promise<() => void> {
         return;
       }
       // don't copy something onto itself
-      const filtered = paths.filter((p) => {
-        const parent = p.slice(0, p.lastIndexOf("/")) || "/";
-        return parent !== hit.destDir;
-      });
+      const filtered = paths.filter((p) => (dirname(p) ?? "/") !== hit.destDir);
       if (filtered.length === 0) return;
       useOps.getState().startOp({
         kind: "copy",

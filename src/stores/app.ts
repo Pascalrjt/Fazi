@@ -148,6 +148,21 @@ const flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const FLUSH_MS = 50;
 const FLUSH_COUNT = 200;
 
+/** Cancel an in-flight search: the mdfind child, the buffered hits + flush
+ *  timer, and any fallback fuzzy query (revoking its icon-token owner scope). */
+function cancelActiveSearch(prev: GlobalSearch): void {
+  if (prev.searchId) {
+    void ipc.cancelSearch(prev.searchId).catch(() => {});
+    hitBuffers.delete(prev.searchId);
+    const t = flushTimers.get(prev.searchId);
+    if (t) clearTimeout(t);
+    flushTimers.delete(prev.searchId);
+  }
+  if (prev.fallbackQueryId) {
+    void ipc.fuzzyCancel(prev.fallbackQueryId).catch(() => {});
+  }
+}
+
 interface AppState {
   activePaneId: PaneId;
   paletteOpen: boolean;
@@ -300,19 +315,7 @@ export const useApp = create<AppState>()(
     },
 
     runGlobalSearch: (query, scopePath) => {
-      const prevSearch = get().globalSearch;
-      if (prevSearch.searchId) {
-        void ipc.cancelSearch(prevSearch.searchId).catch(() => {});
-        hitBuffers.delete(prevSearch.searchId);
-        const t = flushTimers.get(prevSearch.searchId);
-        if (t) clearTimeout(t);
-        flushTimers.delete(prevSearch.searchId);
-      }
-      // Replacing/closing also cancels any in-flight fallback fuzzy query
-      // (revoking its icon-token owner scope).
-      if (prevSearch.fallbackQueryId) {
-        void ipc.fuzzyCancel(prevSearch.fallbackQueryId).catch(() => {});
-      }
+      cancelActiveSearch(get().globalSearch);
       if (query.trim() === "") {
         set((s) => {
           s.globalSearch.hits = [];
@@ -420,17 +423,7 @@ export const useApp = create<AppState>()(
     },
 
     closeGlobalSearch: () => {
-      const prev = get().globalSearch;
-      if (prev.searchId) {
-        void ipc.cancelSearch(prev.searchId).catch(() => {});
-        hitBuffers.delete(prev.searchId);
-        const t = flushTimers.get(prev.searchId);
-        if (t) clearTimeout(t);
-        flushTimers.delete(prev.searchId);
-      }
-      if (prev.fallbackQueryId) {
-        void ipc.fuzzyCancel(prev.fallbackQueryId).catch(() => {});
-      }
+      cancelActiveSearch(get().globalSearch);
       set((s) => {
         s.globalSearch = { ...EMPTY_SEARCH };
       });

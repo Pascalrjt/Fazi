@@ -23,7 +23,14 @@ import {
 import * as actions from "../actions";
 import { isExtractableArchive } from "../fileTypes";
 import { useApp } from "../../stores/app";
-import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../../stores/panes";
+import {
+  activePaneTab,
+  selectedEntries,
+  usePanes,
+  visibleEntries,
+  type Pane,
+  type Tab,
+} from "../../stores/panes";
 import { useFuzzy } from "../../stores/fuzzy";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
@@ -54,6 +61,14 @@ function moveLead(delta: 1 | -1, extend: boolean, stride = 1): void {
 
 function isGrid(): boolean {
   return useSettings.getState().viewMode === "grid";
+}
+
+/** Run a command body against the active pane/tab (no-op when there is none). */
+function withActiveTab(
+  fn: (pane: Pane, tab: Tab, panes: ReturnType<typeof usePanes.getState>) => void,
+): void {
+  const at = activePaneTab();
+  if (at) fn(at.pane, at.tab, usePanes.getState());
 }
 
 // ---------------------------------------------------------------------------
@@ -108,9 +123,15 @@ function hasSelection(): boolean {
  * default binding.
  */
 export function sanitizeOverrides(raw: unknown): KeybindingOverrides {
+  return sanitizeOverridesFor(buildCommandSpecs(), raw);
+}
+
+/** sanitizeOverrides against an already-built spec array — callers that also
+ *  apply/register the specs build them once and pass them down. */
+function sanitizeOverridesFor(specs: CommandSpec[], raw: unknown): KeybindingOverrides {
   const out: KeybindingOverrides = {};
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return out;
-  const known = new Set(buildCommandSpecs().map((c) => c.id));
+  const known = new Set(specs.map((c) => c.id));
   const vimOn = useSettings.getState().vimMode;
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!known.has(id)) continue;
@@ -148,7 +169,8 @@ function applyOverrides(
 /** Prospective conflict check for the keybindings editor — never touches the
  *  live registry. */
 export function conflictsForOverrides(overrides: KeybindingOverrides): string[] {
-  const specs = applyOverrides(buildCommandSpecs(), sanitizeOverrides(overrides));
+  const base = buildCommandSpecs();
+  const specs = applyOverrides(base, sanitizeOverridesFor(base, overrides));
   const prospective = specs.map((spec) => {
     const shortcuts = [
       ...(spec.shortcut ? [spec.shortcut] : []),
@@ -168,8 +190,9 @@ export function conflictsForOverrides(overrides: KeybindingOverrides): string[] 
 export function registerAllCommands(overrides?: KeybindingOverrides): void {
   if (registered) return;
   registered = true;
-  const sanitized = sanitizeOverrides(overrides ?? {});
-  registerCommands(applyOverrides(buildCommandSpecs(), sanitized));
+  const specs = buildCommandSpecs();
+  const sanitized = sanitizeOverridesFor(specs, overrides ?? {});
+  registerCommands(applyOverrides(specs, sanitized));
 }
 
 /**
@@ -233,30 +256,21 @@ function buildCommandSpecs(): CommandSpec[] {
       title: "Enclosing Folder",
       keywords: "parent up folder",
       shortcut: "cmd+up",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().up(at.pane.id, at.tab.id);
-      },
+      run: () => withActiveTab((pane, tab, panes) => panes.up(pane.id, tab.id)),
     },
     {
       id: "back",
       title: "Back",
       shortcut: "cmd+[",
       extraShortcuts: ["cmd+left"],
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().back(at.pane.id, at.tab.id);
-      },
+      run: () => withActiveTab((pane, tab, panes) => panes.back(pane.id, tab.id)),
     },
     {
       id: "forward",
       title: "Forward",
       shortcut: "cmd+]",
       extraShortcuts: ["cmd+right"],
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().forward(at.pane.id, at.tab.id);
-      },
+      run: () => withActiveTab((pane, tab, panes) => panes.forward(pane.id, tab.id)),
     },
     {
       id: "goHome",
@@ -582,37 +596,25 @@ function buildCommandSpecs(): CommandSpec[] {
       id: "newTab",
       title: "New Tab",
       shortcut: "cmd+t",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().openTab(at.pane.id, at.tab.path);
-      },
+      run: () => withActiveTab((pane, tab, panes) => panes.openTab(pane.id, tab.path)),
     },
     {
       id: "closeTab",
       title: "Close Tab",
       shortcut: "cmd+w",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().closeTab(at.pane.id, at.tab.id);
-      },
+      run: () => withActiveTab((pane, tab, panes) => panes.closeTab(pane.id, tab.id)),
     },
     {
       id: "nextTab",
       title: "Next Tab",
       shortcut: "ctrl+tab",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().cycleTab(at.pane.id, 1);
-      },
+      run: () => withActiveTab((pane, _tab, panes) => panes.cycleTab(pane.id, 1)),
     },
     {
       id: "prevTab",
       title: "Previous Tab",
       shortcut: "ctrl+shift+tab",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().cycleTab(at.pane.id, -1);
-      },
+      run: () => withActiveTab((pane, _tab, panes) => panes.cycleTab(pane.id, -1)),
     },
     {
       id: "focusSearch",
@@ -711,10 +713,7 @@ function buildCommandSpecs(): CommandSpec[] {
       title: "Refresh",
       keywords: "reload",
       shortcut: "cmd+r",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().refresh(at.pane.id, at.tab.id);
-      },
+      run: () => withActiveTab((pane, tab, panes) => panes.refresh(pane.id, tab.id)),
     },
   ];
 }

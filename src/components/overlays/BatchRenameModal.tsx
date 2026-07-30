@@ -17,6 +17,7 @@ import {
 import { useApp, toast } from "../../stores/app";
 import { activePaneTab, selectedEntries, usePanes } from "../../stores/panes";
 import { pluralize } from "../../lib/format";
+import { Scrim } from "./Scrim";
 
 function Field({
   label,
@@ -106,11 +107,11 @@ export function BatchRenameModal() {
   if (!open) return null;
 
   return (
-    <div
-      className="anim-fade fixed inset-0 z-[85] flex items-start justify-center bg-black/30 pt-[10vh]"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
+    <Scrim
+      className="pt-[10vh]"
+      onClose={close}
+      // Deliberately a bubble-phase keydown INSIDE the modal (not a window
+      // capture listener): Escape only closes while focus is in the dialog.
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.stopPropagation();
@@ -243,6 +244,6 @@ export function BatchRenameModal() {
           </button>
         </div>
       </div>
-    </div>
+    </Scrim>
   );
 }

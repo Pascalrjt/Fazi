@@ -14,12 +14,13 @@
  */
 import { useOps } from "../stores/ops";
 import { trashPathsWithUndo } from "./actions";
+import { dirname } from "./format";
 import { pinFolders } from "./pin";
 
 /** True if the drop would land inside one of the dragged items (or be a no-op). */
 export function isInvalidDrop(paths: string[], destDir: string): boolean {
   return paths.some((p) => {
-    const parent = p.slice(0, p.lastIndexOf("/")) || "/";
+    const parent = dirname(p) ?? "/";
     return parent === destDir || destDir === p || destDir.startsWith(`${p}/`);
   });
 }
