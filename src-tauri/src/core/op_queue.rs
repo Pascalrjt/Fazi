@@ -968,11 +968,15 @@ fn stage_for(
         ));
     }
 
-    let outcome = walker::copy_fresh(source, &stage, sink)?;
+    let outcome = match walker::copy_fresh(source, &stage, sink) {
+        Ok(o) => o,
+        Err(e) => {
+            discard_stage(engine, journal_entry, &stage);
+            return Err(e);
+        }
+    };
     if outcome == Outcome::Cancelled {
-        walker::remove_tree_best_effort(&stage);
-        journal_entry.pop_staging(&stage);
-        let _ = engine.journal.write(journal_entry);
+        discard_stage(engine, journal_entry, &stage);
         return Ok(None);
     }
 
@@ -981,11 +985,15 @@ fn stage_for(
         // *it* verifies; a crash mid-move never loses data. A dataless
         // descendant surfaced as an item error above is missing from the
         // stage, so verification fails and the source is preserved.
-        let report = walker::verify_tree(source, &stage, tol_ms)?;
+        let report = match walker::verify_tree(source, &stage, tol_ms) {
+            Ok(r) => r,
+            Err(e) => {
+                discard_stage(engine, journal_entry, &stage);
+                return Err(e);
+            }
+        };
         if !report.mismatches.is_empty() {
-            walker::remove_tree_best_effort(&stage);
-            journal_entry.pop_staging(&stage);
-            let _ = engine.journal.write(journal_entry);
+            discard_stage(engine, journal_entry, &stage);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("verification failed: {}", report.mismatches.join("; ")),
@@ -993,6 +1001,14 @@ fn stage_for(
         }
     }
     Ok(Some(stage))
+}
+
+/// Abandon a stage: remove its tree, pop it from the journal entry, and
+/// best-effort persist the shrunken record so recovery never chases it.
+fn discard_stage(engine: &Engine, journal_entry: &mut OpJournalEntry, stage: &Path) {
+    walker::remove_tree_best_effort(stage);
+    journal_entry.pop_staging(stage);
+    let _ = engine.journal.write(journal_entry);
 }
 
 /// Replace transaction.

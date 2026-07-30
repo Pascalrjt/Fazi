@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Entry } from "../../types/ipc";
 
+let resolveStat: (entries: (Entry | null)[]) => void = () => {};
+
 vi.mock("../../lib/ipc", () => ({
   listDir: () => Promise.resolve(),
   cancelListing: () => Promise.resolve(),
   watchDir: () => Promise.resolve(),
   unwatch: () => Promise.resolve(),
+  statPaths: () =>
+    new Promise((res) => {
+      resolveStat = res;
+    }),
 }));
 
 import { activeTabOf, usePanes } from "../panes";
@@ -93,6 +99,44 @@ describe("upsertEntriesNow", () => {
   it("returns null when the tab is gone", () => {
     const ids = usePanes.getState().upsertEntriesNow("left", "no-such-tab", [entry(9, "x")]);
     expect(ids).toBeNull();
+  });
+
+  it("re-sorts on metadata-only updates when sorting by that field", () => {
+    const tabId = usePanes.getState().panes[0].activeTabId;
+    usePanes.getState().setSort("left", tabId, "size", "asc");
+    // seed sizes are all 1; grow alpha past the others so size-sort must move it
+    usePanes.getState().upsertEntriesNow("left", tabId, [entry(201, "alpha", { size: 500 })]);
+
+    const tab = activeTabOf(usePanes.getState().panes[0]);
+    expect(tab.entries.map((e) => e.name)).toEqual(["beta", "gamma", "alpha"]);
+    // still the same stable row id
+    expect(tab.entries.find((e) => e.name === "alpha")?.id).toBe(1);
+  });
+});
+
+describe("applyWatchBatch stale stat guard", () => {
+  it("drops stat results that resolve after the tab moved on", async () => {
+    const tabId = seed([entry(1, "alpha")]);
+    // the watch starts on the "done" event
+    const seeded = activeTabOf(usePanes.getState().panes[0]);
+    usePanes.getState().applyListEvent("left", tabId, seeded.listingId, { event: "done" });
+    const tab = activeTabOf(usePanes.getState().panes[0]);
+    expect(tab.watchId).toBeTruthy();
+
+    usePanes.getState().applyWatchBatch("left", tabId, tab.watchId!, {
+      event: "batch",
+      rescan: false,
+      upserted: ["intruder"],
+      removed: [],
+    });
+    // the tab refreshes while the bulk stat is still in flight
+    usePanes.getState().refresh("left", tabId);
+    resolveStat([entry(999, "intruder")]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const after = activeTabOf(usePanes.getState().panes[0]);
+    expect(after.entries.some((e) => e.name === "intruder")).toBe(false);
   });
 });
 

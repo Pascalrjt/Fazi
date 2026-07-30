@@ -805,9 +805,15 @@ export const usePanes = create<PanesState>()(
           if (upsertedPaths.length > 0) {
             // One bulk stat per batch — hot dirs no longer fan out one IPC
             // call per changed name.
+            const listingId = tab.listingId;
             ipc
-              .statPaths(tab.listingId, upsertedPaths)
+              .statPaths(listingId, upsertedPaths)
               .then((entries) => {
+                // The tab may have navigated or refreshed while the stat ran;
+                // stale results must never enter the new listing.
+                const current = findTab(get(), paneId, tabId);
+                if (!current || current.watchId !== watchId || current.listingId !== listingId)
+                  return;
                 const fresh = entries.filter((e): e is Entry => e != null);
                 if (fresh.length > 0) get().upsertEntriesNow(paneId, tabId, fresh);
               })
@@ -982,10 +988,10 @@ export const usePanes = create<PanesState>()(
             out.push(entry.id);
           }
         }
-        if (appended > 0) {
-          tab.entries = sortEntries(tab.entries, tab.sort);
-          if (tab.total != null) tab.total += appended;
-        }
+        // Sort on updates too: a fresh size/mtime/kind can move a row when
+        // sorting by that field.
+        if (entries.length > 0) tab.entries = sortEntries(tab.entries, tab.sort);
+        if (appended > 0 && tab.total != null) tab.total += appended;
         if (tab.ghosts.length > 0) {
           tab.ghosts = tab.ghosts.filter((g) => !incoming.has(g.name.toLocaleLowerCase()));
         }
