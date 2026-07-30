@@ -31,6 +31,16 @@ pub struct OpJournalEntry {
     pub started_at_ms: u64,
 }
 
+impl OpJournalEntry {
+    /// Drop `stage` from the recorded staging paths (after a promote or a
+    /// cleanup). The caller decides whether the follow-up journal write is
+    /// fail-fast or best-effort.
+    pub fn pop_staging(&mut self, stage: &Path) {
+        let s = stage.to_string_lossy();
+        self.staging.retain(|p| p != s.as_ref());
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InterruptedOp {

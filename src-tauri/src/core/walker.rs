@@ -527,6 +527,36 @@ pub fn rescue_leftover(leftover: &Path, op_id: &str, name: &str) -> io::Result<P
     Err(last_err)
 }
 
+/// User-visible warning for a replace whose swap succeeded but whose old
+/// original couldn't be trashed and was left behind at `left_at` (a safe,
+/// non-staging path). Single home so the text can't drift between the
+/// top-level replace and the merge tier.
+pub fn trash_failed_warning(replaced: &Path, error: &io::Error, left_at: &Path) -> String {
+    format!(
+        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
+        replaced.display(),
+        error,
+        left_at.display()
+    )
+}
+
+/// Critical variant: the trash failed AND `rescue_leftover` failed, so the
+/// old original is stuck at a staging-named path crash recovery would delete.
+pub fn rescue_failed_warning(
+    replaced: &Path,
+    error: &io::Error,
+    rename_err: &io::Error,
+    leftover: &Path,
+) -> String {
+    format!(
+        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}) or renamed to a safe name ({}). It remains at \"{}\" and may be removed if the app crashes before this operation's record clears — rescue it manually.",
+        replaced.display(),
+        error,
+        rename_err,
+        leftover.display()
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Merge (per-entry staging tier)
 // ---------------------------------------------------------------------------
@@ -639,109 +669,9 @@ pub fn merge_into(
                         }
                     }
                     Resolution::Replace | Resolution::Merge => {
-                        if ctx.moving {
-                            // Direct swap — never stage the source. A staging
-                            // path must never hold the only copy of data,
-                            // because recovery deletes all staging on startup.
-                            match replace_with_staged(&spath, &dpath, ctx.trasher) {
-                                Ok(ReplaceOutcome::Replaced { .. }) => {
-                                    // The swap consumed the source: dpath holds
-                                    // the new content, the old original is in
-                                    // the Trash. Nothing left to remove.
-                                    continue;
-                                }
-                                Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
-                                    // Leftover sits at the SOURCE path — not a
-                                    // staging name, safe from recovery. Never
-                                    // delete it.
-                                    sink.item_warning(
-                                        &leftover,
-                                        &format!(
-                                            "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
-                                            dpath.display(),
-                                            error,
-                                            leftover.display()
-                                        ),
-                                        WarnSeverity::Warning,
-                                    );
-                                    continue;
-                                }
-                                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-                                    // Cross-volume: fall through to the staged
-                                    // copy path below.
-                                }
-                                Err(e) => {
-                                    sink.item_error(&spath, &e);
-                                    continue;
-                                }
-                            }
-                        }
-
-                        // Staged path (copy, or cross-volume move): the stage
-                        // only ever holds a throwaway copy — safe for recovery
-                        // to delete.
-                        let stage = dst.join(staging_name(&name, ctx.op_id));
-                        remove_tree_best_effort(&stage);
-                        let staged = if ctx.moving {
-                            stage_cross_volume(&spath, &stage, ctx, sink)
-                        } else {
-                            copy_fresh(&spath, &stage, sink)
-                        };
-                        match staged {
-                            Ok(Outcome::Cancelled) => {
-                                remove_tree_best_effort(&stage);
-                                return Ok(Outcome::Cancelled);
-                            }
-                            Ok(Outcome::Done) => match replace_with_staged(&stage, &dpath, ctx.trasher) {
-                                Ok(ReplaceOutcome::Replaced { .. }) => {
-                                    if ctx.moving && spath.symlink_metadata().is_ok() {
-                                        remove_tree_best_effort(&spath);
-                                    }
-                                }
-                                Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
-                                    // The leftover old original sits at the
-                                    // stage path, whose name matches
-                                    // is_staging_name — recovery's merge-root
-                                    // scan would delete it after a crash.
-                                    // Rename it to a safe name FIRST.
-                                    match rescue_leftover(&leftover, ctx.op_id, &name) {
-                                        Ok(final_path) => sink.item_warning(
-                                            &final_path,
-                                            &format!(
-                                                "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
-                                                dpath.display(),
-                                                error,
-                                                final_path.display()
-                                            ),
-                                            WarnSeverity::Warning,
-                                        ),
-                                        Err(rename_err) => sink.item_warning(
-                                            &leftover,
-                                            &format!(
-                                                "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}) or renamed to a safe name ({}). It remains at \"{}\" and may be removed if the app crashes before this operation's record clears — rescue it manually.",
-                                                dpath.display(),
-                                                error,
-                                                rename_err,
-                                                leftover.display()
-                                            ),
-                                            WarnSeverity::Critical,
-                                        ),
-                                    }
-                                    if ctx.moving && spath.symlink_metadata().is_ok() {
-                                        remove_tree_best_effort(&spath);
-                                    }
-                                }
-                                Err(e) => {
-                                    // Only ever a throwaway copy now — the
-                                    // source was never renamed into staging.
-                                    remove_tree_best_effort(&stage);
-                                    sink.item_error(&spath, &e);
-                                }
-                            },
-                            Err(e) => {
-                                remove_tree_best_effort(&stage);
-                                sink.item_error(&spath, &e);
-                            }
+                        match replace_entry_in_merge(&spath, &dpath, &name, dst, ctx, sink)? {
+                            Outcome::Cancelled => return Ok(Outcome::Cancelled),
+                            Outcome::Done => {}
                         }
                     }
                 }
@@ -751,6 +681,105 @@ pub fn merge_into(
 
     if ctx.moving {
         let _ = std::fs::remove_dir(src); // only if emptied
+    }
+    Ok(Outcome::Done)
+}
+
+/// Replace one conflicting merge entry `dpath` with `spath` (the user chose
+/// Replace, or Merge on a non-dir pair). Direct swap for same-volume moves,
+/// staged copy + swap otherwise, with the trash-failure rescue ladder.
+/// Per-entry failures go through the sink and return `Done`; `Cancelled`
+/// aborts the whole merge.
+fn replace_entry_in_merge(
+    spath: &Path,
+    dpath: &Path,
+    name: &str,
+    dst: &Path,
+    ctx: &MergeCtx,
+    sink: &mut dyn WalkSink,
+) -> io::Result<Outcome> {
+    if ctx.moving {
+        // Direct swap — never stage the source. A staging path must never
+        // hold the only copy of data, because recovery deletes all staging
+        // on startup.
+        match replace_with_staged(spath, dpath, ctx.trasher) {
+            Ok(ReplaceOutcome::Replaced { .. }) => {
+                // The swap consumed the source: dpath holds the new content,
+                // the old original is in the Trash. Nothing left to remove.
+                return Ok(Outcome::Done);
+            }
+            Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
+                // Leftover sits at the SOURCE path — not a staging name,
+                // safe from recovery. Never delete it.
+                sink.item_warning(
+                    &leftover,
+                    &trash_failed_warning(dpath, &error, &leftover),
+                    WarnSeverity::Warning,
+                );
+                return Ok(Outcome::Done);
+            }
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                // Cross-volume: fall through to the staged copy path below.
+            }
+            Err(e) => {
+                sink.item_error(spath, &e);
+                return Ok(Outcome::Done);
+            }
+        }
+    }
+
+    // Staged path (copy, or cross-volume move): the stage only ever holds
+    // a throwaway copy — safe for recovery to delete.
+    let stage = dst.join(staging_name(name, ctx.op_id));
+    remove_tree_best_effort(&stage);
+    let staged = if ctx.moving {
+        stage_cross_volume(spath, &stage, ctx, sink)
+    } else {
+        copy_fresh(spath, &stage, sink)
+    };
+    match staged {
+        Ok(Outcome::Cancelled) => {
+            remove_tree_best_effort(&stage);
+            return Ok(Outcome::Cancelled);
+        }
+        Ok(Outcome::Done) => match replace_with_staged(&stage, dpath, ctx.trasher) {
+            Ok(ReplaceOutcome::Replaced { .. }) => {
+                if ctx.moving && spath.symlink_metadata().is_ok() {
+                    remove_tree_best_effort(spath);
+                }
+            }
+            Ok(ReplaceOutcome::TrashFailed { leftover, error }) => {
+                // The leftover old original sits at the stage path, whose
+                // name matches is_staging_name — recovery's merge-root scan
+                // would delete it after a crash. Rename it to a safe name
+                // FIRST.
+                match rescue_leftover(&leftover, ctx.op_id, name) {
+                    Ok(final_path) => sink.item_warning(
+                        &final_path,
+                        &trash_failed_warning(dpath, &error, &final_path),
+                        WarnSeverity::Warning,
+                    ),
+                    Err(rename_err) => sink.item_warning(
+                        &leftover,
+                        &rescue_failed_warning(dpath, &error, &rename_err, &leftover),
+                        WarnSeverity::Critical,
+                    ),
+                }
+                if ctx.moving && spath.symlink_metadata().is_ok() {
+                    remove_tree_best_effort(spath);
+                }
+            }
+            Err(e) => {
+                // Only ever a throwaway copy now — the source was never
+                // renamed into staging.
+                remove_tree_best_effort(&stage);
+                sink.item_error(spath, &e);
+            }
+        },
+        Err(e) => {
+            remove_tree_best_effort(&stage);
+            sink.item_error(spath, &e);
+        }
     }
     Ok(Outcome::Done)
 }

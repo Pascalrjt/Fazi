@@ -23,8 +23,8 @@ use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
 use crate::core::verify::ChecksumReport;
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, ReplaceOutcome,
-    Resolution, Trasher, WalkSink, WarnSeverity,
+    self, keep_both_name, rescue_failed_warning, staging_name, trash_failed_warning, ConflictKind,
+    MergeCtx, Outcome, ReplaceOutcome, Resolution, Trasher, WalkSink, WarnSeverity,
 };
 
 // ---------------------------------------------------------------------------
@@ -228,6 +228,32 @@ impl Engine {
         (self.undo_changed)(&stack);
     }
 
+    /// Lock serializing ops that target the same destination volume;
+    /// ops on different volumes run in parallel.
+    pub(crate) fn volume_lock(&self, dest: &Path) -> Arc<Mutex<()>> {
+        let dev = copier::device_of(dest).unwrap_or(0);
+        self.volume_locks
+            .entry(dev)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Shared op epilogue: clear the journal entry and the live handle, then
+    /// mark warm fuzzy indexes over everything the op touched stale. Status
+    /// computation and Done emission stay with each caller — their semantics
+    /// (undoability, warnings, skipped) deliberately differ.
+    pub(crate) fn finish_op_bookkeeping(
+        &self,
+        op_id: &str,
+        sources: &[PathBuf],
+        produced: &[PathBuf],
+    ) {
+        self.journal.remove(op_id);
+        self.ops.remove(op_id);
+        let touched: Vec<PathBuf> = sources.iter().chain(produced.iter()).cloned().collect();
+        (self.invalidate_fuzzy)(&touched);
+    }
+
     pub fn cancel_op(&self, op_id: &str) {
         if let Some(h) = self.ops.get(op_id) {
             h.cancel();
@@ -252,6 +278,33 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Journal intent before any bytes move. Fail-fast: without a durable
+/// journal there is no crash protection, so the op must not proceed —
+/// returns false after unregistering the op and emitting a failed Done.
+pub(crate) fn journal_write_fail_fast(
+    engine: &Engine,
+    entry: &OpJournalEntry,
+    op_id: &str,
+    emitter: &Arc<dyn OpEmitter>,
+) -> bool {
+    if let Err(e) = engine.journal.write(entry) {
+        engine.ops.remove(op_id);
+        emitter.emit(OpEvent::Done {
+            status: "failed",
+            errors: vec![OpError {
+                path: String::new(),
+                message: format!("couldn't write the crash-safety journal: {}", e),
+            }],
+            warnings: Vec::new(),
+            produced: Vec::new(),
+            skipped: None,
+            undoable: false,
+        });
+        return false;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +539,25 @@ fn walk_count(p: &Path, cancel: &AtomicBool, bytes: &mut u64, entries: &mut u64)
     }
 }
 
+/// Concurrent enumeration: the progress bar acquires a denominator later.
+/// Spawn only after the intent journal write succeeded, so a fail-fast
+/// return can never be followed by a stray Enumerated event.
+pub(crate) fn spawn_enumeration(
+    sources: &[PathBuf],
+    handle: &Arc<OpHandle>,
+    emitter: &Arc<dyn OpEmitter>,
+) {
+    let sources = sources.to_vec();
+    let cancel_handle = handle.clone();
+    let em = emitter.clone();
+    std::thread::spawn(move || {
+        let (b, e) = enumerate(&sources, &cancel_handle.cancel);
+        if !cancel_handle.cancel.load(Ordering::SeqCst) {
+            em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // The op itself
 // ---------------------------------------------------------------------------
@@ -525,16 +597,9 @@ fn run_op_thread(
     emitter.emit(OpEvent::Started { op_id: args.op_id.clone() });
 
     // Serialize ops targeting the same destination volume; parallel otherwise.
-    let dev = copier::device_of(&args.dest_dir).unwrap_or(0);
-    let lock = engine
-        .volume_locks
-        .entry(dev)
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
+    let lock = engine.volume_lock(&args.dest_dir);
     let _volume_guard = lock.lock().unwrap();
 
-    // Journal intent before any bytes move. Fail-fast: without a durable
-    // journal there is no crash protection, so the op must not proceed.
     let mut journal_entry = OpJournalEntry {
         op_id: args.op_id.clone(),
         kind: match args.kind {
@@ -549,36 +614,11 @@ fn run_op_thread(
         total: args.sources.len(),
         started_at_ms: now_ms(),
     };
-    if let Err(e) = engine.journal.write(&journal_entry) {
-        engine.ops.remove(&args.op_id);
-        emitter.emit(OpEvent::Done {
-            status: "failed",
-            errors: vec![OpError {
-                path: String::new(),
-                message: format!("couldn't write the crash-safety journal: {}", e),
-            }],
-            warnings: Vec::new(),
-            produced: Vec::new(),
-            skipped: None,
-            undoable: false,
-        });
+    if !journal_write_fail_fast(&engine, &journal_entry, &args.op_id, &emitter) {
         return;
     }
 
-    // Concurrent enumeration: the progress bar acquires a denominator later.
-    // Spawned only after the intent write succeeded, so a fail-fast return
-    // above can never be followed by a stray Enumerated event.
-    {
-        let sources = args.sources.clone();
-        let cancel_handle = handle.clone();
-        let em = emitter.clone();
-        std::thread::spawn(move || {
-            let (b, e) = enumerate(&sources, &cancel_handle.cancel);
-            if !cancel_handle.cancel.load(Ordering::SeqCst) {
-                em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
-            }
-        });
-    }
+    spawn_enumeration(&args.sources, &handle, &emitter);
 
     let mut sink = OpSink::new(
         emitter.clone(),
@@ -767,11 +807,7 @@ fn run_op_thread(
         engine.push_undo(op);
     }
 
-    engine.journal.remove(&args.op_id);
-    engine.ops.remove(&args.op_id);
-
-    let touched: Vec<PathBuf> = args.sources.iter().chain(produced.iter()).cloned().collect();
-    (engine.invalidate_fuzzy)(&touched);
+    engine.finish_op_bookkeeping(&args.op_id, &args.sources, &produced);
 
     let status = if cancelled {
         "cancelled"
@@ -818,56 +854,20 @@ fn transfer_toplevel(
         }
     }
 
-    // Staged copy (fresh-copy tier): hidden staging name, one atomic promote.
-    let stage = args
-        .dest_dir
-        .join(staging_name(&dest.file_name().unwrap_or_default().to_string_lossy(), &args.op_id));
-    walker::remove_tree_best_effort(&stage);
-    // Fail-fast: an unrecorded staging path would be invisible to recovery.
-    journal_entry.staging.push(stage.to_string_lossy().into_owned());
-    if let Err(e) = engine.journal.write(journal_entry) {
-        pop_staging(journal_entry, &stage);
-        return Err(io::Error::new(
-            e.kind(),
-            format!("couldn't write the crash-safety journal: {}", e),
-        ));
-    }
-
-    let outcome = walker::copy_fresh(source, &stage, sink)?;
-    if outcome == Outcome::Cancelled {
-        walker::remove_tree_best_effort(&stage);
-        pop_staging(journal_entry, &stage);
-        let _ = engine.journal.write(journal_entry);
+    let Some(stage) = stage_for(engine, args, source, dest, journal_entry, tol_ms, sink)? else {
         return Ok(false);
-    }
-
-    if args.kind == OpKind::Move {
-        // Verify before deleting the source — that item is deleted only after
-        // *it* verifies; a crash mid-move never loses data. A dataless
-        // descendant surfaced as an item error above is missing from the
-        // stage, so verification fails and the source is preserved.
-        let report = walker::verify_tree(source, &stage, tol_ms)?;
-        if !report.mismatches.is_empty() {
-            walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
-            let _ = engine.journal.write(journal_entry);
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("verification failed: {}", report.mismatches.join("; ")),
-            ));
-        }
-    }
+    };
 
     match copier::rename_excl(&stage, dest) {
         Ok(()) => {}
         Err(e) => {
             walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
+            journal_entry.pop_staging(&stage);
             let _ = engine.journal.write(journal_entry);
             return Err(e);
         }
     }
-    pop_staging(journal_entry, &stage);
+    journal_entry.pop_staging(&stage);
 
     if args.kind == OpKind::Move {
         walker::remove_tree_best_effort(source);
@@ -897,6 +897,64 @@ fn transfer_toplevel(
     Ok(true)
 }
 
+/// Staged-copy prologue shared by `transfer_toplevel` and `replace_item`:
+/// hidden staging name next to the destination, journaled BEFORE any bytes
+/// land in it, then `copy_fresh` (and, for moves, `verify_tree`). The caller
+/// promotes the returned stage and pops it from the journal.
+///
+/// Returns Ok(None) on cancellation; on None and on Err the stage has been
+/// removed and un-journaled (except journal-write failure, where nothing was
+/// ever written to the stage).
+fn stage_for(
+    engine: &Engine,
+    args: &OpArgs,
+    source: &Path,
+    dest: &Path,
+    journal_entry: &mut OpJournalEntry,
+    tol_ms: i64,
+    sink: &mut OpSink,
+) -> io::Result<Option<PathBuf>> {
+    let stage = args
+        .dest_dir
+        .join(staging_name(&dest.file_name().unwrap_or_default().to_string_lossy(), &args.op_id));
+    walker::remove_tree_best_effort(&stage);
+    // Fail-fast: an unrecorded staging path would be invisible to recovery.
+    journal_entry.staging.push(stage.to_string_lossy().into_owned());
+    if let Err(e) = engine.journal.write(journal_entry) {
+        journal_entry.pop_staging(&stage);
+        return Err(io::Error::new(
+            e.kind(),
+            format!("couldn't write the crash-safety journal: {}", e),
+        ));
+    }
+
+    let outcome = walker::copy_fresh(source, &stage, sink)?;
+    if outcome == Outcome::Cancelled {
+        walker::remove_tree_best_effort(&stage);
+        journal_entry.pop_staging(&stage);
+        let _ = engine.journal.write(journal_entry);
+        return Ok(None);
+    }
+
+    if args.kind == OpKind::Move {
+        // Verify before deleting the source — that item is deleted only after
+        // *it* verifies; a crash mid-move never loses data. A dataless
+        // descendant surfaced as an item error above is missing from the
+        // stage, so verification fails and the source is preserved.
+        let report = walker::verify_tree(source, &stage, tol_ms)?;
+        if !report.mismatches.is_empty() {
+            walker::remove_tree_best_effort(&stage);
+            journal_entry.pop_staging(&stage);
+            let _ = engine.journal.write(journal_entry);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("verification failed: {}", report.mismatches.join("; ")),
+            ));
+        }
+    }
+    Ok(Some(stage))
+}
+
 /// Replace transaction.
 ///
 /// Move-kind, same volume: direct swap of source and dest — the source is
@@ -924,12 +982,7 @@ fn replace_item(
                 // staging name, safe from recovery. Warn, never delete it.
                 sink.item_warning(
                     &leftover,
-                    &format!(
-                        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
-                        dest.display(),
-                        error,
-                        leftover.display()
-                    ),
+                    &trash_failed_warning(dest, &error, &leftover),
                     WarnSeverity::Warning,
                 );
                 return Ok(true);
@@ -941,43 +994,13 @@ fn replace_item(
         }
     }
 
-    let stage = args
-        .dest_dir
-        .join(staging_name(&dest.file_name().unwrap_or_default().to_string_lossy(), &args.op_id));
-    walker::remove_tree_best_effort(&stage);
-    // Fail-fast: an unrecorded staging path would be invisible to recovery.
-    journal_entry.staging.push(stage.to_string_lossy().into_owned());
-    if let Err(e) = engine.journal.write(journal_entry) {
-        pop_staging(journal_entry, &stage);
-        return Err(io::Error::new(
-            e.kind(),
-            format!("couldn't write the crash-safety journal: {}", e),
-        ));
-    }
-
-    let outcome = walker::copy_fresh(source, &stage, sink)?;
-    if outcome == Outcome::Cancelled {
-        walker::remove_tree_best_effort(&stage);
-        pop_staging(journal_entry, &stage);
-        let _ = engine.journal.write(journal_entry);
+    let Some(stage) = stage_for(engine, args, source, dest, journal_entry, tol_ms, sink)? else {
         return Ok(false);
-    }
-    if args.kind == OpKind::Move {
-        let report = walker::verify_tree(source, &stage, tol_ms)?;
-        if !report.mismatches.is_empty() {
-            walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
-            let _ = engine.journal.write(journal_entry);
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("verification failed: {}", report.mismatches.join("; ")),
-            ));
-        }
-    }
+    };
 
     match walker::replace_with_staged(&stage, dest, engine.trasher.as_ref()) {
         Ok(ReplaceOutcome::Replaced { .. }) => {
-            pop_staging(journal_entry, &stage);
+            journal_entry.pop_staging(&stage);
             if args.kind == OpKind::Move {
                 walker::remove_tree_best_effort(source);
             }
@@ -991,7 +1014,7 @@ fn replace_item(
             // (3) remove source if move, (4) warn.
             let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
             let rescue = walker::rescue_leftover(&leftover, &args.op_id, &name);
-            pop_staging(journal_entry, &stage);
+            journal_entry.pop_staging(&stage);
             let _ = engine.journal.write(journal_entry);
             if args.kind == OpKind::Move {
                 walker::remove_tree_best_effort(source);
@@ -999,23 +1022,12 @@ fn replace_item(
             match rescue {
                 Ok(final_path) => sink.item_warning(
                     &final_path,
-                    &format!(
-                        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}). It was left at \"{}\".",
-                        dest.display(),
-                        error,
-                        final_path.display()
-                    ),
+                    &trash_failed_warning(dest, &error, &final_path),
                     WarnSeverity::Warning,
                 ),
                 Err(rename_err) => sink.item_warning(
                     &leftover,
-                    &format!(
-                        "Replaced \"{}\", but the previous version couldn't be moved to the Trash ({}) or renamed to a safe name ({}). It remains at \"{}\" and may be removed if the app crashes before this operation's record clears — rescue it manually.",
-                        dest.display(),
-                        error,
-                        rename_err,
-                        leftover.display()
-                    ),
+                    &rescue_failed_warning(dest, &error, &rename_err, &leftover),
                     WarnSeverity::Critical,
                 ),
             }
@@ -1025,16 +1037,11 @@ fn replace_item(
             // Only ever a throwaway copy now — the source was never renamed
             // into staging.
             walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
+            journal_entry.pop_staging(&stage);
             let _ = engine.journal.write(journal_entry);
             Err(e)
         }
     }
-}
-
-fn pop_staging(journal_entry: &mut OpJournalEntry, stage: &Path) {
-    let s = stage.to_string_lossy();
-    journal_entry.staging.retain(|p| p != s.as_ref());
 }
 
 fn run_duplicate_thread(
@@ -1046,8 +1053,6 @@ fn run_duplicate_thread(
 ) {
     emitter.emit(OpEvent::Started { op_id: op_id.clone() });
 
-    // Journal intent before any bytes move. Fail-fast: without a durable
-    // journal there is no crash protection, so the op must not proceed.
     let mut journal_entry = OpJournalEntry {
         op_id: op_id.clone(),
         kind: "duplicate".into(),
@@ -1059,34 +1064,11 @@ fn run_duplicate_thread(
         total: paths.len(),
         started_at_ms: now_ms(),
     };
-    if let Err(e) = engine.journal.write(&journal_entry) {
-        engine.ops.remove(&op_id);
-        emitter.emit(OpEvent::Done {
-            status: "failed",
-            errors: vec![OpError {
-                path: String::new(),
-                message: format!("couldn't write the crash-safety journal: {}", e),
-            }],
-            warnings: Vec::new(),
-            produced: Vec::new(),
-            skipped: None,
-            undoable: false,
-        });
+    if !journal_write_fail_fast(&engine, &journal_entry, &op_id, &emitter) {
         return;
     }
 
-    // Spawned only after the intent write succeeded (see run_op_thread).
-    {
-        let sources = paths.clone();
-        let cancel_handle = handle.clone();
-        let em = emitter.clone();
-        std::thread::spawn(move || {
-            let (b, e) = enumerate(&sources, &cancel_handle.cancel);
-            if !cancel_handle.cancel.load(Ordering::SeqCst) {
-                em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
-            }
-        });
-    }
+    spawn_enumeration(&paths, &handle, &emitter);
 
     let mut sink = OpSink::new(
         emitter.clone(),
@@ -1117,7 +1099,7 @@ fn run_duplicate_thread(
         // Fail-fast: an unrecorded staging path would be invisible to recovery.
         journal_entry.staging.push(stage.to_string_lossy().into_owned());
         if let Err(e) = engine.journal.write(&journal_entry) {
-            pop_staging(&mut journal_entry, &stage);
+            journal_entry.pop_staging(&stage);
             sink.item_error(
                 source,
                 &io::Error::new(
@@ -1131,26 +1113,26 @@ fn run_duplicate_thread(
         match walker::copy_fresh(source, &stage, &mut sink) {
             Ok(Outcome::Done) => match copier::rename_excl(&stage, &dest) {
                 Ok(()) => {
-                    pop_staging(&mut journal_entry, &stage);
+                    journal_entry.pop_staging(&stage);
                     journal_entry.completed.push(dest.to_string_lossy().into_owned());
                     let _ = engine.journal.write(&journal_entry);
                     produced.push(dest);
                 }
                 Err(e) => {
                     walker::remove_tree_best_effort(&stage);
-                    pop_staging(&mut journal_entry, &stage);
+                    journal_entry.pop_staging(&stage);
                     sink.item_error(source, &e);
                 }
             },
             Ok(Outcome::Cancelled) => {
                 walker::remove_tree_best_effort(&stage);
-                pop_staging(&mut journal_entry, &stage);
+                journal_entry.pop_staging(&stage);
                 cancelled = true;
                 break;
             }
             Err(e) => {
                 walker::remove_tree_best_effort(&stage);
-                pop_staging(&mut journal_entry, &stage);
+                journal_entry.pop_staging(&stage);
                 sink.item_error(source, &e);
             }
         }
@@ -1159,11 +1141,7 @@ fn run_duplicate_thread(
     if !produced.is_empty() {
         engine.push_undo(UndoOp::Copy { produced: produced.clone() });
     }
-    engine.journal.remove(&op_id);
-    engine.ops.remove(&op_id);
-
-    let touched: Vec<PathBuf> = paths.iter().chain(produced.iter()).cloned().collect();
-    (engine.invalidate_fuzzy)(&touched);
+    engine.finish_op_bookkeeping(&op_id, &paths, &produced);
 
     let status = if cancelled {
         "cancelled"

@@ -22,7 +22,10 @@ use std::time::{Duration, Instant};
 
 use crate::core::copier;
 use crate::core::journal::OpJournalEntry;
-use crate::core::op_queue::{enumerate, now_ms, Engine, OpEmitter, OpError, OpEvent, OpHandle};
+use crate::core::op_queue::{
+    journal_write_fail_fast, now_ms, spawn_enumeration, Engine, OpEmitter, OpError, OpEvent,
+    OpHandle,
+};
 use crate::core::undo::{ProducedKind, UndoOp};
 use crate::core::walker::{
     self, keep_both_name, staging_name, ConflictKind, Outcome, Resolution, WalkSink,
@@ -254,35 +257,6 @@ impl WalkSink for ArchiveSink {
 // Shared run-thread helpers
 // ---------------------------------------------------------------------------
 
-fn journal_write_fail_fast(
-    engine: &Engine,
-    entry: &OpJournalEntry,
-    op_id: &str,
-    emitter: &Arc<dyn OpEmitter>,
-) -> bool {
-    if let Err(e) = engine.journal.write(entry) {
-        engine.ops.remove(op_id);
-        emitter.emit(OpEvent::Done {
-            status: "failed",
-            errors: vec![OpError {
-                path: String::new(),
-                message: format!("couldn't write the crash-safety journal: {}", e),
-            }],
-            warnings: Vec::new(),
-            produced: Vec::new(),
-            skipped: None,
-            undoable: false,
-        });
-        return false;
-    }
-    true
-}
-
-fn pop_staging(journal_entry: &mut OpJournalEntry, stage: &Path) {
-    let s = stage.to_string_lossy();
-    journal_entry.staging.retain(|p| p != s.as_ref());
-}
-
 /// Promote `stage_item` into `dest_dir` under `base`, uniquifying with
 /// `unique` and retrying the keep-both computation once on an EEXIST race.
 fn promote_unique(
@@ -400,12 +374,7 @@ fn run_compress_thread(
     }
 
     // Serialize ops targeting the same destination volume; parallel otherwise.
-    let dev = copier::device_of(&dest_dir).unwrap_or(0);
-    let lock = engine
-        .volume_locks
-        .entry(dev)
-        .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-        .clone();
+    let lock = engine.volume_lock(&dest_dir);
     let _volume_guard = lock.lock().unwrap();
 
     // Zip name: 1 item → "<name>.zip", N items → "Archive.zip"; keep-both.
@@ -454,17 +423,7 @@ fn run_compress_thread(
     }
 
     // Concurrent enumeration — never blocks archive creation.
-    {
-        let sources = sources.clone();
-        let cancel_handle = handle.clone();
-        let em = emitter.clone();
-        std::thread::spawn(move || {
-            let (b, e) = enumerate(&sources, &cancel_handle.cancel);
-            if !cancel_handle.cancel.load(Ordering::SeqCst) {
-                em.emit(OpEvent::Enumerated { total_bytes: b, total_entries: e });
-            }
-        });
-    }
+    spawn_enumeration(&sources, &handle, &emitter);
 
     let ratchet = Arc::new(AtomicU64::new(0));
     let mut sink = ArchiveSink::new(emitter.clone(), handle.clone(), ratchet.clone());
@@ -474,8 +433,8 @@ fn run_compress_thread(
         if multi {
             walker::remove_tree_best_effort(&stage_contents);
         }
-        pop_staging(journal_entry, &stage_zip);
-        pop_staging(journal_entry, &stage_contents);
+        journal_entry.pop_staging(&stage_zip);
+        journal_entry.pop_staging(&stage_contents);
         let _ = engine.journal.write(journal_entry);
     };
 
@@ -626,10 +585,7 @@ fn run_compress_thread(
                 pairs: produced.iter().map(|p| (p.clone(), None)).collect(),
             });
         }
-        engine.journal.remove(&op_id);
-        engine.ops.remove(&op_id);
-        let touched: Vec<PathBuf> = sources.iter().chain(produced.iter()).cloned().collect();
-        (engine.invalidate_fuzzy)(&touched);
+        engine.finish_op_bookkeeping(&op_id, &sources, &produced);
         emitter.emit(OpEvent::Done {
             status,
             errors,
@@ -680,12 +636,12 @@ fn run_compress_thread(
             // Promote the staged zip; contents dir is now disposable.
             if multi {
                 walker::remove_tree_best_effort(&stage_contents);
-                pop_staging(&mut journal_entry, &stage_contents);
+                journal_entry.pop_staging(&stage_contents);
                 let _ = engine.journal.write(&journal_entry);
             }
             match promote_unique(&stage_zip, &dest_dir, &zip_name, &keep_both_name) {
                 Ok(dest) => {
-                    pop_staging(&mut journal_entry, &stage_zip);
+                    journal_entry.pop_staging(&stage_zip);
                     journal_entry.completed.push(dest.to_string_lossy().into_owned());
                     let _ = engine.journal.write(&journal_entry);
                     // Snap the bar to the final zip size.
@@ -870,12 +826,7 @@ fn run_extract_thread(
     emitter.emit(OpEvent::Started { op_id: op_id.clone() });
 
     // Serialize ops targeting the same destination volume.
-    let dev = copier::device_of(&dest_dir).unwrap_or(0);
-    let lock = engine
-        .volume_locks
-        .entry(dev)
-        .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-        .clone();
+    let lock = engine.volume_lock(&dest_dir);
     let _volume_guard = lock.lock().unwrap();
 
     let mut journal_entry = OpJournalEntry {
@@ -952,7 +903,7 @@ fn run_extract_thread(
             walker::remove_tree_best_effort(&staging);
             journal_entry.staging.push(staging.to_string_lossy().into_owned());
             if let Err(e) = engine.journal.write(&journal_entry) {
-                pop_staging(&mut journal_entry, &staging);
+                journal_entry.pop_staging(&staging);
                 item_error!(
                     errors,
                     archive,
@@ -961,7 +912,7 @@ fn run_extract_thread(
                 return;
             }
             if let Err(e) = std::fs::create_dir_all(&staging) {
-                pop_staging(&mut journal_entry, &staging);
+                journal_entry.pop_staging(&staging);
                 let _ = engine.journal.write(&journal_entry);
                 item_error!(errors, archive, format!("couldn't create staging: {}", e));
                 return;
@@ -969,7 +920,7 @@ fn run_extract_thread(
 
             let cleanup = |journal_entry: &mut OpJournalEntry| {
                 walker::remove_tree_best_effort(&staging);
-                pop_staging(journal_entry, &staging);
+                journal_entry.pop_staging(&staging);
                 let _ = engine.journal.write(journal_entry);
             };
 
@@ -1080,11 +1031,7 @@ fn run_extract_thread(
             pairs: produced.iter().map(|p| (p.clone(), None)).collect(),
         });
     }
-    engine.journal.remove(&op_id);
-    engine.ops.remove(&op_id);
-
-    let touched: Vec<PathBuf> = archives.iter().chain(produced.iter()).cloned().collect();
-    (engine.invalidate_fuzzy)(&touched);
+    engine.finish_op_bookkeeping(&op_id, &archives, &produced);
 
     let status = if cancelled {
         "cancelled"
