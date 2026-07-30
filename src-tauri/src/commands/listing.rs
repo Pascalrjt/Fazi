@@ -89,13 +89,14 @@ pub fn list_dir(
                 Ok(_) => EntryKind::File,
                 Err(_) => EntryKind::Unknown,
             };
-            let token = tokens.register(&listing_id, &dirent.path());
+            let entry_path = dirent.path();
+            let token = tokens.register(&listing_id, &entry_path);
             let mut entry = pass1_entry(next_id as u64, &dir, &name, kind, token);
             // Link destinations are part of the row's primary identity, not
             // optional metadata. Read them during pass 1 so the target is
             // visible on first paint and remains meaningful for broken links.
             if kind == EntryKind::Symlink {
-                entry.link_target = std::fs::read_link(dirent.path())
+                entry.link_target = std::fs::read_link(&entry_path)
                     .ok()
                     .map(|target| target.to_string_lossy().into_owned());
             }

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::walker::{is_staging_name, remove_tree_best_effort};
+use crate::core::walker::{remove_tree_best_effort, staging_suffix};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,9 +121,11 @@ impl Journal {
             for s in &entry.staging {
                 remove_tree_best_effort(Path::new(s));
             }
-            // 2. Scan merge roots for per-entry staging names.
+            // 2. Scan merge roots for per-entry staging names (suffix built
+            //    once per op, not per directory entry).
+            let suffix = staging_suffix(&entry.op_id);
             for root in &entry.merge_roots {
-                remove_staging_recursive(Path::new(root), &entry.op_id);
+                remove_staging_recursive(Path::new(root), &suffix);
             }
 
             report.push(InterruptedOp {
@@ -140,17 +142,17 @@ impl Journal {
     }
 }
 
-fn remove_staging_recursive(root: &Path, op_id: &str) {
+fn remove_staging_recursive(root: &Path, suffix: &str) {
     let Ok(rd) = fs::read_dir(root) else {
         return;
     };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let p = e.path();
-        if is_staging_name(&name, op_id) {
+        if name.ends_with(suffix) {
             remove_tree_best_effort(&p);
         } else if p.is_dir() && !p.is_symlink() {
-            remove_staging_recursive(&p, op_id);
+            remove_staging_recursive(&p, suffix);
         }
     }
 }

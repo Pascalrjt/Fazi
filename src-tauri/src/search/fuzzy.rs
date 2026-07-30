@@ -449,6 +449,10 @@ impl Excludes {
         Excludes { prefixes, components }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.prefixes.is_empty() && self.components.is_empty()
+    }
+
     /// `rel` is the candidate's root-relative path, `name` its final component.
     pub fn excluded(&self, rel: &str, name: &str) -> bool {
         if self.components.iter().any(|c| c == name) {
@@ -490,17 +494,27 @@ pub fn build_index(
         .follow_links(false)
         .parallelism(jwalk::Parallelism::RayonNewPool(walk_threads()))
         .process_read_dir(move |_depth, dir_path, _state, children| {
-            // Prune excluded subtrees here, not post-hoc.
-            let rel_dir = dir_path.strip_prefix(&root_for_hook).ok();
+            // Prune excluded subtrees here, not post-hoc. No excludes: skip
+            // the per-entry rel-path assembly entirely (the common case).
+            if excludes_for_hook.is_empty() {
+                return;
+            }
+            // Dir prefix once per directory; one reused buffer per entry.
+            let prefix = match dir_path.strip_prefix(&root_for_hook).ok() {
+                Some(d) if !d.as_os_str().is_empty() => {
+                    let mut p = d.to_string_lossy().into_owned();
+                    p.push('/');
+                    p
+                }
+                _ => String::new(),
+            };
+            let mut rel = String::new();
             children.retain(|entry| {
                 let Ok(entry) = entry else { return true };
                 let name = entry.file_name().to_string_lossy();
-                let rel = match rel_dir {
-                    Some(d) if !d.as_os_str().is_empty() => {
-                        format!("{}/{}", d.to_string_lossy(), name)
-                    }
-                    _ => name.to_string(),
-                };
+                rel.clear();
+                rel.push_str(&prefix);
+                rel.push_str(&name);
                 !excludes_for_hook.excluded(&rel, &name)
             });
         });
@@ -790,6 +804,14 @@ fn scan_blocks(
                         cancelled.store(true, Ordering::Relaxed);
                         return Vec::new();
                     }
+                    // Kind/extension is a cheap string check — reject before
+                    // paying for scoring. The stat-backed date/size filters
+                    // stay AFTER scoring so only pattern matches get statted.
+                    if let Some(kind) = &filters.kind {
+                        if !kind_matches(kind, item) {
+                            continue;
+                        }
+                    }
                     let score = match pattern {
                         Some(p) => {
                             let hay = Utf32Str::new(&item.rel, &mut buf);
@@ -801,7 +823,7 @@ fn scan_blocks(
                         // Empty query: rank shallow/short paths first.
                         None => u32::MAX - item.rel.len().min(65_535) as u32,
                     };
-                    if !filter_matches(index, item, filters, &stat_budget, filters_capped) {
+                    if !stat_filter_matches(index, item, filters, &stat_budget, filters_capped) {
                         continue;
                     }
                     local.push((score, i as u32));
@@ -874,27 +896,33 @@ pub fn build_items(
     }
     let owner = index.token_owner();
     index.record_owner(&owner);
-    hits.into_iter()
-        .map(|(score, block, i)| {
-            let item = &block[i];
-            let abs = index.root.join(&*item.rel);
-            let (token, evicted) = index
-                .icon_tokens
-                .lock()
-                .unwrap()
-                .get_or_mint(&item.rel, || icon_token(&owner, &abs));
-            if let Some(old) = evicted {
-                icon_revoke(&owner, &old);
-            }
-            FuzzyItem {
-                icon: token,
-                path: abs.to_string_lossy().into_owned(),
-                name: item.name().to_string(),
-                is_dir: item.is_dir,
-                score,
-            }
-        })
-        .collect()
+    // One lock for the whole batch (up to max_results per tick), not one per
+    // hit. Evicted tokens are revoked after the guard drops.
+    let mut evicted_tokens: Vec<String> = Vec::new();
+    let items = {
+        let mut cache = index.icon_tokens.lock().unwrap();
+        hits.into_iter()
+            .map(|(score, block, i)| {
+                let item = &block[i];
+                let abs = index.root.join(&*item.rel);
+                let (token, evicted) = cache.get_or_mint(&item.rel, || icon_token(&owner, &abs));
+                if let Some(old) = evicted {
+                    evicted_tokens.push(old);
+                }
+                FuzzyItem {
+                    icon: token,
+                    path: abs.to_string_lossy().into_owned(),
+                    name: item.name().to_string(),
+                    is_dir: item.is_dir,
+                    score,
+                }
+            })
+            .collect()
+    };
+    for old in &evicted_tokens {
+        icon_revoke(&owner, old);
+    }
+    items
 }
 
 /// One query's full lifecycle, run on its own thread by the `fuzzy_query`
@@ -1021,33 +1049,30 @@ fn kind_matches(kind: &str, item: &IndexedPath) -> bool {
     if item.is_dir {
         return false;
     }
-    let ext = ext_of(item.name()).to_ascii_lowercase();
+    // Runs per candidate in the scan hot loop — compare without allocating.
+    let ext = ext_of(item.name());
+    let any = |exts: &[&str]| exts.iter().any(|e| ext.eq_ignore_ascii_case(e));
     match kind {
-        "image" => IMAGE_EXTS.contains(&ext.as_str()),
-        "video" => VIDEO_EXTS.contains(&ext.as_str()),
-        "audio" => AUDIO_EXTS.contains(&ext.as_str()),
-        "pdf" => ext == "pdf",
-        "doc" => DOC_EXTS.contains(&ext.as_str()),
-        "archive" => ARCHIVE_EXTS.contains(&ext.as_str()),
+        "image" => any(IMAGE_EXTS),
+        "video" => any(VIDEO_EXTS),
+        "audio" => any(AUDIO_EXTS),
+        "pdf" => ext.eq_ignore_ascii_case("pdf"),
+        "doc" => any(DOC_EXTS),
+        "archive" => any(ARCHIVE_EXTS),
         _ => true,
     }
 }
 
-fn filter_matches(
+/// The date/size predicates — each hit costs a stat, so they run only on
+/// entries that already matched the pattern (the kind check is hoisted before
+/// scoring in `scan_blocks`).
+fn stat_filter_matches(
     index: &FuzzyIndex,
     item: &IndexedPath,
     filters: &FuzzyFilters,
     stat_budget: &AtomicUsize,
     filters_capped: &AtomicBool,
 ) -> bool {
-    if filters.is_empty() {
-        return true;
-    }
-    if let Some(kind) = &filters.kind {
-        if !kind_matches(kind, item) {
-            return false;
-        }
-    }
     if !filters.needs_stat() {
         return true;
     }

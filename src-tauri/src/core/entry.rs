@@ -67,6 +67,7 @@ pub fn is_package_ext(ext: &str) -> bool {
 /// `d_kind` is the d_type hint (Unknown on network/foreign filesystems).
 pub fn pass1_entry(id: u64, dir: &Path, file_name: &str, d_kind: EntryKind, token: String) -> Entry {
     let ext = ext_of(file_name);
+    let is_package = d_kind == EntryKind::Dir && is_package_ext(&ext);
     Entry {
         id,
         name: file_name.to_string(),
@@ -74,12 +75,12 @@ pub fn pass1_entry(id: u64, dir: &Path, file_name: &str, d_kind: EntryKind, toke
         kind: d_kind,
         hidden: file_name.starts_with('.'),
         icon: token,
-        ext: ext.clone(),
+        ext,
         hydrated: false,
         size: None,
         mtime: None,
         btime: None,
-        is_package: d_kind == EntryKind::Dir && is_package_ext(&ext),
+        is_package,
         is_alias: false,
         link_target: None,
         tags: Vec::new(),

@@ -530,13 +530,37 @@ fn walk_count(p: &Path, cancel: &AtomicBool, bytes: &mut u64, entries: &mut u64)
     };
     *entries += 1;
     if meta.file_type().is_dir() {
-        if let Ok(rd) = std::fs::read_dir(p) {
-            for e in rd.flatten() {
-                walk_count(&e.path(), cancel, bytes, entries);
-            }
-        }
+        walk_count_children(p, cancel, bytes, entries);
     } else if meta.file_type().is_file() {
         *bytes += meta.len();
+    }
+}
+
+/// Descend via `DirEntry::file_type()` (free from d_type on APFS) so only
+/// regular files pay a stat — for their byte length. Dirs and symlinks count
+/// as entries with no bytes, exactly as before.
+fn walk_count_children(dir: &Path, cancel: &AtomicBool, bytes: &mut u64, entries: &mut u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_dir() {
+            *entries += 1;
+            walk_count_children(&e.path(), cancel, bytes, entries);
+        } else if ft.is_file() {
+            // DirEntry::metadata is an lstat — mirrors the old per-entry
+            // symlink_metadata, including "stat failed → not counted".
+            if let Ok(meta) = e.metadata() {
+                *entries += 1;
+                *bytes += meta.len();
+            }
+        } else {
+            *entries += 1;
+        }
     }
 }
 
@@ -833,8 +857,8 @@ fn run_op_thread(
     };
     emitter.emit(OpEvent::Done {
         status,
-        errors: sink.errors.clone(),
-        warnings: sink.warnings.clone(),
+        errors: std::mem::take(&mut sink.errors),
+        warnings: std::mem::take(&mut sink.warnings),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         skipped: (sink.skipped > 0).then_some(sink.skipped),
         undoable,
@@ -1086,6 +1110,9 @@ fn run_duplicate_thread(
 
     spawn_enumeration(&paths, &handle, &emitter);
 
+    // remaining_hint stays at paths.len() for the whole run: it only feeds
+    // conflict dialogs, and duplicates never raise one (fresh duplicate_name
+    // targets; Policy::KeepBoth would resolve without asking anyway).
     let mut sink = OpSink::new(
         emitter.clone(),
         handle.clone(),
@@ -1193,8 +1220,8 @@ fn run_duplicate_thread(
     };
     emitter.emit(OpEvent::Done {
         status,
-        errors: sink.errors.clone(),
-        warnings: sink.warnings.clone(),
+        errors: std::mem::take(&mut sink.errors),
+        warnings: std::mem::take(&mut sink.warnings),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         skipped: (sink.skipped > 0).then_some(sink.skipped),
         undoable: !produced.is_empty(),

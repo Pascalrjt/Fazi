@@ -239,11 +239,7 @@ pub fn fuzzy_query(
         return Err(Error::msg("index not warmed for this root"));
     };
     // Mark the root most-recently-used.
-    {
-        let mut lru = state.fuzzy_lru.lock().unwrap();
-        lru.retain(|p| p != &root);
-        lru.push(root);
-    }
+    touch_lru(&state, &root);
 
     let cancel = Arc::new(AtomicBool::new(false));
     state.fuzzy_queries.insert(query_id.clone(), cancel.clone());

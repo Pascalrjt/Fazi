@@ -515,7 +515,7 @@ fn run_compress_thread(
         engine.ops.remove(&op_id);
         emitter.emit(OpEvent::Done {
             status: if cancelled { "cancelled" } else { "failed" },
-            errors: sink.errors.clone(),
+            errors: std::mem::take(&mut sink.errors),
             warnings: Vec::new(),
             produced: Vec::new(),
             skipped: None,
@@ -608,7 +608,7 @@ fn run_compress_thread(
     // Cancel flag wins even if ditto exited successfully after the kill.
     if handle.cancel.load(Ordering::SeqCst) {
         cleanup_staging(&mut journal_entry);
-        finish("cancelled", sink.errors.clone(), Vec::new());
+        finish("cancelled", std::mem::take(&mut sink.errors), Vec::new());
         return;
     }
 
@@ -623,7 +623,7 @@ fn run_compress_thread(
                 message: err.message.clone(),
             });
             cleanup_staging(&mut journal_entry);
-            let mut errors = sink.errors.clone();
+            let mut errors = std::mem::take(&mut sink.errors);
             errors.push(err);
             finish("failed", errors, Vec::new());
         }
@@ -637,7 +637,7 @@ fn run_compress_thread(
                 message: err.message.clone(),
             });
             cleanup_staging(&mut journal_entry);
-            let mut errors = sink.errors.clone();
+            let mut errors = std::mem::take(&mut sink.errors);
             errors.push(err);
             finish("failed", errors, Vec::new());
         }
@@ -679,7 +679,7 @@ fn run_compress_thread(
                         message: err.message.clone(),
                     });
                     cleanup_staging(&mut journal_entry);
-                    let mut errors = sink.errors.clone();
+                    let mut errors = std::mem::take(&mut sink.errors);
                     errors.push(err);
                     finish("failed", errors, Vec::new());
                 }

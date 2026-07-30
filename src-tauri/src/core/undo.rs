@@ -261,22 +261,21 @@ fn apply_inverse(op: &UndoOp, trasher: &dyn Trasher) -> io::Result<UndoOutcome> 
         }
         UndoOp::Trash { pairs } => {
             let mut restored = Vec::new();
+            // Inverse of restoring-from-trash is "these items were moved from
+            // trash back": represent as Move so redo re-trashes cleanly —
+            // pairs go in as (trashed, original) directly.
             let mut inverse_pairs = Vec::new();
             for (original, trashed) in pairs {
                 validate_exists(trashed)?;
                 validate_absent(original)?;
                 move_back(trashed, original)?;
                 restored.push(original.clone());
-                inverse_pairs.push((original.clone(), trashed.clone()));
+                inverse_pairs.push((trashed.clone(), original.clone()));
             }
-            // Inverse of restoring-from-trash is "these items were moved from
-            // trash back": represent as Move so redo re-trashes cleanly.
             Ok(UndoOutcome {
                 label: op.label(),
                 restored: restored.clone(),
-                inverse: UndoOp::Move {
-                    pairs: inverse_pairs.iter().map(|(o, t)| (t.clone(), o.clone())).collect(),
-                },
+                inverse: UndoOp::Move { pairs: inverse_pairs },
             })
         }
         UndoOp::BatchRename { pairs } => {

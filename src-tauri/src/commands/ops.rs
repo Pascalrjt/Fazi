@@ -9,8 +9,8 @@ use tauri::State;
 
 use crate::core::archive::{spawn_compress, spawn_extract};
 use crate::core::op_queue::{spawn_duplicate, spawn_op, OpArgs, OpEmitter, OpEvent, OpKind, Policy};
-use crate::core::undo::UndoOp;
-use crate::core::walker::{self, Resolution};
+use crate::core::undo::{UndoOp, UndoOutcome, UndoStack};
+use crate::core::walker::{self, Resolution, Trasher};
 use crate::error::{Error, Result};
 use crate::macos::trash::{self, trash_path};
 use crate::state::AppState;
@@ -21,6 +21,15 @@ impl OpEmitter for ChannelEmitter {
     fn emit(&self, e: OpEvent) {
         let _ = self.0.send(e);
     }
+}
+
+/// Parse and validate a destination-directory argument.
+fn require_dir(dest_dir: &str) -> Result<PathBuf> {
+    let dest = PathBuf::from(dest_dir);
+    if !dest.is_dir() {
+        return Err(Error::msg("destination is not a directory"));
+    }
+    Ok(dest)
 }
 
 #[tauri::command]
@@ -40,10 +49,7 @@ pub fn run_op(
         "move" => OpKind::Move,
         other => return Err(Error::msg(format!("unknown op kind: {other}"))),
     };
-    let dest = PathBuf::from(&dest_dir);
-    if !dest.is_dir() {
-        return Err(Error::msg("destination is not a directory"));
-    }
+    let dest = require_dir(&dest_dir)?;
     let args = OpArgs {
         op_id,
         kind,
@@ -80,10 +86,7 @@ pub fn compress_paths(
     dest_dir: String,
     channel: Channel<OpEvent>,
 ) -> Result<()> {
-    let dest = PathBuf::from(&dest_dir);
-    if !dest.is_dir() {
-        return Err(Error::msg("destination is not a directory"));
-    }
+    let dest = require_dir(&dest_dir)?;
     spawn_compress(
         state.engine.clone(),
         op_id,
@@ -102,10 +105,7 @@ pub fn extract_paths(
     dest_dir: String,
     channel: Channel<OpEvent>,
 ) -> Result<()> {
-    let dest = PathBuf::from(&dest_dir);
-    if !dest.is_dir() {
-        return Err(Error::msg("destination is not a directory"));
-    }
+    let dest = require_dir(&dest_dir)?;
     spawn_extract(
         state.engine.clone(),
         op_id,
@@ -402,10 +402,7 @@ pub async fn pb_paste_new_file(
 
     let engine = state.engine.clone();
     super::blocking("pb_paste_new_file", move || {
-        let dest = PathBuf::from(&dest_dir);
-        if !dest.is_dir() {
-            return Err(Error::msg("destination is not a directory"));
-        }
+        let dest = require_dir(&dest_dir)?;
         // Pasteboard reads still hop to the AppKit main thread; only the
         // file writes below run on this worker.
         let (bytes, base_name): (Vec<u8>, &str) =
@@ -504,15 +501,20 @@ pub struct UndoDescription {
     pub kind: String,
 }
 
-#[tauri::command]
-pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
+/// Shared body of undo_last/redo_last — identical apart from which stack
+/// operations run and the error verb.
+fn run_undo_redo(
+    state: &AppState,
+    verb: &str,
+    top: fn(&UndoStack) -> Option<&UndoOp>,
+    run: fn(&mut UndoStack, &dyn Trasher) -> std::io::Result<Option<UndoOutcome>>,
+) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
     let (outcome, touched) = {
         let mut stack = state.engine.undo.lock().unwrap();
-        let touched = stack.undo_top().map(UndoOp::touched_paths).unwrap_or_default();
-        let outcome = stack
-            .undo(trasher.as_ref())
-            .map_err(|e| Error::msg(format!("Can't undo: {e}")))?;
+        let touched = top(&stack).map(UndoOp::touched_paths).unwrap_or_default();
+        let outcome = run(&mut stack, trasher.as_ref())
+            .map_err(|e| Error::msg(format!("Can't {verb}: {e}")))?;
         (outcome, touched)
     };
     if let Some(o) = &outcome {
@@ -528,26 +530,13 @@ pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
 }
 
 #[tauri::command]
+pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
+    run_undo_redo(&state, "undo", UndoStack::undo_top, UndoStack::undo)
+}
+
+#[tauri::command]
 pub fn redo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
-    let trasher = state.engine.trasher.clone();
-    let (outcome, touched) = {
-        let mut stack = state.engine.undo.lock().unwrap();
-        let touched = stack.redo_top().map(UndoOp::touched_paths).unwrap_or_default();
-        let outcome = stack
-            .redo(trasher.as_ref())
-            .map_err(|e| Error::msg(format!("Can't redo: {e}")))?;
-        (outcome, touched)
-    };
-    if let Some(o) = &outcome {
-        let mut touched = touched;
-        touched.extend(o.restored.iter().cloned());
-        (state.engine.invalidate_fuzzy)(&touched);
-    }
-    state.engine.notify_undo_changed();
-    Ok(outcome.map(|o| UndoResult {
-        label: o.label,
-        restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
-    }))
+    run_undo_redo(&state, "redo", UndoStack::redo_top, UndoStack::redo)
 }
 
 #[tauri::command]

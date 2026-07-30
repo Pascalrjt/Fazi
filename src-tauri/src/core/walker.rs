@@ -139,8 +139,14 @@ pub fn staging_name(name: &str, op_id: &str) -> String {
     format!(".{}.fazi-partial-{}", name, op_id)
 }
 
+/// The per-op staging-name suffix. Scans that test many entries should hoist
+/// this and use `ends_with` directly — `is_staging_name` allocates per call.
+pub fn staging_suffix(op_id: &str) -> String {
+    format!(".fazi-partial-{}", op_id)
+}
+
 pub fn is_staging_name(name: &str, op_id: &str) -> bool {
-    name.ends_with(&format!(".fazi-partial-{}", op_id))
+    name.ends_with(&staging_suffix(op_id))
 }
 
 fn split_name(name: &str) -> (&str, String) {

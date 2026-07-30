@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "camelCase")]
@@ -39,18 +39,9 @@ pub enum SearchEvent {
 /// One shared ceiling for every search mode (mdfind AND the fuzzy fallback).
 pub const MAX_RESULTS_CEILING: u64 = 10_000;
 
-/// Predicate filters compiled into the raw query. Mirrors the fuzzy filter
-/// shape so the not-indexed fallback can ride the same tokenizer output.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchFilters {
-    /// "image" | "video" | "audio" | "doc" | "pdf" | "folder" | "archive"
-    pub kind: Option<String>,
-    pub date_from_ms: Option<i64>,
-    pub date_to_ms: Option<i64>,
-    pub size_min: Option<u64>,
-    pub size_max: Option<u64>,
-}
+/// Predicate filters compiled into the raw query. The same type as the fuzzy
+/// filters so the not-indexed fallback can ride the same tokenizer output.
+pub use crate::search::fuzzy::FuzzyFilters as SearchFilters;
 
 /// Escape user text for interpolation inside a quoted mdquery literal:
 /// backslash-escape `\` and `"`, strip control characters. `*` is allowed
