@@ -25,6 +25,20 @@ use crate::state::{AppState, TokenTable};
 
 pub const VOLUMES_CHANGED: &str = "fazi://volumes-changed";
 
+/// Serve one custom-protocol request (icon/thumb/preview) on the blocking
+/// pool, capped at 8 concurrent renders — a scroll burst of requests must not
+/// spawn an unbounded thread each.
+fn spawn_protocol(work: impl FnOnce() + Send + 'static) {
+    use std::sync::OnceLock;
+    use tokio::sync::Semaphore;
+    static POOL: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Arc::new(Semaphore::new(8))).clone();
+    tauri::async_runtime::spawn(async move {
+        let _permit = pool.acquire_owned().await.expect("protocol semaphore is never closed");
+        let _ = tauri::async_runtime::spawn_blocking(work).await;
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -136,21 +150,15 @@ pub fn run() {
         })
         .register_asynchronous_uri_scheme_protocol("icon", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
-                responder.respond(protocols::handle_icon(&app, request));
-            });
+            spawn_protocol(move || responder.respond(protocols::handle_icon(&app, request)));
         })
         .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
-                responder.respond(protocols::handle_thumb(&app, request));
-            });
+            spawn_protocol(move || responder.respond(protocols::handle_thumb(&app, request)));
         })
         .register_asynchronous_uri_scheme_protocol("preview", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
-                responder.respond(protocols::handle_preview(&app, request));
-            });
+            spawn_protocol(move || responder.respond(protocols::handle_preview(&app, request)));
         })
         .invoke_handler(tauri::generate_handler![
             commands::listing::list_dir,

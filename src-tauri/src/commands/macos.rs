@@ -142,13 +142,17 @@ pub fn reveal_in_finder(app: AppHandle, paths: Vec<String>) {
 #[tauri::command]
 pub fn quicklook_panel(paths: Vec<String>) -> Result<()> {
     // Escape hatch for exotica: qlmanage -p (detached).
-    std::process::Command::new("/usr/bin/qlmanage")
+    let mut child = std::process::Command::new("/usr/bin/qlmanage")
         .arg("-p")
         .args(&paths)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(Error::Io)?;
+    // Reap in the background — a dropped Child would linger as a zombie.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 
@@ -157,13 +161,16 @@ pub fn quicklook_panel(paths: Vec<String>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn get_tags(path: String) -> Vec<FinderTag> {
-    read_tags(Path::new(&path))
+pub async fn get_tags(path: String) -> Result<Vec<FinderTag>> {
+    super::blocking("get_tags", move || read_tags(Path::new(&path))).await
 }
 
 #[tauri::command]
-pub fn set_tags(path: String, tags: Vec<FinderTag>) -> Result<()> {
-    write_tags(Path::new(&path), &tags).map_err(Error::Io)
+pub async fn set_tags(path: String, tags: Vec<FinderTag>) -> Result<()> {
+    super::blocking("set_tags", move || {
+        write_tags(Path::new(&path), &tags).map_err(Error::Io)
+    })
+    .await?
 }
 
 #[derive(Serialize)]
@@ -199,38 +206,41 @@ fn group_name(gid: u32) -> String {
 }
 
 #[tauri::command]
-pub fn get_info(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<GetInfoResult> {
-    use std::os::unix::fs::MetadataExt;
-    let p = PathBuf::from(&path);
-    let meta = p.symlink_metadata().map_err(Error::Io)?;
-    let entry = crate::commands::listing::build_entry(&app, &state, &p, "info")
-        .ok_or_else(|| Error::msg("item no longer exists"))?;
+pub async fn get_info(app: AppHandle, path: String) -> Result<GetInfoResult> {
+    super::blocking("get_info", move || {
+        use std::os::unix::fs::MetadataExt;
+        use tauri::Manager;
+        let state = app.state::<AppState>();
+        let p = PathBuf::from(&path);
+        let meta = p.symlink_metadata().map_err(Error::Io)?;
+        let entry = crate::commands::listing::build_entry(&app, &state, &p, "info")
+            .ok_or_else(|| Error::msg("item no longer exists"))?;
 
-    let where_from: Option<Vec<String>> =
-        xattr::get(&p, "com.apple.metadata:kMDItemWhereFroms")
-            .ok()
-            .flatten()
-            .and_then(|raw| plist::from_reader::<_, Vec<String>>(std::io::Cursor::new(raw)).ok());
+        let where_from: Option<Vec<String>> =
+            xattr::get(&p, "com.apple.metadata:kMDItemWhereFroms")
+                .ok()
+                .flatten()
+                .and_then(|raw| {
+                    plist::from_reader::<_, Vec<String>>(std::io::Cursor::new(raw)).ok()
+                });
 
-    let item_count = if meta.is_dir() {
-        std::fs::read_dir(&p).ok().map(|rd| rd.count() as u64)
-    } else {
-        None
-    };
+        let item_count = if meta.is_dir() {
+            std::fs::read_dir(&p).ok().map(|rd| rd.count() as u64)
+        } else {
+            None
+        };
 
-    Ok(GetInfoResult {
-        permissions_octal: format!("{:o}", meta.mode() & 0o7777),
-        owner: user_name(meta.uid()),
-        group: group_name(meta.gid()),
-        where_from,
-        size_on_disk: if meta.is_dir() { None } else { Some(meta.blocks() * 512) },
-        item_count,
-        entry,
+        Ok(GetInfoResult {
+            permissions_octal: format!("{:o}", meta.mode() & 0o7777),
+            owner: user_name(meta.uid()),
+            group: group_name(meta.gid()),
+            where_from,
+            size_on_disk: if meta.is_dir() { None } else { Some(meta.blocks() * 512) },
+            item_count,
+            entry,
+        })
     })
+    .await?
 }
 
 #[derive(Serialize, Clone)]
@@ -354,8 +364,9 @@ pub fn pb_write_files(
     is_cut: bool,
 ) {
     let pbs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    let _before = on_main(&app, move || pasteboard::write_files(&pbs));
-    let after = on_main(&app, pasteboard::change_count);
+    // write_files returns the post-write changeCount (clearContents bumps it,
+    // writeObjects doesn't) — same contract as pb_write_text below.
+    let after = on_main(&app, move || pasteboard::write_files(&pbs));
     *state.pb_mark.lock().unwrap() = Some((after, is_cut));
 }
 
@@ -421,18 +432,21 @@ pub struct TextPreview {
 }
 
 #[tauri::command]
-pub fn read_text_head(path: String, max_bytes: u64) -> Result<TextPreview> {
-    let max = max_bytes.clamp(1, 4 * 1024 * 1024) as usize;
-    let mut file = std::fs::File::open(&path).map_err(Error::Io)?;
-    let total = file.metadata().map_err(Error::Io)?.len();
-    let mut buf = vec![0u8; max.min(total as usize)];
-    file.read_exact(&mut buf).map_err(Error::Io)?;
-    if buf.iter().take(8192).any(|&b| b == 0) {
-        return Err(Error::msg("binary file"));
-    }
-    Ok(TextPreview {
-        text: String::from_utf8_lossy(&buf).into_owned(),
-        truncated: (buf.len() as u64) < total,
-        total_bytes: total,
+pub async fn read_text_head(path: String, max_bytes: u64) -> Result<TextPreview> {
+    super::blocking("read_text_head", move || {
+        let max = max_bytes.clamp(1, 4 * 1024 * 1024) as usize;
+        let mut file = std::fs::File::open(&path).map_err(Error::Io)?;
+        let total = file.metadata().map_err(Error::Io)?.len();
+        let mut buf = vec![0u8; max.min(total as usize)];
+        file.read_exact(&mut buf).map_err(Error::Io)?;
+        if buf.iter().take(8192).any(|&b| b == 0) {
+            return Err(Error::msg("binary file"));
+        }
+        Ok(TextPreview {
+            text: String::from_utf8_lossy(&buf).into_owned(),
+            truncated: (buf.len() as u64) < total,
+            total_bytes: total,
+        })
     })
+    .await?
 }

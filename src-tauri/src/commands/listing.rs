@@ -171,14 +171,16 @@ pub fn cancel_listing(state: State<'_, AppState>, listing_id: String) {
 /// Fully-hydrated entry for one path (watcher upserts, get-info).
 /// Icon token is registered under `listing_id` so it lives with the listing.
 #[tauri::command]
-pub fn stat_path(
+pub async fn stat_path(
     app: AppHandle,
-    state: State<'_, AppState>,
     path: String,
     listing_id: String,
-) -> Option<Entry> {
-    let p = PathBuf::from(&path);
-    build_entry(&app, &state, &p, &listing_id)
+) -> Result<Option<Entry>> {
+    crate::commands::blocking("stat_path", move || {
+        let state = app.state::<AppState>();
+        build_entry(&app, &state, Path::new(&path), &listing_id)
+    })
+    .await
 }
 
 #[derive(serde::Deserialize)]
@@ -213,40 +215,44 @@ pub fn hydrate_item(item: &HydrateItem) -> Option<(Entry, bool)> {
 /// ran). Responses are guarded by listingId on the frontend — the id is
 /// threaded through for symmetry with the channel events.
 #[tauri::command]
-pub fn hydrate_paths(
+pub async fn hydrate_paths(
     app: AppHandle,
     listing_id: String,
     items: Vec<HydrateItem>,
-) -> Vec<Option<Entry>> {
-    let _ = listing_id;
-    let mut out: Vec<Option<Entry>> = Vec::with_capacity(items.len());
-    let mut pkg_candidates: Vec<usize> = Vec::new();
-    for item in &items {
-        match hydrate_item(item) {
-            Some((entry, needs_pkg)) => {
-                if needs_pkg {
-                    pkg_candidates.push(out.len());
+) -> Result<Vec<Option<Entry>>> {
+    crate::commands::blocking("hydrate_paths", move || {
+        let _ = listing_id;
+        let mut out: Vec<Option<Entry>> = Vec::with_capacity(items.len());
+        let mut pkg_candidates: Vec<usize> = Vec::new();
+        for item in &items {
+            match hydrate_item(item) {
+                Some((entry, needs_pkg)) => {
+                    if needs_pkg {
+                        pkg_candidates.push(out.len());
+                    }
+                    out.push(Some(entry));
                 }
-                out.push(Some(entry));
-            }
-            None => out.push(None),
-        }
-    }
-    if !pkg_candidates.is_empty() {
-        let paths: Vec<PathBuf> = pkg_candidates
-            .iter()
-            .filter_map(|&i| out[i].as_ref().map(|e| PathBuf::from(&e.path)))
-            .collect();
-        let results = crate::macos::main_thread::on_main(&app, move || {
-            crate::macos::workspace::are_file_packages(&paths)
-        });
-        for (&i, is_pkg) in pkg_candidates.iter().zip(results) {
-            if let Some(e) = out[i].as_mut() {
-                e.is_package = is_pkg;
+                None => out.push(None),
             }
         }
-    }
-    out
+        if !pkg_candidates.is_empty() {
+            let paths: Vec<PathBuf> = pkg_candidates
+                .iter()
+                .filter_map(|&i| out[i].as_ref().map(|e| PathBuf::from(&e.path)))
+                .collect();
+            // Ambiguous dirs still hop to the AppKit main thread — one batch.
+            let results = crate::macos::main_thread::on_main(&app, move || {
+                crate::macos::workspace::are_file_packages(&paths)
+            });
+            for (&i, is_pkg) in pkg_candidates.iter().zip(results) {
+                if let Some(e) = out[i].as_mut() {
+                    e.is_package = is_pkg;
+                }
+            }
+        }
+        out
+    })
+    .await
 }
 
 /// Bulk stat: fully-hydrated entries for many paths in one IPC round-trip
@@ -254,16 +260,19 @@ pub fn hydrate_paths(
 /// icon tokens, so the owner scope is an explicit argument: the listingId for
 /// watcher upserts, the searchId for search hits.
 #[tauri::command]
-pub fn stat_paths(
+pub async fn stat_paths(
     app: AppHandle,
-    state: State<'_, AppState>,
     owner: String,
     paths: Vec<String>,
-) -> Vec<Option<Entry>> {
-    paths
-        .iter()
-        .map(|p| build_entry(&app, &state, Path::new(p), &owner))
-        .collect()
+) -> Result<Vec<Option<Entry>>> {
+    crate::commands::blocking("stat_paths", move || {
+        let state = app.state::<AppState>();
+        paths
+            .iter()
+            .map(|p| build_entry(&app, &state, Path::new(p), &owner))
+            .collect()
+    })
+    .await
 }
 
 pub fn build_entry<R: tauri::Runtime>(

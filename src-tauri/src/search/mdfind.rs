@@ -213,11 +213,6 @@ pub fn spawn_search(
     let handle_thread = handle.clone();
 
     std::thread::spawn(move || {
-        // Probe indexing while results stream (cheap; reported in Done).
-        let indexed = match &scope {
-            Some(s) => volume_indexed(s),
-            None => true, // whole Mac: no single volume to probe
-        };
         let reader = BufReader::new(stdout);
         let (total, capped) = stream_hits(reader, cap, |path| {
             let p = PathBuf::from(path);
@@ -238,6 +233,12 @@ pub fn spawn_search(
             let _ = c.kill();
             let _ = c.wait();
         }
+        // Probe indexing only now — mdutil shells out, and running it before
+        // reading stdout would delay the first hit. Only Done needs it.
+        let indexed = match &scope {
+            Some(s) => volume_indexed(s),
+            None => true, // whole Mac: no single volume to probe
+        };
         send(SearchEvent::Done { total, capped, indexed });
     });
 

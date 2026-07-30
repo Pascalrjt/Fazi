@@ -140,27 +140,31 @@ pub fn respond_conflict(
 }
 
 #[tauri::command]
-pub fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
-    let mut pairs = Vec::new();
-    let mut errors = Vec::new();
-    for p in &paths {
-        let original = PathBuf::from(p);
-        match trash_path(&original) {
-            Ok(landed) => pairs.push((original, landed)),
-            Err(e) => errors.push(format!("{p}: {e}")),
+pub async fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
+    let engine = state.engine.clone();
+    super::blocking("trash_paths", move || {
+        let mut pairs = Vec::new();
+        let mut errors = Vec::new();
+        for p in &paths {
+            let original = PathBuf::from(p);
+            match trash_path(&original) {
+                Ok(landed) => pairs.push((original, landed)),
+                Err(e) => errors.push(format!("{p}: {e}")),
+            }
         }
-    }
-    if !pairs.is_empty() {
-        let touched: Vec<PathBuf> =
-            pairs.iter().flat_map(|(o, l)| [o.clone(), l.clone()]).collect();
-        state.engine.push_undo(UndoOp::Trash { pairs });
-        (state.engine.invalidate_fuzzy)(&touched);
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::msg(errors.join("\n")))
-    }
+        if !pairs.is_empty() {
+            let touched: Vec<PathBuf> =
+                pairs.iter().flat_map(|(o, l)| [o.clone(), l.clone()]).collect();
+            engine.push_undo(UndoOp::Trash { pairs });
+            (engine.invalidate_fuzzy)(&touched);
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::msg(errors.join("\n")))
+        }
+    })
+    .await?
 }
 
 // ---------------------------------------------------------------------------
@@ -209,30 +213,33 @@ fn trash_volume_name(dir: &Path) -> String {
 /// truth ("N items (M on external volumes)"). The sidebar row only browses
 /// `~/.Trash`; the dialog copy covers the rest.
 #[tauri::command]
-pub fn trash_stats() -> TrashStats {
-    let home_trash = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".Trash"))
-        .unwrap_or_default();
-    let mut count = 0u64;
-    let mut external = 0u64;
-    let mut unreadable = Vec::new();
-    for dir in trash::user_trash_dirs() {
-        match trash::trash_items(&dir) {
-            Ok(items) => {
-                let n = items.len() as u64;
-                count += n;
-                if dir != home_trash {
-                    external += n;
+pub async fn trash_stats() -> Result<TrashStats> {
+    super::blocking("trash_stats", || {
+        let home_trash = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".Trash"))
+            .unwrap_or_default();
+        let mut count = 0u64;
+        let mut external = 0u64;
+        let mut unreadable = Vec::new();
+        for dir in trash::user_trash_dirs() {
+            match trash::trash_items(&dir) {
+                Ok(items) => {
+                    let n = items.len() as u64;
+                    count += n;
+                    if dir != home_trash {
+                        external += n;
+                    }
                 }
+                Err(error) => unreadable.push(TrashAccessIssue {
+                    path: dir.to_string_lossy().into_owned(),
+                    volume: trash_volume_name(&dir),
+                    message: error.to_string(),
+                }),
             }
-            Err(error) => unreadable.push(TrashAccessIssue {
-                path: dir.to_string_lossy().into_owned(),
-                volume: trash_volume_name(&dir),
-                message: error.to_string(),
-            }),
         }
-    }
-    TrashStats { count, external_count: external, unreadable }
+        TrashStats { count, external_count: external, unreadable }
+    })
+    .await
 }
 
 /// Permanently delete everything in the Trash (all volumes), streaming
@@ -269,29 +276,35 @@ pub fn empty_trash(state: State<'_, AppState>, channel: Channel<EmptyTrashEvent>
 }
 
 #[tauri::command]
-pub fn delete_permanent(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
-    let mut errors = Vec::new();
-    let mut deleted: Vec<PathBuf> = Vec::new();
-    for p in &paths {
-        let path = Path::new(p);
-        let outcome = match path.symlink_metadata() {
-            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => std::fs::remove_dir_all(path),
-            Ok(_) => std::fs::remove_file(path),
-            Err(e) => Err(e),
-        };
-        match outcome {
-            Ok(()) => deleted.push(path.to_path_buf()),
-            Err(e) => errors.push(format!("{p}: {e}")),
+pub async fn delete_permanent(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
+    let engine = state.engine.clone();
+    super::blocking("delete_permanent", move || {
+        let mut errors = Vec::new();
+        let mut deleted: Vec<PathBuf> = Vec::new();
+        for p in &paths {
+            let path = Path::new(p);
+            let outcome = match path.symlink_metadata() {
+                Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {
+                    std::fs::remove_dir_all(path)
+                }
+                Ok(_) => std::fs::remove_file(path),
+                Err(e) => Err(e),
+            };
+            match outcome {
+                Ok(()) => deleted.push(path.to_path_buf()),
+                Err(e) => errors.push(format!("{p}: {e}")),
+            }
         }
-    }
-    if !deleted.is_empty() {
-        (state.engine.invalidate_fuzzy)(&deleted);
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::msg(errors.join("\n")))
-    }
+        if !deleted.is_empty() {
+            (engine.invalidate_fuzzy)(&deleted);
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::msg(errors.join("\n")))
+        }
+    })
+    .await?
 }
 
 /// Illegal characters in a macOS file name (POSIX layer).
@@ -314,55 +327,59 @@ pub struct BatchRenameItem {
 /// directory — enforced here at the boundary, not just by UI construction.
 /// Returns the new absolute paths (same order); records a single undo entry.
 #[tauri::command]
-pub fn batch_rename(
+pub async fn batch_rename(
     state: State<'_, AppState>,
     renames: Vec<BatchRenameItem>,
 ) -> Result<Vec<String>> {
     use crate::core::batch_rename::{std_rename, two_phase_rename, validate_batch};
-    if renames.is_empty() {
-        return Err(Error::msg("nothing to rename"));
-    }
-    let mut parent: Option<PathBuf> = None;
-    let mut pairs: Vec<(String, String)> = Vec::new();
-    for item in &renames {
-        let from = PathBuf::from(&item.from);
-        let dir = from
-            .parent()
-            .ok_or_else(|| Error::msg("can't rename this item"))?
-            .to_path_buf();
-        match &parent {
-            None => parent = Some(dir),
-            Some(p) if *p == dir => {}
-            Some(_) => return Err(Error::msg("all items must be in the same folder")),
+    let engine = state.engine.clone();
+    super::blocking("batch_rename", move || {
+        if renames.is_empty() {
+            return Err(Error::msg("nothing to rename"));
         }
-        let from_name = from
-            .file_name()
-            .ok_or_else(|| Error::msg("can't rename this item"))?
-            .to_string_lossy()
-            .into_owned();
-        pairs.push((from_name, item.to_name.clone()));
-    }
-    let parent = parent.expect("non-empty batch has a parent");
-    // Skip no-op pairs (name unchanged) — they'd trip the collision check.
-    pairs.retain(|(f, t)| f != t);
-    if pairs.is_empty() {
-        return Ok(renames.iter().map(|r| r.from.clone()).collect());
-    }
+        let mut parent: Option<PathBuf> = None;
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for item in &renames {
+            let from = PathBuf::from(&item.from);
+            let dir = from
+                .parent()
+                .ok_or_else(|| Error::msg("can't rename this item"))?
+                .to_path_buf();
+            match &parent {
+                None => parent = Some(dir),
+                Some(p) if *p == dir => {}
+                Some(_) => return Err(Error::msg("all items must be in the same folder")),
+            }
+            let from_name = from
+                .file_name()
+                .ok_or_else(|| Error::msg("can't rename this item"))?
+                .to_string_lossy()
+                .into_owned();
+            pairs.push((from_name, item.to_name.clone()));
+        }
+        let parent = parent.expect("non-empty batch has a parent");
+        // Skip no-op pairs (name unchanged) — they'd trip the collision check.
+        pairs.retain(|(f, t)| f != t);
+        if pairs.is_empty() {
+            return Ok(renames.iter().map(|r| r.from.clone()).collect());
+        }
 
-    validate_batch(&parent, &pairs).map_err(Error::Io)?;
-    let tag = uuid::Uuid::new_v4().simple().to_string();
-    let finals = two_phase_rename(&parent, &pairs, &tag, &std_rename).map_err(Error::Io)?;
+        validate_batch(&parent, &pairs).map_err(Error::Io)?;
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let finals = two_phase_rename(&parent, &pairs, &tag, &std_rename).map_err(Error::Io)?;
 
-    let undo_pairs: Vec<(PathBuf, PathBuf)> = pairs
-        .iter()
-        .zip(&finals)
-        .map(|((from, _), to)| (parent.join(from), to.clone()))
-        .collect();
-    let touched: Vec<PathBuf> =
-        undo_pairs.iter().flat_map(|(f, t)| [f.clone(), t.clone()]).collect();
-    state.engine.push_undo(UndoOp::BatchRename { pairs: undo_pairs });
-    (state.engine.invalidate_fuzzy)(&touched);
-    Ok(finals.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+        let undo_pairs: Vec<(PathBuf, PathBuf)> = pairs
+            .iter()
+            .zip(&finals)
+            .map(|((from, _), to)| (parent.join(from), to.clone()))
+            .collect();
+        let touched: Vec<PathBuf> =
+            undo_pairs.iter().flat_map(|(f, t)| [f.clone(), t.clone()]).collect();
+        engine.push_undo(UndoOp::BatchRename { pairs: undo_pairs });
+        (engine.invalidate_fuzzy)(&touched);
+        Ok(finals.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+    })
+    .await?
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +391,7 @@ pub fn batch_rename(
 /// created file and records the landed path, so redo restores it from the
 /// Trash (the ProducedItems round-trip).
 #[tauri::command]
-pub fn pb_paste_new_file(
+pub async fn pb_paste_new_file(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     dest_dir: String,
@@ -384,74 +401,96 @@ pub fn pb_paste_new_file(
     use crate::macos::main_thread::on_main;
     use crate::macos::pasteboard;
 
-    let dest = PathBuf::from(&dest_dir);
-    if !dest.is_dir() {
-        return Err(Error::msg("destination is not a directory"));
-    }
-    let (bytes, base_name): (Vec<u8>, &str) =
-        if let Some(png) = on_main(&app, pasteboard::read_image_png) {
-            (png, "Pasted Image.png")
-        } else if let Some(text) = on_main(&app, pasteboard::read_string) {
-            (text.into_bytes(), "Pasted Text.txt")
+    let engine = state.engine.clone();
+    super::blocking("pb_paste_new_file", move || {
+        let dest = PathBuf::from(&dest_dir);
+        if !dest.is_dir() {
+            return Err(Error::msg("destination is not a directory"));
+        }
+        // Pasteboard reads still hop to the AppKit main thread; only the
+        // file writes below run on this worker.
+        let (bytes, base_name): (Vec<u8>, &str) =
+            if let Some(png) = on_main(&app, pasteboard::read_image_png) {
+                (png, "Pasted Image.png")
+            } else if let Some(text) = on_main(&app, pasteboard::read_string) {
+                (text.into_bytes(), "Pasted Text.txt")
+            } else {
+                return Ok(None);
+            };
+
+        let name = if exists_ci(&dest, base_name) {
+            keep_both_name(&dest, base_name)
         } else {
-            return Ok(None);
+            base_name.to_string()
         };
-
-    let name = if exists_ci(&dest, base_name) {
-        keep_both_name(&dest, base_name)
-    } else {
-        base_name.to_string()
-    };
-    let path = dest.join(&name);
-    std::fs::write(&path, &bytes)?;
-    state.engine.push_undo(UndoOp::ProducedItems {
-        kind: ProducedKind::Paste,
-        pairs: vec![(path.clone(), None)],
-    });
-    (state.engine.invalidate_fuzzy)(std::slice::from_ref(&path));
-    Ok(Some(path.to_string_lossy().into_owned()))
+        let path = dest.join(&name);
+        std::fs::write(&path, &bytes)?;
+        engine.push_undo(UndoOp::ProducedItems {
+            kind: ProducedKind::Paste,
+            pairs: vec![(path.clone(), None)],
+        });
+        (engine.invalidate_fuzzy)(std::slice::from_ref(&path));
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn rename_path(state: State<'_, AppState>, path: String, new_name: String) -> Result<String> {
-    validate_name(&new_name)?;
-    let from = PathBuf::from(&path);
-    let parent = from
-        .parent()
-        .ok_or_else(|| Error::msg("can't rename this item"))?;
-    let old_name = from
-        .file_name()
-        .ok_or_else(|| Error::msg("can't rename this item"))?
-        .to_string_lossy()
-        .into_owned();
-    let to = parent.join(&new_name);
+pub async fn rename_path(
+    state: State<'_, AppState>,
+    path: String,
+    new_name: String,
+) -> Result<String> {
+    let engine = state.engine.clone();
+    super::blocking("rename_path", move || {
+        validate_name(&new_name)?;
+        let from = PathBuf::from(&path);
+        let parent = from
+            .parent()
+            .ok_or_else(|| Error::msg("can't rename this item"))?;
+        let old_name = from
+            .file_name()
+            .ok_or_else(|| Error::msg("can't rename this item"))?
+            .to_string_lossy()
+            .into_owned();
+        let to = parent.join(&new_name);
 
-    if old_name == new_name {
-        return Ok(to.to_string_lossy().into_owned());
-    }
-    // Case-only rename is allowed — self-collision compares names, not just
-    // existence (APFS is case-insensitive: `to` "exists" during foo→Foo).
-    let case_only = old_name.to_lowercase() == new_name.to_lowercase();
-    if !case_only && walker::exists_ci(parent, &new_name) {
-        return Err(Error::msg(format!("\"{new_name}\" already exists")));
-    }
-    std::fs::rename(&from, &to)?;
-    state.engine.push_undo(UndoOp::Rename { from: from.clone(), to: to.clone() });
-    (state.engine.invalidate_fuzzy)(&[from, to.clone()]);
-    Ok(to.to_string_lossy().into_owned())
+        if old_name == new_name {
+            return Ok(to.to_string_lossy().into_owned());
+        }
+        // Case-only rename is allowed — self-collision compares names, not just
+        // existence (APFS is case-insensitive: `to` "exists" during foo→Foo).
+        let case_only = old_name.to_lowercase() == new_name.to_lowercase();
+        if !case_only && walker::exists_ci(parent, &new_name) {
+            return Err(Error::msg(format!("\"{new_name}\" already exists")));
+        }
+        std::fs::rename(&from, &to)?;
+        engine.push_undo(UndoOp::Rename { from: from.clone(), to: to.clone() });
+        (engine.invalidate_fuzzy)(&[from, to.clone()]);
+        Ok(to.to_string_lossy().into_owned())
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn new_folder(state: State<'_, AppState>, parent: String, name: String) -> Result<String> {
-    let parent = PathBuf::from(&parent);
-    let base = if name.is_empty() { "untitled folder".to_string() } else { name };
-    validate_name(&base)?;
-    let unique = walker::new_folder_name(&parent, &base);
-    let path = parent.join(&unique);
-    std::fs::create_dir(&path)?;
-    state.engine.push_undo(UndoOp::NewFolder { path: path.clone() });
-    (state.engine.invalidate_fuzzy)(std::slice::from_ref(&path));
-    Ok(path.to_string_lossy().into_owned())
+pub async fn new_folder(
+    state: State<'_, AppState>,
+    parent: String,
+    name: String,
+) -> Result<String> {
+    let engine = state.engine.clone();
+    super::blocking("new_folder", move || {
+        let parent = PathBuf::from(&parent);
+        let base = if name.is_empty() { "untitled folder".to_string() } else { name };
+        validate_name(&base)?;
+        let unique = walker::new_folder_name(&parent, &base);
+        let path = parent.join(&unique);
+        std::fs::create_dir(&path)?;
+        engine.push_undo(UndoOp::NewFolder { path: path.clone() });
+        (engine.invalidate_fuzzy)(std::slice::from_ref(&path));
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await?
 }
 
 // ---------------------------------------------------------------------------
