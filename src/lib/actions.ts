@@ -126,18 +126,9 @@ function pasteClipboardAsFile(destDir: string): void {
       try {
         const entry = await ipc.statPath(path, at.tab.listingId);
         if (entry) {
-          usePanes.getState().upsertEntryNow(at.pane.id, at.tab.id, entry);
-          const fresh = usePanes
-            .getState()
-            .panes.find((p) => p.id === at.pane.id)
-            ?.tabs.find((t) => t.id === at.tab.id)
-            ?.entries.find((e) => e.name === entry.name);
-          if (fresh) {
-            usePanes.getState().setSelection(at.pane.id, at.tab.id, {
-              selected: new Set([fresh.id]),
-              anchor: fresh.id,
-              lead: fresh.id,
-            });
+          const id = usePanes.getState().upsertEntryNow(at.pane.id, at.tab.id, entry);
+          if (id != null) {
+            usePanes.getState().setSelection(at.pane.id, at.tab.id, clickSelect(id));
           }
         }
       } catch {
@@ -333,19 +324,10 @@ export function newFolderInActive(): void {
       }
       const panes = usePanes.getState();
       if (entry) {
-        panes.upsertEntryNow(pane.id, tab.id, entry);
-        const fresh = usePanes
-          .getState()
-          .panes.find((p) => p.id === pane.id)
-          ?.tabs.find((t) => t.id === tab.id)
-          ?.entries.find((e) => e.name === entry.name);
-        if (fresh) {
-          panes.setSelection(pane.id, tab.id, {
-            selected: new Set([fresh.id]),
-            anchor: fresh.id,
-            lead: fresh.id,
-          });
-          useApp.getState().startRename({ paneId: pane.id, tabId: tab.id, entryId: fresh.id });
+        const id = panes.upsertEntryNow(pane.id, tab.id, entry);
+        if (id != null) {
+          panes.setSelection(pane.id, tab.id, clickSelect(id));
+          useApp.getState().startRename({ paneId: pane.id, tabId: tab.id, entryId: id });
         }
       } else {
         panes.addGhosts(tab.path, [path], true);

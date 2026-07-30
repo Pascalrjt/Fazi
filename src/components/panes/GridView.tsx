@@ -158,6 +158,10 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         : [],
     [tab?.entries, tab?.filter, tab?.showHidden], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  // Ref mirror so long-lived closures (drop-zone hitTest) can read the
+  // memoized visible cells without re-filtering the raw entries per hover move.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
   // measure columns for keyboard navigation
   useEffect(() => {
@@ -220,12 +224,11 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           .panes.find((p) => p.id === paneId)
           ?.tabs.find((tt) => tt.id === tabId);
         if (!t) return null;
-        const vis = visibleEntries(t);
         const cols = Math.max(1, Math.floor(el.clientWidth / CELL_W));
         const col = Math.floor((x - r.left - GRID_PAD) / CELL_W);
         const row = Math.floor((y - r.top + el.scrollTop - GRID_PAD) / CELL_H);
         const entry =
-          col >= 0 && col < cols && row >= 0 ? vis[row * cols + col] : undefined;
+          col >= 0 && col < cols && row >= 0 ? visibleRef.current[row * cols + col] : undefined;
         if (entry && entry.kind === "dir" && !entry.isPackage) {
           const paths = activeDragPaths();
           if (paths == null || !isInvalidDrop(paths, entry.path)) {

@@ -184,20 +184,6 @@ export interface Rect {
   height: number;
 }
 
-export interface ItemRect {
-  id: number;
-  rect: Rect;
-}
-
-function intersects(a: Rect, b: Rect): boolean {
-  return (
-    a.x < b.x + b.width &&
-    a.x + a.width > b.x &&
-    a.y < b.y + b.height &&
-    a.y + a.height > b.y
-  );
-}
-
 /** Normalize a drag from `start` to `current` into a positive rect. */
 export function dragRect(start: { x: number; y: number }, current: { x: number; y: number }): Rect {
   return {
@@ -209,19 +195,25 @@ export function dragRect(start: { x: number; y: number }, current: { x: number; 
 }
 
 /**
- * Marquee selection: every item whose rect intersects the marquee.
+ * Marquee selection over uniform-height, full-width rows (row i spans
+ * y ∈ [i·rowHeight, (i+1)·rowHeight)): the hit set is exactly the row-index
+ * range the marquee's vertical span covers in `order` (the visible id order),
+ * so no per-row rect intersection is needed — offscreen rows included.
  * `base` (cmd/shift-marquee) is XOR-merged so a marquee can extend an
  * existing selection; pass null for a plain replace-marquee.
  */
 export function marqueeSelect(
   rect: Rect,
-  items: readonly ItemRect[],
+  order: readonly number[],
+  rowHeight: number,
   base: ReadonlySet<number> | null = null,
 ): SelectionState {
+  // Strict-intersection bounds: a rect ending exactly on a row edge does
+  // not graze the next row (matches the old rect-overlap semantics).
+  const lo = Math.max(0, Math.floor(rect.y / rowHeight));
+  const hi = Math.min(order.length - 1, Math.ceil((rect.y + rect.height) / rowHeight) - 1);
   const hit = new Set<number>();
-  for (const item of items) {
-    if (intersects(rect, item.rect)) hit.add(item.id);
-  }
+  for (let i = lo; i <= hi; i++) hit.add(order[i]);
   let selected: Set<number>;
   if (base) {
     selected = new Set(base);

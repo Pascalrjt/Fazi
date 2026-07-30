@@ -120,7 +120,14 @@ interface PanesState {
   renameLocal(paneId: PaneId, tabId: string, entryId: number, newName: string, newPath: string): void;
   removeEntriesByPath(paths: string[]): void;
   addGhosts(destDir: string, paths: string[], isDir?: boolean): void;
-  upsertEntryNow(paneId: PaneId, tabId: string, entry: Entry): void;
+  /**
+   * Batch upsert (watcher batches): one name-fold merge, one sort, one store
+   * commit — never per-entry. Returns each entry's final stable row id in
+   * input order, or null when the tab is gone.
+   */
+  upsertEntriesNow(paneId: PaneId, tabId: string, entries: Entry[]): number[] | null;
+  /** Single-entry upsert; returns the final stable row id, or null when the tab is gone. */
+  upsertEntryNow(paneId: PaneId, tabId: string, entry: Entry): number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -799,9 +806,8 @@ export const usePanes = create<PanesState>()(
             ipc
               .statPaths(tab.listingId, paths)
               .then((entries) => {
-                for (const entry of entries) {
-                  if (entry) get().upsertEntryNow(paneId, tabId, entry);
-                }
+                const fresh = entries.filter((e): e is Entry => e != null);
+                if (fresh.length > 0) get().upsertEntriesNow(paneId, tabId, fresh);
               })
               .catch(() => {});
           }
@@ -958,24 +964,50 @@ export const usePanes = create<PanesState>()(
       });
     },
 
-    upsertEntryNow: (paneId, tabId, entry) => {
+    upsertEntriesNow: (paneId, tabId, entries) => {
+      let ids: number[] | null = null;
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (!tab) return;
-        const folded = entry.name.toLocaleLowerCase();
-        const idx = tab.entries.findIndex((e) => e.name.toLocaleLowerCase() === folded);
-        if (idx >= 0) {
-          // keep the row's id stable so selection survives the update
-          tab.entries[idx] = { ...entry, id: tab.entries[idx].id };
-        } else {
-          tab.entries.push(entry);
-          tab.entries = sortEntries(tab.entries, tab.sort);
-          if (tab.total != null) tab.total += 1;
+        const byFoldedName = new Map<string, number>();
+        tab.entries.forEach((e, i) => byFoldedName.set(e.name.toLocaleLowerCase(), i));
+        const incoming = new Set<string>();
+        const out: number[] = [];
+        let appended = 0;
+        for (const entry of entries) {
+          const folded = entry.name.toLocaleLowerCase();
+          incoming.add(folded);
+          const idx = byFoldedName.get(folded);
+          if (idx != null) {
+            // keep the row's id stable so selection survives the update
+            const id = tab.entries[idx].id;
+            tab.entries[idx] = { ...entry, id };
+            out.push(id);
+          } else {
+            byFoldedName.set(folded, tab.entries.length);
+            tab.entries.push(entry);
+            appended += 1;
+            out.push(entry.id);
+          }
         }
-        tab.ghosts = tab.ghosts.filter((g) => g.name.toLocaleLowerCase() !== folded);
+        if (appended > 0) {
+          tab.entries = sortEntries(tab.entries, tab.sort);
+          if (tab.total != null) tab.total += appended;
+        }
+        if (tab.ghosts.length > 0) {
+          tab.ghosts = tab.ghosts.filter((g) => !incoming.has(g.name.toLocaleLowerCase()));
+        }
+        ids = out;
       });
+      if (ids == null) return null;
       const tab = findTab(get(), paneId, tabId);
       if (tab) listingIndexes.set(tab.listingId, entryIndex(tab.entries));
+      return ids;
+    },
+
+    upsertEntryNow: (paneId, tabId, entry) => {
+      const ids = get().upsertEntriesNow(paneId, tabId, [entry]);
+      return ids ? ids[0] : null;
     },
   })),
 );

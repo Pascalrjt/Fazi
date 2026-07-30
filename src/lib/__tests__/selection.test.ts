@@ -13,7 +13,6 @@ import {
   shiftRange,
   typeAheadPush,
   typeAheadTarget,
-  type ItemRect,
   type SelectionState,
 } from "../selection";
 
@@ -282,12 +281,9 @@ describe("type-ahead", () => {
 });
 
 describe("marquee", () => {
-  const items: ItemRect[] = [
-    { id: 1, rect: { x: 0, y: 0, width: 100, height: 28 } },
-    { id: 2, rect: { x: 0, y: 28, width: 100, height: 28 } },
-    { id: 3, rect: { x: 0, y: 56, width: 100, height: 28 } },
-    { id: 4, rect: { x: 0, y: 84, width: 100, height: 28 } },
-  ];
+  // Rows [1, 2, 3, 4] laid out at 28px each: row i spans y ∈ [i·28, (i+1)·28).
+  const rows = [1, 2, 3, 4];
+  const ROW_H = 28;
 
   it("dragRect normalizes any drag direction", () => {
     expect(dragRect({ x: 50, y: 60 }, { x: 10, y: 20 })).toEqual({
@@ -295,22 +291,27 @@ describe("marquee", () => {
     });
   });
 
-  it("selects all intersecting items (including offscreen rows by rect math)", () => {
-    const s = marqueeSelect({ x: 10, y: 30, width: 20, height: 40 }, items);
+  it("selects all covered rows (including offscreen rows by index math)", () => {
+    const s = marqueeSelect({ x: 10, y: 30, width: 20, height: 40 }, rows, ROW_H);
     expect([...s.selected].sort()).toEqual([2, 3]);
   });
 
   it("grazing a row's edge selects it; missing entirely does not", () => {
-    const s = marqueeSelect({ x: 0, y: 27, width: 5, height: 2 }, items);
+    const s = marqueeSelect({ x: 0, y: 27, width: 5, height: 2 }, rows, ROW_H);
     expect([...s.selected].sort()).toEqual([1, 2]);
-    const t = marqueeSelect({ x: 200, y: 0, width: 50, height: 200 }, items);
+    // Ending exactly on a row boundary does not graze the next row.
+    const u = marqueeSelect({ x: 0, y: 0, width: 5, height: 28 }, rows, ROW_H);
+    expect([...u.selected].sort()).toEqual([1]);
+    // Entirely below the last row: nothing.
+    const t = marqueeSelect({ x: 0, y: 200, width: 50, height: 50 }, rows, ROW_H);
     expect(t.selected.size).toBe(0);
   });
 
   it("XOR-merges with a base selection (cmd-marquee)", () => {
     const s = marqueeSelect(
       { x: 0, y: 30, width: 100, height: 30 }, // hits 2,3
-      items,
+      rows,
+      ROW_H,
       new Set([1, 2]),
     );
     expect([...s.selected].sort()).toEqual([1, 3]);

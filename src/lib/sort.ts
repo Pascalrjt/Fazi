@@ -77,31 +77,3 @@ export function sortEntries(entries: readonly Entry[], spec: SortSpec, dirsFirst
   });
   return out;
 }
-
-/** Where a single entry should be inserted to keep sorted order (binary search). */
-export function sortedInsertIndex(
-  sorted: readonly Entry[],
-  entry: Entry,
-  spec: SortSpec,
-  dirsFirst = true,
-): number {
-  const sign = spec.dir === "asc" ? 1 : -1;
-  const cmp = (a: Entry, b: Entry): number => {
-    if (dirsFirst) {
-      const da = isDirLike(a);
-      const db = isDirLike(b);
-      if (da !== db) return da ? -1 : 1;
-    }
-    const primary = compareBy(a, b, spec.key);
-    if (primary !== 0) return sign * primary;
-    return naturalCollator.compare(a.name, b.name);
-  };
-  let lo = 0;
-  let hi = sorted.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (cmp(sorted[mid], entry) <= 0) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}

@@ -357,6 +357,10 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         : [],
     [tab?.entries, tab?.filter, tab?.showHidden], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  // Ref mirror so long-lived closures (drop-zone hitTest) can read the
+  // memoized visible rows without re-filtering 100k entries per hover move.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const ghosts = tab?.ghosts ?? [];
   const rowCount = visible.length + ghosts.length;
 
@@ -429,9 +433,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         const state = usePanes.getState();
         const t = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
         if (!t) return null;
-        const vis = visibleEntries(t);
         const idx = Math.floor((y - rect.top + el.scrollTop) / ROW_H);
-        const entry = vis[idx];
+        const entry = visibleRef.current[idx];
         if (entry && entry.kind === "dir" && !entry.isPackage) {
           const paths = activeDragPaths();
           if (paths == null || !isInvalidDrop(paths, entry.path)) {
@@ -532,12 +535,11 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           lead: t0.selection.lead,
         }
       : { selected: new Set<number>(), anchor: null, lead: null };
-    const itemRects = visible.map((en, i) => ({
-      id: en.id,
-      rect: { x: 0, y: i * ROW_H, width: Math.max(el.scrollWidth, el.clientWidth), height: ROW_H },
-    }));
+    // Rows are uniform-height and full-width, so the hit set is pure index
+    // math over this id snapshot — no per-row rects.
+    const order = visible.map((en) => en.id);
     let moved = false;
-    // itemRects are content-space and stable while scrolling — only the
+    // The id order is content-space and stable while scrolling — only the
     // pointer point needs recomputing, from its last client position.
     const lastClient = { x: e.clientX, y: e.clientY };
 
@@ -551,7 +553,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
       if (!moved && (rectSel.width > 3 || rectSel.height > 3)) moved = true;
       if (!moved) return;
       setMarquee(rectSel);
-      usePanes.getState().setSelection(paneId, tabId, marqueeSelect(rectSel, itemRects, base));
+      usePanes.getState().setSelection(paneId, tabId, marqueeSelect(rectSel, order, ROW_H, base));
     };
 
     // Edge auto-scroll: while the pointer is near/past the top or bottom

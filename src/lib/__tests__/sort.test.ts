@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Entry } from "../../types/ipc";
-import { entryKindLabel, sortEntries, sortedInsertIndex } from "../sort";
+import { entryKindLabel, sortEntries } from "../sort";
 
 let seq = 0;
 function entry(partial: Partial<Entry> & { name: string }): Entry {
@@ -146,28 +146,5 @@ describe("kind sort and labels", () => {
     );
     // "Plain Text" < "PNG Image" in base-sensitivity collation
     expect(sorted.map((e) => e.name)).toEqual(["a.txt", "m.png", "z.png"]);
-  });
-});
-
-describe("sortedInsertIndex", () => {
-  it("finds the position keeping natural order", () => {
-    const sorted = sortEntries(
-      [entry({ name: "file1" }), entry({ name: "file10" }), entry({ name: "afolder", kind: "dir" })],
-      { key: "name", dir: "asc" },
-    );
-    const idx = sortedInsertIndex(sorted, entry({ name: "file2" }), { key: "name", dir: "asc" });
-    expect(idx).toBe(2); // after afolder, file1
-  });
-
-  it("inserts dirs into the dir group", () => {
-    const sorted = sortEntries(
-      [entry({ name: "afolder", kind: "dir" }), entry({ name: "aaa.txt" })],
-      { key: "name", dir: "asc" },
-    );
-    const idx = sortedInsertIndex(sorted, entry({ name: "bfolder", kind: "dir" }), {
-      key: "name",
-      dir: "asc",
-    });
-    expect(idx).toBe(1);
   });
 });
