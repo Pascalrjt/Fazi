@@ -121,12 +121,17 @@ export function FuzzyFinder() {
   const builtAtMs = useFuzzy((s) => s.builtAtMs);
   const error = useFuzzy((s) => s.error);
   const home = useVolumes((s) => s.folders?.home ?? null);
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelectedState] = useState(0);
+  const selectedRef = useRef(0);
+  const setSelected = useCallback((i: number) => {
+    selectedRef.current = i;
+    setSelectedState(i);
+  }, []);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setSelected(0);
-  }, [query, scope]);
+  }, [query, scope, setSelected]);
 
   useEffect(() => {
     if (open) {
@@ -171,11 +176,11 @@ export function FuzzyFinder() {
       if (vimCtrl && (e.key === "j" || e.key === "n")) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => Math.min(s.hits.length - 1, i + 1));
+        setSelected(Math.min(s.hits.length - 1, selectedRef.current + 1));
       } else if (vimCtrl && (e.key === "k" || e.key === "p")) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => Math.max(0, i - 1));
+        setSelected(Math.max(0, selectedRef.current - 1));
       } else if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -183,19 +188,16 @@ export function FuzzyFinder() {
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => Math.min(s.hits.length - 1, i + 1));
+        setSelected(Math.min(s.hits.length - 1, selectedRef.current + 1));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => Math.max(0, i - 1));
+        setSelected(Math.max(0, selectedRef.current - 1));
       } else if (e.key === "Enter") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => {
-          if (e.metaKey) revealHit(s.hits[i]);
-          else openHit(s.hits[i]);
-          return i;
-        });
+        if (e.metaKey) revealHit(s.hits[selectedRef.current]);
+        else openHit(s.hits[selectedRef.current]);
       } else if (e.key === "Tab") {
         e.preventDefault();
         e.stopImmediatePropagation();

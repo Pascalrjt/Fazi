@@ -284,6 +284,11 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     [paneId, tabId, setSelection],
   );
 
+  const handleDoubleClick = useCallback(
+    (entry: Entry) => openEntry(paneId, tabId, entry),
+    [openEntry, paneId, tabId],
+  );
+
   const handleRenameDone = useCallback(
     (entry: Entry, advance: boolean) => {
       finishRename(paneId, tabId, entry.id, advance);
@@ -352,7 +357,7 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                   paneId={paneId}
                   tabId={tabId}
                   onMouseDown={handleMouseDown}
-                  onDoubleClick={(en) => openEntry(paneId, tabId, en)}
+                  onDoubleClick={handleDoubleClick}
                   onContextMenu={handleContextMenu}
                   onRenameDone={handleRenameDone}
                 />

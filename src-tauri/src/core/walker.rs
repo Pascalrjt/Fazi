@@ -320,44 +320,32 @@ pub fn mtime_tolerance_ms(dst: &Path) -> i64 {
 
 pub struct VerifyReport {
     pub mismatches: Vec<String>,
-    pub entries_checked: u64,
 }
 
 /// Re-lstat every copied entry: size, entry count, mtime (with tolerance);
 /// plus metadata spot-checks (full xattr name-set + Finder-tag value) for a
 /// sample of files (all files if ≤ 20).
-pub fn verify_tree(
-    src: &Path,
-    dst: &Path,
-    skipped: &HashSet<PathBuf>,
-    tol_ms: i64,
-) -> io::Result<VerifyReport> {
+pub fn verify_tree(src: &Path, dst: &Path, tol_ms: i64) -> io::Result<VerifyReport> {
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut mismatches = Vec::new();
-    let mut entries = 0u64;
-    collect_verify(src, dst, skipped, tol_ms, &mut files, &mut mismatches, &mut entries)?;
+    collect_verify(src, dst, tol_ms, &mut files, &mut mismatches)?;
 
     // Metadata spot-checks: all files if ≤ 20, else every ceil(n/20)-th.
     let step = (files.len() / 20).max(1);
     for (s, d) in files.iter().step_by(step) {
         verify_metadata(s, d, &mut mismatches);
     }
-    Ok(VerifyReport { mismatches, entries_checked: entries })
+    Ok(VerifyReport { mismatches })
 }
 
 fn collect_verify(
     src: &Path,
     dst: &Path,
-    skipped: &HashSet<PathBuf>,
     tol_ms: i64,
     files: &mut Vec<(PathBuf, PathBuf)>,
     mismatches: &mut Vec<String>,
-    entries: &mut u64,
 ) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
-    if skipped.contains(src) {
-        return Ok(());
-    }
     let sm = src.symlink_metadata()?;
     let dm = match dst.symlink_metadata() {
         Ok(m) => m,
@@ -366,7 +354,6 @@ fn collect_verify(
             return Ok(());
         }
     };
-    *entries += 1;
 
     if sm.file_type().is_dir() {
         if !dm.file_type().is_dir() {
@@ -379,11 +366,7 @@ fn collect_verify(
             .collect();
         src_children.sort();
         for name in src_children {
-            let s = src.join(&name);
-            if skipped.contains(&s) {
-                continue;
-            }
-            collect_verify(&s, &dst.join(&name), skipped, tol_ms, files, mismatches, entries)?;
+            collect_verify(&src.join(&name), &dst.join(&name), tol_ms, files, mismatches)?;
         }
         return Ok(());
     }
@@ -813,7 +796,7 @@ fn transfer_entry(
 
     if ctx.moving {
         // Verify before the source is deleted — a crash mid-move never loses data.
-        let report = verify_tree(src, &stage, &HashSet::new(), ctx.tol_ms)?;
+        let report = verify_tree(src, &stage, ctx.tol_ms)?;
         if !report.mismatches.is_empty() {
             remove_tree_best_effort(&stage);
             let e = io::Error::new(
@@ -849,7 +832,7 @@ fn stage_cross_volume(
     match copy_fresh(src, stage, sink)? {
         Outcome::Cancelled => Ok(Outcome::Cancelled),
         Outcome::Done => {
-            let report = verify_tree(src, stage, &HashSet::new(), ctx.tol_ms)?;
+            let report = verify_tree(src, stage, ctx.tol_ms)?;
             if report.mismatches.is_empty() {
                 Ok(Outcome::Done)
             } else {
@@ -1003,18 +986,18 @@ mod tests {
         let mut sink = TestSink::new(Resolution::Skip);
         copy_fresh(&src, &dst, &mut sink).unwrap();
 
-        let clean = verify_tree(&src, &dst, &HashSet::new(), 2_000).unwrap();
+        let clean = verify_tree(&src, &dst, 2_000).unwrap();
         assert!(clean.mismatches.is_empty(), "{:?}", clean.mismatches);
 
         // Corrupt a copied file (size change) → verify must flag it.
         fs::write(dst.join("sub/b.txt"), b"short").unwrap();
-        let bad = verify_tree(&src, &dst, &HashSet::new(), 60_000).unwrap();
+        let bad = verify_tree(&src, &dst, 60_000).unwrap();
         assert!(bad.mismatches.iter().any(|m| m.contains("b.txt")));
 
         // Strip an xattr from the copy → spot-check must flag it.
         fs::copy(src.join("sub/b.txt"), dst.join("sub/b.txt")).unwrap();
         xattr::remove(dst.join("a.txt"), "com.fazi.mark").unwrap();
-        let bad2 = verify_tree(&src, &dst, &HashSet::new(), 60_000).unwrap();
+        let bad2 = verify_tree(&src, &dst, 60_000).unwrap();
         assert!(bad2.mismatches.iter().any(|m| m.contains("xattr")));
         fs::remove_dir_all(&d).ok();
     }

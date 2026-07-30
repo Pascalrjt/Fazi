@@ -16,7 +16,7 @@ import { splitExt } from "../../lib/format";
 import { renameValidationError } from "../../lib/actions";
 
 /** Matches the list row's flex layout; the grid overrides it. */
-export const LIST_RENAME_WRAPPER = "relative flex min-w-0 flex-1 items-center";
+const LIST_RENAME_WRAPPER = "relative flex min-w-0 flex-1 items-center";
 
 export function RenameInput({
   entry,

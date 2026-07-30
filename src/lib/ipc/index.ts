@@ -9,7 +9,6 @@ import {
   COMMANDS,
   EVENTS,
   type AppCandidate,
-  type ConflictPolicy,
   type DefaultFolders,
   type DirSizeEvent,
   type EmptyTrashEvent,
@@ -21,16 +20,18 @@ import {
   type GetInfoResult,
   type HydrateItem,
   type InterruptedOp,
+  type ListDirArgs,
   type ListEvent,
   type OpEvent,
   type PasteboardContents,
   type ConflictResponse,
+  type RespondConflictArgs,
+  type RunOpArgs,
   type SearchArgs,
   type SearchEvent,
   type ShareServices,
   type TextPreview,
   type TrashStats,
-  type UndoDescription,
   type UndoResult,
   type Volume,
   type WatchEvent,
@@ -47,7 +48,8 @@ export function listDir(
 ): Promise<void> {
   const channel = new Channel<ListEvent>();
   channel.onmessage = onEvent;
-  return invoke(COMMANDS.listDir, { path, listingId, channel });
+  const args: ListDirArgs = { path, listingId };
+  return invoke(COMMANDS.listDir, { ...args, channel });
 }
 
 export function cancelListing(listingId: string): Promise<void> {
@@ -92,14 +94,7 @@ export function unwatch(watchId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function runOp(
-  args: {
-    opId: string;
-    kind: "copy" | "move";
-    sources: string[];
-    destDir: string;
-    policy: ConflictPolicy;
-    verify?: boolean;
-  },
+  args: RunOpArgs,
   onEvent: (e: OpEvent) => void,
 ): Promise<void> {
   const channel = new Channel<OpEvent>();
@@ -117,7 +112,8 @@ export function respondConflict(
   response: ConflictResponse,
   applyToAll: boolean,
 ): Promise<void> {
-  return invoke(COMMANDS.respondConflict, { opId, conflictId, response, applyToAll });
+  const args: RespondConflictArgs = { opId, conflictId, response, applyToAll };
+  return invoke(COMMANDS.respondConflict, { ...args });
 }
 
 export function trashPaths(paths: string[]): Promise<void> {
@@ -192,14 +188,6 @@ export function redoLast(): Promise<UndoResult | null> {
   return invoke(COMMANDS.redoLast);
 }
 
-export function undoStackTop(): Promise<UndoDescription | null> {
-  return invoke(COMMANDS.undoStackTop);
-}
-
-export function redoStackTop(): Promise<UndoDescription | null> {
-  return invoke(COMMANDS.redoStackTop);
-}
-
 export function setShortcutRecording(recording: boolean): Promise<void> {
   return invoke(COMMANDS.setShortcutRecording, { recording });
 }
@@ -254,10 +242,6 @@ export function fuzzyCancel(queryId: string): Promise<void> {
   return invoke(COMMANDS.fuzzyCancel, { queryId });
 }
 
-export function fuzzyDrop(root: string): Promise<void> {
-  return invoke(COMMANDS.fuzzyDrop, { root });
-}
-
 // ---------------------------------------------------------------------------
 // macOS integration
 // ---------------------------------------------------------------------------
@@ -300,10 +284,6 @@ export function sharePicker(paths: string[], x: number, y: number): Promise<void
 
 export function revealInFinder(paths: string[]): Promise<void> {
   return invoke(COMMANDS.revealInFinder, { paths });
-}
-
-export function getTags(path: string): Promise<FinderTag[]> {
-  return invoke(COMMANDS.getTags, { path });
 }
 
 export function setTags(path: string, tags: FinderTag[]): Promise<void> {

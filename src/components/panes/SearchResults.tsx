@@ -3,7 +3,7 @@
  * Streamed mdfind rows: icon, name, path subtitle. Enter opens, ⌘R reveals
  * in enclosing folder, Esc returns to browse.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { iconUrl } from "../../types/ipc";
@@ -28,7 +28,12 @@ export function SearchResults() {
   const scope = useApp((s) => s.globalSearch.scope);
   const home = useVolumes((s) => s.folders?.home ?? null);
   const zebra = useSettings((s) => s.zebraStripes);
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelectedState] = useState(0);
+  const selectedRef = useRef(0);
+  const setSelected = useCallback((i: number) => {
+    selectedRef.current = i;
+    setSelectedState(i);
+  }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -40,7 +45,7 @@ export function SearchResults() {
 
   useEffect(() => {
     setSelected(0);
-  }, [query]);
+  }, [query, setSelected]);
 
   useEffect(() => {
     if (selected >= 0 && selected < hits.length) {
@@ -72,26 +77,20 @@ export function SearchResults() {
       if (e.key === "ArrowDown") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => Math.min(cur.length - 1, i + 1));
+        setSelected(Math.min(cur.length - 1, selectedRef.current + 1));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => Math.max(0, i - 1));
+        setSelected(Math.max(0, selectedRef.current - 1));
       } else if (e.key === "Enter" && !e.metaKey) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => {
-          openHit(cur[i]);
-          return i;
-        });
+        openHit(cur[selectedRef.current]);
       } else if (e.code === "KeyR" && e.metaKey && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setSelected((i) => {
-          const hit = cur[i];
-          if (hit) revealInFazi(hit.path);
-          return i;
-        });
+        const hit = cur[selectedRef.current];
+        if (hit) revealInFazi(hit.path);
       }
     };
     window.addEventListener("keydown", onKey, true);

@@ -19,7 +19,7 @@ import {
   pruneSelection,
   type SelectionState,
 } from "../lib/selection";
-import { basename, dirname, joinPath, pluralize } from "../lib/format";
+import { basename, dirname, joinPath } from "../lib/format";
 import { useSettings } from "./settings";
 import { useApp, type PaneId } from "./app";
 
@@ -985,9 +985,4 @@ export function selectedEntries(): Entry[] {
 
 export function selectedPaths(): string[] {
   return selectedEntries().map((e) => e.path);
-}
-
-export function selectionLabel(): string {
-  const n = selectedEntries().length;
-  return pluralize(n, "item");
 }

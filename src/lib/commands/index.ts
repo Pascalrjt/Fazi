@@ -16,6 +16,7 @@ import type { KeybindingOverrides } from "../../stores/settings";
 import {
   arrowMove,
   clickSelect,
+  emptySelection,
   shiftArrowExtend,
   shiftRange,
 } from "../selection";
@@ -45,10 +46,9 @@ function moveLead(delta: 1 | -1, extend: boolean, stride = 1): void {
   if (!at) return;
   const { pane, tab } = at;
   const order = visibleEntries(tab).map((e) => e.id);
-  let next = tab.selection;
-  for (let i = 0; i < stride; i++) {
-    next = extend ? shiftArrowExtend(next, order, delta) : arrowMove(next, order, delta);
-  }
+  const next = extend
+    ? shiftArrowExtend(tab.selection, order, delta, stride)
+    : arrowMove(tab.selection, order, delta, stride);
   usePanes.getState().setSelection(pane.id, tab.id, next);
 }
 
@@ -96,7 +96,7 @@ export function collapseSelectionToLead(): void {
 }
 
 function hasSelection(): boolean {
-  return selectedEntries().length > 0;
+  return (activePaneTab()?.tab.selection.selected.size ?? 0) > 0;
 }
 
 /**
@@ -334,7 +334,7 @@ function buildCommandSpecs(): CommandSpec[] {
       title: "Rename Multiple Items…",
       keywords: "batch rename regex numbering",
       shortcut: "cmd+shift+r",
-      enabled: () => selectedEntries().length > 1,
+      enabled: () => (activePaneTab()?.tab.selection.selected.size ?? 0) > 1,
       run: () => useApp.getState().setBatchRenameOpen(true),
     },
     {
@@ -508,11 +508,7 @@ function buildCommandSpecs(): CommandSpec[] {
           panes.setFilter(at.pane.id, at.tab.id, "");
           return;
         }
-        panes.setSelection(at.pane.id, at.tab.id, {
-          selected: new Set(),
-          anchor: null,
-          lead: null,
-        });
+        panes.setSelection(at.pane.id, at.tab.id, emptySelection());
       },
     },
 

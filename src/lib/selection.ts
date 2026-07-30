@@ -22,6 +22,10 @@ function indexOf(order: readonly number[], id: number | null): number {
   return id == null ? -1 : order.indexOf(id);
 }
 
+function clampIndex(idx: number, len: number): number {
+  return Math.min(len - 1, Math.max(0, idx));
+}
+
 /** Plain click: replace selection with the clicked row. */
 export function clickSelect(id: number): SelectionState {
   return { selected: new Set([id]), anchor: id, lead: id };
@@ -61,36 +65,46 @@ export function shiftRange(
 }
 
 /**
- * Arrow up/down: move the lead by `dir` (±1) and select just that row.
- * With no selection, arrow selects first (down) / last (up) row.
+ * Arrow up/down: move the lead by `dir` (±1), `stride` steps at a time, and
+ * select just the landing row. With no selection, the first step selects the
+ * first (down) / last (up) row; remaining steps move from there, clamped.
  */
 export function arrowMove(
   state: SelectionState,
   order: readonly number[],
   dir: 1 | -1,
+  stride = 1,
 ): SelectionState {
+  if (stride < 1) return state;
   if (order.length === 0) return emptySelection();
   const leadIdx = indexOf(order, state.lead);
-  let next: number;
-  if (leadIdx === -1) {
-    next = dir === 1 ? 0 : order.length - 1;
-  } else {
-    next = Math.min(order.length - 1, Math.max(0, leadIdx + dir));
-  }
-  return clickSelect(order[next]);
+  const start =
+    leadIdx === -1 ? (dir === 1 ? 0 : order.length - 1) : clampIndex(leadIdx + dir, order.length);
+  return clickSelect(order[clampIndex(start + dir * (stride - 1), order.length)]);
 }
 
-/** Shift+arrow: extend/shrink the anchor range by moving the lead. */
+/**
+ * Shift+arrow: extend/shrink the anchor range by moving the lead `stride`
+ * steps. Without a usable anchor the first step establishes one (mirroring
+ * a lone shift+arrow), then the rest extend from it.
+ */
 export function shiftArrowExtend(
   state: SelectionState,
   order: readonly number[],
   dir: 1 | -1,
+  stride = 1,
 ): SelectionState {
+  if (stride < 1) return state;
   if (order.length === 0) return emptySelection();
   const leadIdx = indexOf(order, state.lead);
-  if (leadIdx === -1 || state.anchor == null) return arrowMove(state, order, dir);
-  const nextIdx = Math.min(order.length - 1, Math.max(0, leadIdx + dir));
-  return shiftRange(state, order, order[nextIdx]);
+  if (leadIdx === -1 || state.anchor == null || indexOf(order, state.anchor) === -1) {
+    const first =
+      leadIdx === -1 || state.anchor == null
+        ? arrowMove(state, order, dir)
+        : clickSelect(order[clampIndex(leadIdx + dir, order.length)]);
+    return stride === 1 ? first : shiftArrowExtend(first, order, dir, stride - 1);
+  }
+  return shiftRange(state, order, order[clampIndex(leadIdx + dir * stride, order.length)]);
 }
 
 export function selectAll(order: readonly number[]): SelectionState {
@@ -100,10 +114,6 @@ export function selectAll(order: readonly number[]): SelectionState {
     anchor: order[0],
     lead: order[order.length - 1],
   };
-}
-
-export function clearSelection(): SelectionState {
-  return emptySelection();
 }
 
 /** Drop ids that no longer exist in the listing (watcher removals, filters do NOT prune). */

@@ -1,7 +1,6 @@
 //! In-memory user-facing undo — a separate mechanism from the crash journal.
 //! Inverse ops, capped at 50, invalidated by existence/mtime checks.
 
-use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -390,7 +389,7 @@ fn move_back(from: &Path, to: &Path) -> io::Result<()> {
             // deleting a source whose bytes never landed.
             let mut sink = SilentSink;
             walker::copy_fresh(from, to, &mut sink)?;
-            let report = walker::verify_tree(from, to, &HashSet::new(), 5_000)?;
+            let report = walker::verify_tree(from, to, 5_000)?;
             if !report.mismatches.is_empty() {
                 walker::remove_tree_best_effort(to);
                 return Err(io::Error::new(

@@ -9,7 +9,7 @@ import { basename, dirname, pluralize, splitExt } from "./format";
 import { nameRuleError } from "./batchRename";
 import { isExtractableArchive } from "./fileTypes";
 import { useApp, toast, type PaneId } from "../stores/app";
-import { clickSelect } from "./selection";
+import { clickSelect, selectAll } from "./selection";
 import { useSettings } from "../stores/settings";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
 import { useOps } from "../stores/ops";
@@ -609,11 +609,7 @@ export function selectAllVisible(): void {
   if (!at) return;
   const { pane, tab } = at;
   const order = visibleEntries(tab).map((e) => e.id);
-  usePanes.getState().setSelection(pane.id, tab.id, {
-    selected: new Set(order),
-    anchor: order[0] ?? null,
-    lead: order[order.length - 1] ?? null,
-  });
+  usePanes.getState().setSelection(pane.id, tab.id, selectAll(order));
 }
 
 export { splitExt };

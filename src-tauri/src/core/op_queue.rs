@@ -6,7 +6,7 @@
 //! immediately, total-size enumeration runs concurrently and the progress
 //! denominator arrives when it lands.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -846,7 +846,7 @@ fn transfer_toplevel(
         // *it* verifies; a crash mid-move never loses data. A dataless
         // descendant surfaced as an item error above is missing from the
         // stage, so verification fails and the source is preserved.
-        let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
+        let report = walker::verify_tree(source, &stage, tol_ms)?;
         if !report.mismatches.is_empty() {
             walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);
@@ -963,7 +963,7 @@ fn replace_item(
         return Ok(false);
     }
     if args.kind == OpKind::Move {
-        let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
+        let report = walker::verify_tree(source, &stage, tol_ms)?;
         if !report.mismatches.is_empty() {
             walker::remove_tree_best_effort(&stage);
             pop_staging(journal_entry, &stage);

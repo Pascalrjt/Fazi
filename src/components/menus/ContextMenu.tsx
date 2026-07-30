@@ -17,7 +17,6 @@ interface MenuListProps {
   items: MenuItem[];
   x: number;
   y: number;
-  depth: number;
   onClose: () => void;
   onBack?: () => void;
 }
@@ -30,7 +29,7 @@ function firstSelectable(items: MenuItem[]): number {
   return items.findIndex((item) => item.type === "item" && !item.disabled);
 }
 
-function MenuList({ items, x, y, depth, onClose, onBack }: MenuListProps) {
+function MenuList({ items, x, y, onClose, onBack }: MenuListProps) {
   const ref = useRef<HTMLDivElement>(null);
   const menuId = useId().replace(/:/g, "");
   const [active, setActive] = useState(() => firstSelectable(items));
@@ -276,7 +275,6 @@ function MenuList({ items, x, y, depth, onClose, onBack }: MenuListProps) {
           }
           x={submenu.x}
           y={submenu.y}
-          depth={depth + 1}
           onClose={onClose}
           onBack={closeSubmenu}
         />
@@ -317,7 +315,7 @@ export function ContextMenuHost() {
   if (!open) return null;
   return (
     <div onMouseDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
-      <MenuList items={open.items} x={open.x} y={open.y} depth={0} onClose={close} />
+      <MenuList items={open.items} x={open.x} y={open.y} onClose={close} />
     </div>
   );
 }
