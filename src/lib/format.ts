@@ -102,6 +102,46 @@ export function pathSegments(path: string): { name: string; path: string }[] {
   return segs;
 }
 
+/** VS Code-style tab disambiguation: for each path, null when its basename is
+ *  unique among `paths`; otherwise the shortest ancestor suffix ("parent" or
+ *  "grandparent/parent") that tells the colliding tabs apart. Tabs on the
+ *  exact same directory fall back to their shared parent name. */
+export function tabHints(paths: string[]): (string | null)[] {
+  const hints: (string | null)[] = paths.map(() => null);
+  const groups = new Map<string, number[]>();
+  paths.forEach((p, i) => {
+    const key = basename(p);
+    const group = groups.get(key);
+    if (group) group.push(i);
+    else groups.set(key, [i]);
+  });
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue;
+    // ancestor segments nearest-first: "/a/b/Week 5" → ["b", "a"]
+    const ancestors = idxs.map((i) =>
+      paths[i].split("/").filter(Boolean).slice(0, -1).reverse(),
+    );
+    const maxDepth = Math.max(...ancestors.map((a) => a.length));
+    idxs.forEach((tabIdx, k) => {
+      let suffix: string[] | null = null;
+      for (let depth = 1; depth <= ancestors[k].length; depth++) {
+        const mine = ancestors[k].slice(0, depth).join("/");
+        const unique = ancestors.every(
+          (other, j) => j === k || other.slice(0, depth).join("/") !== mine,
+        );
+        if (unique) {
+          suffix = ancestors[k].slice(0, depth);
+          break;
+        }
+      }
+      // duplicates of the same directory: show the shared parent
+      if (!suffix && maxDepth > 0) suffix = ancestors[k].slice(0, 1);
+      if (suffix?.length) hints[tabIdx] = suffix.reverse().join("/");
+    });
+  }
+  return hints;
+}
+
 export function pluralize(n: number, singular: string, plural?: string): string {
   return n === 1 ? `1 ${singular}` : `${n} ${plural ?? `${singular}s`}`;
 }
