@@ -147,15 +147,28 @@ function pasteClipboardAsFile(destDir: string): void {
     .catch((err) => toast(`Paste failed: ${err}`, { danger: true }));
 }
 
-export function copyPathnames(): void {
+/** Copy one line per selected entry (or the current folder when nothing is
+ *  selected) to the pasteboard. */
+function copySelectionText(pick: (path: string) => string, noun: string): void {
   const entries = selectedEntries();
   const at = activePaneTab();
   const paths = entries.length > 0 ? entries.map((e) => e.path) : at ? [at.tab.path] : [];
   if (paths.length === 0) return;
   ipc
-    .pbWriteText(paths.join("\n"))
-    .then(() => toast(paths.length === 1 ? "Pathname copied" : `${paths.length} pathnames copied`))
-    .catch((err) => toast(`Couldn't copy pathname: ${err}`, { danger: true }));
+    .pbWriteText(paths.map(pick).join("\n"))
+    .then(() =>
+      toast(paths.length === 1 ? `${noun[0].toUpperCase()}${noun.slice(1)} copied` : `${paths.length} ${noun}s copied`),
+    )
+    .catch((err) => toast(`Couldn't copy ${noun}: ${err}`, { danger: true }));
+}
+
+export function copyPathnames(): void {
+  copySelectionText((p) => p, "pathname");
+}
+
+/** Copy the selected entries' file names (one per line, extensions kept). */
+export function copyNames(): void {
+  copySelectionText((p) => basename(p) || "/", "name");
 }
 
 // ---------------------------------------------------------------------------

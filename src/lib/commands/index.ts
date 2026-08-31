@@ -394,6 +394,12 @@ function buildCommandSpecs(): CommandSpec[] {
       run: () => actions.pasteIntoActive(true),
     },
     {
+      id: "copyName",
+      title: "Copy Name",
+      keywords: "filename clipboard",
+      run: () => actions.copyNames(),
+    },
+    {
       id: "copyPathname",
       title: "Copy as Pathname",
       keywords: "path clipboard",
