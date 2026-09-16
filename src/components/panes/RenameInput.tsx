@@ -7,6 +7,7 @@
  * guard, the stem preselect — is layout-agnostic.
  */
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import clsx from "clsx";
 import type { Entry } from "../../types/ipc";
 import * as ipc from "../../lib/ipc";
@@ -42,6 +43,41 @@ export function RenameInput({
     ),
   );
   const error = renameValidationError(value.trim(), siblings, entry.name);
+  const showError = error != null && value !== entry.name;
+
+  // The bubble is portaled to <body> and fixed-positioned from the input's
+  // rect: virtualized rows are transformed (each a stacking context), so an
+  // in-row absolute bubble gets painted over by later rows and clipped by the
+  // pane's overflow. Near the viewport bottom it flips above the input.
+  const [errorPos, setErrorPos] = useState<{
+    left: number;
+    top: number;
+    above: boolean;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!showError) {
+      setErrorPos(null);
+      return;
+    }
+    const update = () => {
+      const rect = inputRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const above = rect.bottom + 32 > window.innerHeight;
+      setErrorPos({
+        left: rect.left,
+        top: above ? rect.top - 4 : rect.bottom + 4,
+        above,
+      });
+    };
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [showError]);
 
   useLayoutEffect(() => {
     const input = inputRef.current;
@@ -99,11 +135,21 @@ export function RenameInput({
         }}
         onBlur={() => commit(false)}
       />
-      {error && value !== entry.name && (
-        <span className="absolute left-0 top-full z-40 mt-1 whitespace-nowrap rounded border border-edge bg-raised px-2 py-0.5 text-[11px] text-danger shadow-lg">
-          {error}
-        </span>
-      )}
+      {showError &&
+        errorPos &&
+        createPortal(
+          <span
+            className="pointer-events-none fixed z-[90] whitespace-nowrap rounded border border-edge bg-raised px-2 py-0.5 text-[11px] text-danger shadow-lg"
+            style={{
+              left: errorPos.left,
+              top: errorPos.top,
+              transform: errorPos.above ? "translateY(-100%)" : undefined,
+            }}
+          >
+            {error}
+          </span>,
+          document.body,
+        )}
     </span>
   );
 }

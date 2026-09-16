@@ -145,6 +145,11 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
   items.push({ type: "item", label: "Tags", submenu: tagsSubmenu(targets) });
   items.push({
     type: "item",
+    label: targets.length > 1 ? "Copy Names" : "Copy Name",
+    action: () => actions.copyNames(),
+  });
+  items.push({
+    type: "item",
     label: "Copy as Pathname",
     shortcut: "cmd+opt+c",
     action: () => actions.copyPathnames(),

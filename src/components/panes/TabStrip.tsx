@@ -6,7 +6,7 @@ import { Plus, X } from "lucide-react";
 import { usePanes, type Pane } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
 import { useSettings } from "../../stores/settings";
-import { basename } from "../../lib/format";
+import { basename, tabHints } from "../../lib/format";
 import { showMenu } from "../../stores/menu";
 
 export function TabStrip({ pane }: { pane: Pane }) {
@@ -16,6 +16,7 @@ export function TabStrip({ pane }: { pane: Pane }) {
   const closeTab = usePanes((s) => s.closeTab);
   const openTab = usePanes((s) => s.openTab);
   const activeIdx = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
+  const hints = tabHints(pane.tabs.map((t) => t.path));
 
   return (
     <div
@@ -75,6 +76,9 @@ export function TabStrip({ pane }: { pane: Pane }) {
             <span className="w-4 shrink-0" aria-hidden />
             <span className="min-w-0 flex-1 truncate text-center">
               {basename(tab.path) || "/"}
+              {hints[i] && (
+                <span className="text-tertiary"> · {hints[i]}</span>
+              )}
             </span>
             <button
               className={clsx(

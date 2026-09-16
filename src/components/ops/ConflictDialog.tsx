@@ -74,21 +74,26 @@ function DialogBody({ conflict }: { conflict: PendingConflict }) {
         </label>
       )}
 
-      <div className="mt-5 flex items-center justify-end gap-2">
+      {/* The "not undoable" caption is absolutely positioned so it can't grow
+          the Replace wrapper and knock the buttons out of line; mb-3 reserves
+          room for it below the row. */}
+      <div className="mb-3 mt-5 flex items-center justify-end gap-2">
         <button
           className="cursor-default rounded-md border border-edge px-3 py-1.5 text-xs text-secondary hover:bg-hov"
           onClick={() => answer("skip")}
         >
           Skip
         </button>
-        <div className="flex flex-col items-center">
+        <div className="relative">
           <button
             className="cursor-default rounded-md border border-edge px-3 py-1.5 text-xs text-primary hover:bg-hov"
             onClick={() => answer("replace")}
           >
             Replace
           </button>
-          <span className="mt-0.5 text-[10px] text-danger">not undoable</span>
+          <span className="pointer-events-none absolute left-1/2 top-full mt-0.5 -translate-x-1/2 whitespace-nowrap text-[10px] text-danger">
+            not undoable
+          </span>
         </div>
         {isDirDir ? (
           <button
