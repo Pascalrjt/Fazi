@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: read
+
+# Preserve each merge while allocating versions one at a time.
+concurrency:
+  group: fazi-releases
+  queue: max
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: Test
+        run: |
+          node --test scripts/release-version.test.mjs
+          npm test
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Prepare release version
+        id: version
+        run: node scripts/release-version.mjs
+
+      # Reserve the version so a failed build can reuse it on a rerun.
+      - name: Reserve release tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            git tag "$RELEASE_TAG"
+          fi
+          git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Build and upload
+        id: build
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: '-'
+        with:
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: Fazi ${{ steps.version.outputs.tag }}
+          releaseCommitish: ${{ github.event.pull_request.merge_commit_sha }}
+          releaseDraft: true
+          prerelease: false
+          generateReleaseNotes: true
+          uploadUpdaterJson: false
+          args: --target aarch64-apple-darwin --locked
+          releaseBody: |
+            Download the Apple Silicon DMG below. Requires macOS 14 or later.
+
+            This build is ad-hoc signed and has not been notarized by Apple.
+            See the README for installation instructions.
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

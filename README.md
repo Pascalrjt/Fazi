@@ -82,6 +82,30 @@ npm run tauri build    # release build (DMG)
 
 Grant your terminal Full Disk Access during development. TCC binds to the signing identity, so the permission follows whatever launches the dev build.
 
+## Automated releases
+
+Each PR merged into `main` runs the [release workflow](.github/workflows/release.yml):
+frontend and Rust tests, an Apple Silicon build, and automatic GitHub Release
+publication with a DMG and generated release notes. The workflow uses GitHub's
+provided token with `contents: write`; no personal access token is needed.
+
+Versions advance one patch beyond the highest `vMAJOR.MINOR.PATCH` tag or the
+checked-in app version, whichever is greater. With the existing `v0.7.0` tag,
+the first merge produces `v0.7.1`. The workflow updates the app manifests and
+lockfiles in its build workspace. Tags point to the exact merged source commit;
+the version changes are applied during the build and are not committed to `main`.
+For a minor or major release series, update the checked-in version in a PR;
+the automatic release increments its patch (for example, `0.8.0` → `0.8.1`).
+
+Release runs queue while another release is running (up to GitHub's 100 pending
+run limit). A tag is reserved before packaging; rerunning a failed workflow
+reuses that version. A packaging failure may leave a reserved tag or draft.
+Publication happens after the assets have uploaded successfully. To retry,
+use **Actions → Release → the failed run → Re-run failed jobs**.
+
+Builds use ad-hoc signing and require macOS 14 or later. Apple certificate signing
+and notarization still need separate credentials and configuration.
+
 ## Docs
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md): process split, IPC contract, ops engine design, webview threat model
