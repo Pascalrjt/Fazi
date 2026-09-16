@@ -74,6 +74,13 @@ pub fn run() {
                 std::thread::spawn(move || macos::thumbnails::prune_cache(&dir));
             }
 
+            let cleanup = Arc::new(Mutex::new(core::downloads_cleanup::Cleanup::load(
+                PathBuf::from(std::env::var("HOME")?).join("Downloads"),
+                data_dir.join("downloads-cleanup.json"),
+            )));
+            core::downloads_cleanup::start_worker(cleanup.clone(), engine.clone());
+            app.manage(commands::downloads_cleanup::CleanupState(cleanup));
+
             app.manage(AppState {
                 tokens,
                 previews: DashMap::new(),
@@ -153,6 +160,12 @@ pub fn run() {
             });
         })
         .invoke_handler(tauri::generate_handler![
+            commands::downloads_cleanup::downloads_cleanup_status,
+            commands::downloads_cleanup::downloads_cleanup_preview,
+            commands::downloads_cleanup::downloads_cleanup_apply,
+            commands::downloads_cleanup::downloads_cleanup_disable,
+            commands::downloads_cleanup::downloads_cleanup_item,
+            commands::downloads_cleanup::downloads_cleanup_restore,
             commands::listing::list_dir,
             commands::listing::cancel_listing,
             commands::listing::stat_path,

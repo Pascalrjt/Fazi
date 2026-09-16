@@ -1,4 +1,5 @@
 /** Context-menu builders for file rows and pane empty areas. */
+import { useDownloadsCleanup } from "../../stores/downloadsCleanup";
 import type { Entry } from "../../types/ipc";
 import { lastMenuAnchor, type MenuItem } from "../../stores/menu";
 import * as actions from "../../lib/actions";
@@ -128,6 +129,19 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
     danger: true,
     action: () => actions.trashSelection(),
   });
+  const cleanup = useDownloadsCleanup.getState();
+  const cleanupTargets = targets.map((t) => cleanup.items[t.path]);
+  if (cleanup.snapshot?.config.enabled && cleanupTargets.every(Boolean)) {
+    items.push({ type: "separator" });
+    const allKept = cleanupTargets.every((t) => t.keep);
+    const act = (action: "keep" | "resume" | "extend") => {
+      void (async () => {
+        for (const item of cleanupTargets) await useDownloadsCleanup.getState().itemAction(item, action);
+      })().catch((e) => toast(`Cleanup update failed: ${e}`, { danger: true }));
+    };
+    items.push({ type: "item", label: allKept ? "Resume Downloads cleanup" : "Keep in Downloads", action: () => act(allKept ? "resume" : "keep") });
+    items.push({ type: "item", label: "Extend retention by 7 days", action: () => act("extend") });
+  }
   items.push({ type: "separator" });
   if (useSettings.getState().nativeSharePicker) {
     items.push({

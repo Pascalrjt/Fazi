@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import {
   ArrowRightLeft,
+  Download,
   Check,
   Keyboard,
   Palette,
@@ -18,11 +19,13 @@ import {
 import { useApp } from "../../stores/app";
 import { useSettings, type Density, type SidebarPosition, type Theme } from "../../stores/settings";
 import { NumberField, Segmented, SettingRow, SettingsFilterContext, Toggle } from "./controls";
+import { DownloadsPane } from "./DownloadsPane";
 import { KeyboardPane } from "./KeyboardPane";
 import type { SortDir, SortKey } from "../../lib/sort";
 import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
 
 type PaneId =
+  | "downloads"
   | "general"
   | "appearance"
   | "keyboard"
@@ -37,6 +40,7 @@ const PANES: Array<[PaneId, string, LucideIcon]> = [
   ["keyboard", "Keyboard", Keyboard],
   ["search", "Search", Search],
   ["operations", "Operations", ArrowRightLeft],
+  ["downloads", "Downloads", Download],
   ["sidebar", "Sidebar", PanelLeft],
   ["advanced", "Advanced", Wrench],
 ];
@@ -312,7 +316,7 @@ function AdvancedPane() {
       </SettingRow>
       <SettingRow
         label="Reset to defaults"
-        hint="Restores every setting above. Pinned folders and column widths are kept."
+        hint="Restores general app settings. Downloads cleanup, pinned folders, and column widths are kept."
       >
         <button
           className="cursor-default rounded border border-edge px-2.5 py-1 text-[12px] text-danger hover:bg-hov"
@@ -365,6 +369,7 @@ function SearchResults({ openPane }: { openPane: (pane: PaneId) => void }) {
       </SearchSection>
       <SearchSection label="Search"><SearchPane /></SearchSection>
       <SearchSection label="Operations"><OperationsPane /></SearchSection>
+      <SearchSection label="Downloads"><DownloadsPane /></SearchSection>
       <SearchSection label="Sidebar"><SidebarPane /></SearchSection>
       <SearchSection label="Advanced"><AdvancedPane /></SearchSection>
       <div className="settings-empty pt-6 text-center text-[12px] text-tertiary">
@@ -469,6 +474,7 @@ export function SettingsOverlay() {
                 {pane === "keyboard" && <KeyboardPane />}
                 {pane === "search" && <SearchPane />}
                 {pane === "operations" && <OperationsPane />}
+                {pane === "downloads" && <DownloadsPane />}
                 {pane === "sidebar" && <SidebarPane />}
                 {pane === "advanced" && <AdvancedPane />}
               </div>

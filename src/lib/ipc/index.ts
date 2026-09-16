@@ -403,3 +403,11 @@ export function onWindowFocused(cb: () => void): Promise<UnlistenFn> {
 export function onMenuCommand(cb: (commandId: string) => void): Promise<UnlistenFn> {
   return listen<string>(EVENTS.menuCommand, (e) => cb(e.payload));
 }
+
+// Downloads retention uses one authoritative, persisted backend policy.
+export const downloadsCleanupStatus = () => invoke<import("../downloadsCleanup").CleanupSnapshot>("downloads_cleanup_status");
+export const downloadsCleanupPreview = (config: import("../downloadsCleanup").CleanupConfig) => invoke<import("../downloadsCleanup").CleanupPreview>("downloads_cleanup_preview", { config });
+export const downloadsCleanupApply = (token: string) => invoke<import("../downloadsCleanup").CleanupSnapshot>("downloads_cleanup_apply", { token });
+export const downloadsCleanupDisable = () => invoke<import("../downloadsCleanup").CleanupSnapshot>("downloads_cleanup_disable");
+export const downloadsCleanupItem = (path: string, identity: string, action: "keep" | "resume" | "extend", days = 7) => invoke<import("../downloadsCleanup").CleanupSnapshot>("downloads_cleanup_item", { path, identity, action, days });
+export const downloadsCleanupRestore = (id: string) => invoke<import("../downloadsCleanup").CleanupSnapshot>("downloads_cleanup_restore", { id });

@@ -13,7 +13,9 @@ import * as ipc from "../lib/ipc";
 import { dropHydrator, initHydrator } from "../lib/hydration";
 import { useDirSizes } from "./dirSizes";
 import { safeIpc } from "../lib/safeIpc";
-import { sortEntries, type SortDir, type SortKey, type SortSpec } from "../lib/sort";
+import { useDownloadsCleanup } from "./downloadsCleanup";
+import { sortEntries as sortBase, type SortDir, type SortKey, type SortSpec } from "../lib/sort";
+
 import {
   emptySelection,
   pruneSelection,
@@ -22,6 +24,10 @@ import {
 import { basename, dirname, joinPath, pluralize } from "../lib/format";
 import { useSettings } from "./settings";
 import { useApp, type PaneId } from "./app";
+
+function sortEntries(entries: readonly Entry[], spec: SortSpec): Entry[] {
+  return sortBase(entries, spec, true, useDownloadsCleanup.getState().items);
+}
 
 enableMapSet();
 
@@ -958,13 +964,14 @@ export const usePanes = create<PanesState>()(
 // ---------------------------------------------------------------------------
 
 /** The rows a tab actually displays: hidden filtered, name-filter applied, display order. */
-export function visibleEntries(tab: Pick<Tab, "entries" | "filter" | "showHidden">): Entry[] {
+export function visibleEntries(tab: Pick<Tab, "entries" | "filter" | "showHidden"> & { sort?: SortSpec }): Entry[] {
   const q = tab.filter.trim().toLowerCase();
-  return tab.entries.filter((e) => {
+  const filtered = tab.entries.filter((e) => {
     if (!tab.showHidden && e.hidden) return false;
     if (q !== "" && !e.name.toLowerCase().includes(q)) return false;
     return true;
   });
+  return tab.sort?.key === "cleanup" ? sortEntries(filtered, tab.sort) : filtered;
 }
 
 export function activePaneTab(): { pane: Pane; tab: Tab } | null {

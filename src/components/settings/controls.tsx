@@ -34,7 +34,9 @@ export function Toggle({
   checked,
   onChange,
   disabled,
+  label,
 }: {
+  label?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
@@ -42,6 +44,7 @@ export function Toggle({
   return (
     <button
       role="switch"
+      aria-label={label}
       aria-checked={checked}
       disabled={disabled}
       className={clsx(

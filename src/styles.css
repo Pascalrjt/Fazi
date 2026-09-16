@@ -25,6 +25,7 @@
   --border: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.16);
   --danger: #e5534b;
+  --warning: #e5b45a;
   --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
 
   color-scheme: dark;
@@ -50,6 +51,7 @@
     --border: rgba(0, 0, 0, 0.1);
     --border-strong: rgba(0, 0, 0, 0.18);
     --danger: #d0342c;
+    --warning: #8b5700;
     --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
 
     color-scheme: light;
@@ -75,6 +77,7 @@
     --border: rgba(0, 0, 0, 0.1);
     --border-strong: rgba(0, 0, 0, 0.18);
     --danger: #d0342c;
+    --warning: #8b5700;
     --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
 
     color-scheme: light;
@@ -98,6 +101,7 @@
   --border: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.16);
   --danger: #e5534b;
+  --warning: #e5b45a;
   --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
 
   color-scheme: dark;
@@ -396,3 +400,5 @@ textarea {
 .settings-body:has(.settings-row) .settings-empty {
   display: none;
 }
+
+.text-warning { color: var(--warning); }

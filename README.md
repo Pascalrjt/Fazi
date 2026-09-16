@@ -60,6 +60,12 @@ Streamed `mdfind` by filename or contents, with `kind:`, `date:`, and `size:` pr
 
 A 100k-entry folder paints in under 50 ms. Listings stream in two stages and hydrate from the viewport outward, so scrolling stays smooth no matter the size.
 
+### Downloads cleanup
+
+Settings → Downloads offers opt-in automatic cleanup of `~/Downloads`, with a 30-day default and a custom retention period. Files age from the later of Date Added and Date Modified; when Date Added is unavailable, Fazi remembers when it first observed the file. The sortable Cleanup column and icon badges show time remaining, with amber warnings during the final 20% of retention (capped at seven days).
+
+Keep individual files, extend their retention by seven days, and review affected files before applying policy changes. Cleanup moves regular top-level files to the system Trash, records history, and supports Restore and keep. Checks run daily while Fazi is running, with a catch-up after launch; policy changes provide a one-day grace period. Folders, links, incomplete downloads, cloud-only files, and files in use are skipped. See [Downloads cleanup](docs/DOWNLOADS_CLEANUP.md) for behavior and verification details.
+
 ### And the rest
 
 Tabs and dual pane, spacebar previews through Quick Look's renderer (PDFs included), Finder tags, Open With plus per-type defaults, drag and drop in both directions, pasteboard interop with other apps, batch rename with live preview, zip and tar archives, paste clipboard images or text as files, Trash with Empty Trash, live updates from FSEvents.

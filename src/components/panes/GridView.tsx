@@ -1,4 +1,6 @@
 /** Icon grid view: thumbnails, same selection model, virtualized by row. */
+import { useDownloadsCleanup } from "../../stores/downloadsCleanup";
+import { CleanupIndicator } from "../downloads/CleanupIndicator";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -108,7 +110,7 @@ const GridCell = memo(function GridCell({
         startPointerDrag(paths);
       }}
     >
-      <div className={clsx("rounded-md p-1", selected && "bg-accent-dim")}>
+      <div className={clsx("relative rounded-md p-1", selected && "bg-accent-dim")}>
         <img
           src={thumbUrl(entry.icon, 128)}
           alt=""
@@ -116,6 +118,7 @@ const GridCell = memo(function GridCell({
           draggable={false}
           loading="lazy"
         />
+        <div className="absolute -bottom-1 left-1/2 flex w-[104px] -translate-x-1/2 justify-center"><CleanupIndicator path={entry.path} compact /></div>
       </div>
       {isRenaming ? (
         // Replaces the label rather than nesting inside it: that span is
@@ -150,13 +153,14 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(4);
+  const cleanupSnapshot = useDownloadsCleanup((s) => s.snapshot);
 
   const visible = useMemo(
     () =>
       tab
-        ? visibleEntries({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden })
+        ? visibleEntries({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden, sort: tab.sort })
         : [],
-    [tab?.entries, tab?.filter, tab?.showHidden], // eslint-disable-line react-hooks/exhaustive-deps
+    [tab?.entries, tab?.filter, tab?.showHidden, tab?.sort, cleanupSnapshot], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // measure columns for keyboard navigation

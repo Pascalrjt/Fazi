@@ -3,6 +3,8 @@
  * full multi-select (click/cmd/shift/marquee), inline rename, drag & drop,
  * context menus, ghost rows, badges, shimmer placeholders.
  */
+import { useDownloadsCleanup } from "../../stores/downloadsCleanup";
+import { CleanupIndicator } from "../downloads/CleanupIndicator";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Lock } from "lucide-react";
@@ -86,6 +88,7 @@ interface RowProps {
   paneId: PaneId;
   tabId: string;
   cols: ColWidths;
+  cleanup: boolean;
   onMouseDown: (e: React.MouseEvent, entry: Entry) => void;
   onDoubleClick: (entry: Entry) => void;
   onContextMenu: (e: React.MouseEvent, entry: Entry) => void;
@@ -111,6 +114,7 @@ const FileRow = memo(function FileRow({
   paneId,
   tabId,
   cols,
+  cleanup,
   onMouseDown,
   onDoubleClick,
   onContextMenu,
@@ -231,6 +235,7 @@ const FileRow = memo(function FileRow({
       <span className="tnum shrink-0 truncate text-xs text-secondary" style={{ width: cols.mtime }}>
         {entry.hydrated ? formatDate(entry.mtime) : <span className="shimmer" />}
       </span>
+      {cleanup && <span className="w-[126px] shrink-0 truncate"><CleanupIndicator path={entry.path} /></span>}
       <span className="flex shrink-0 items-center gap-1" style={{ width: cols.tags }}>
         {entry.tags.slice(0, 5).map((t) => (
           <span
@@ -245,7 +250,7 @@ const FileRow = memo(function FileRow({
   );
 });
 
-function GhostRow({ ghost, cols }: { ghost: GhostEntry; cols: ColWidths }) {
+function GhostRow({ ghost, cols, cleanup }: { ghost: GhostEntry; cols: ColWidths; cleanup: boolean }) {
   return (
     <div className="ghost-row flex h-full items-center gap-2 px-2 text-[13px]">
       <span className="w-4 shrink-0 text-center text-xs text-tertiary">{ghost.isDir ? "▸" : "·"}</span>
@@ -255,6 +260,7 @@ function GhostRow({ ghost, cols }: { ghost: GhostEntry; cols: ColWidths }) {
       <span className="shrink-0 text-xs text-tertiary" style={{ width: cols.mtime }}>
         pending…
       </span>
+      {cleanup && <span className="w-[126px] shrink-0" />}
       <span className="shrink-0" style={{ width: cols.tags }} />
     </div>
   );
@@ -342,13 +348,15 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const density = useSettings((s) => s.density);
   const zebra = useSettings((s) => s.zebraStripes);
   const ROW_H = rowHeight(density);
+  const cleanupSnapshot = useDownloadsCleanup((s) => s.snapshot);
+  const cleanup = !!cleanupSnapshot?.config.enabled && tab?.path === cleanupSnapshot.root;
 
   const visible = useMemo(
     () =>
       tab
-        ? visibleEntries({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden })
+        ? visibleEntries({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden, sort: tab.sort })
         : [],
-    [tab?.entries, tab?.filter, tab?.showHidden], // eslint-disable-line react-hooks/exhaustive-deps
+    [tab?.entries, tab?.filter, tab?.showHidden, tab?.sort, cleanupSnapshot], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const ghosts = tab?.ghosts ?? [];
   const rowCount = visible.length + ghosts.length;
@@ -655,6 +663,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           width={cols.mtime}
           onResize={(dx) => setCols((c) => ({ ...c, mtime: Math.max(80, c.mtime + dx) }))}
         />
+        {cleanup && <HeaderCell label="Cleanup" sortKey="cleanup" tab={tab} paneId={paneId} width={126} />}
         <HeaderCell label="Tags" sortKey={null} tab={tab} paneId={paneId} width={cols.tags} />
       </div>
 
@@ -699,7 +708,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                 const ghost = ghosts[vi.index - visible.length];
                 return (
                   <div key={`g${ghost.id}`} style={style} data-row>
-                    <GhostRow ghost={ghost} cols={cols} />
+                    <GhostRow ghost={ghost} cols={cols} cleanup={cleanup} />
                   </div>
                 );
               }
@@ -711,6 +720,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                     paneId={paneId}
                     tabId={tabId}
                     cols={cols}
+                    cleanup={cleanup}
                     onMouseDown={handleRowMouseDown}
                     onDoubleClick={handleDoubleClick}
                     onContextMenu={handleContextMenu}

@@ -1,4 +1,5 @@
 /** One pane: tab strip + content (list/grid, or global search results). */
+import { DownloadsBanner } from "../downloads/DownloadsBanner";
 import clsx from "clsx";
 import { usePanes, activeTabOf, type Pane as PaneModel } from "../../stores/panes";
 import type { ListErrorCode } from "../../types/ipc";
@@ -93,6 +94,7 @@ export function Pane({ paneId }: { paneId: PaneId }) {
           error={tab?.error ?? null}
         />
       )}
+      {!showSearch && tab && <DownloadsBanner path={tab.path} />}
       <div className="min-h-0 flex-1">
         {showSearch ? (
           <SearchResults />

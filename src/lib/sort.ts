@@ -4,7 +4,7 @@
 import type { Entry } from "../types/ipc";
 import { kindLabel } from "./fileTypes";
 
-export type SortKey = "name" | "size" | "mtime" | "kind";
+export type SortKey = "name" | "size" | "mtime" | "kind" | "cleanup";
 export type SortDir = "asc" | "desc";
 
 export interface SortSpec {
@@ -27,7 +27,8 @@ export function entryKindLabel(e: Entry): string {
   return kindLabel({ kind: e.kind, ext: e.ext, isPackage: e.isPackage, isAlias: e.isAlias });
 }
 
-function compareBy(a: Entry, b: Entry, key: SortKey): number {
+type CleanupDates = Record<string, { deadline: number | null }>;
+function compareBy(a: Entry, b: Entry, key: SortKey, cleanup: CleanupDates = {}): number {
   switch (key) {
     case "name":
       return naturalCollator.compare(a.name, b.name);
@@ -48,6 +49,8 @@ function compareBy(a: Entry, b: Entry, key: SortKey): number {
       if (mb == null) return -1;
       return ma - mb;
     }
+    case "cleanup":
+      return (cleanup[a.path]?.deadline ?? Number.MAX_SAFE_INTEGER) - (cleanup[b.path]?.deadline ?? Number.MAX_SAFE_INTEGER);
     case "kind":
       return naturalCollator.compare(entryKindLabel(a), entryKindLabel(b));
   }
@@ -58,7 +61,7 @@ function compareBy(a: Entry, b: Entry, key: SortKey): number {
  * regardless of direction (Finder-style grouping). Name is the tiebreaker.
  * Returns a NEW array; does not mutate.
  */
-export function sortEntries(entries: readonly Entry[], spec: SortSpec, dirsFirst = true): Entry[] {
+export function sortEntries(entries: readonly Entry[], spec: SortSpec, dirsFirst = true, cleanup: CleanupDates = {}): Entry[] {
   const sign = spec.dir === "asc" ? 1 : -1;
   const out = [...entries];
   out.sort((a, b) => {
@@ -67,7 +70,7 @@ export function sortEntries(entries: readonly Entry[], spec: SortSpec, dirsFirst
       const db = isDirLike(b);
       if (da !== db) return da ? -1 : 1;
     }
-    const primary = compareBy(a, b, spec.key);
+    const primary = compareBy(a, b, spec.key, cleanup);
     if (primary !== 0) return sign * primary;
     if (spec.key !== "name") {
       const byName = naturalCollator.compare(a.name, b.name);

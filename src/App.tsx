@@ -1,4 +1,5 @@
 /** Fazi application shell: layout grid, boot sequence, global overlays. */
+import { startDownloadsCleanupUpdates } from "./stores/downloadsCleanup";
 import { useEffect } from "react";
 import { rebuildRegistry, registerAllCommands } from "./lib/commands";
 import { getCommand } from "./lib/commands/registry";
@@ -117,6 +118,7 @@ export default function App() {
 
   useEffect(() => {
     boot();
+    const stopCleanupUpdates = startDownloadsCleanupUpdates();
     syncNativeMenuShortcuts();
     let alive = true;
     let unlistenDnd: (() => void) | undefined;
@@ -151,6 +153,7 @@ export default function App() {
     window.addEventListener("keydown", onAltKey);
     window.addEventListener("keyup", onAltKey);
     return () => {
+      stopCleanupUpdates();
       alive = false;
       unlistenDnd?.();
       unlistenMenu?.();

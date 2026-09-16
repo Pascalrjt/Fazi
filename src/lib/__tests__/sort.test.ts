@@ -171,3 +171,12 @@ describe("sortedInsertIndex", () => {
     expect(idx).toBe(1);
   });
 });
+
+describe("cleanup sorting", () => {
+  it("orders by scheduled deadline and places kept files after scheduled files", () => {
+    const a=entry({name:"later"}), b=entry({name:"sooner"}), c=entry({name:"kept"});
+    const dates = { [a.path]:{deadline:200}, [b.path]:{deadline:100}, [c.path]:{deadline:null} };
+    expect(sortEntries([a,c,b],{key:"cleanup",dir:"asc"},true,dates).map(e=>e.name)).toEqual(["sooner","later","kept"]);
+    expect(sortEntries([a,c,b],{key:"cleanup",dir:"desc"},true,dates).map(e=>e.name)).toEqual(["kept","later","sooner"]);
+  });
+});

@@ -5,3 +5,5 @@ pub mod menu;
 pub mod ops;
 pub mod search;
 pub mod watch;
+
+pub mod downloads_cleanup;

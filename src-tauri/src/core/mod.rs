@@ -9,3 +9,5 @@ pub mod undo;
 pub mod verify;
 pub mod walker;
 pub mod watcher;
+
+pub mod downloads_cleanup;
