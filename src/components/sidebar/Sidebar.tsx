@@ -23,6 +23,7 @@ import {
   FileText,
   Folder,
   HardDrive,
+  Hourglass,
   House,
   LayoutGrid,
   Monitor,
@@ -30,6 +31,8 @@ import {
   Usb,
 } from "lucide-react";
 import { useVolumes } from "../../stores/volumes";
+import { useCleanup } from "../../stores/cleanup";
+import { leavingSoon } from "../../lib/cleanup";
 import { useSettings } from "../../stores/settings";
 import { useApp } from "../../stores/app";
 import { usePanes, activeTabOf } from "../../stores/panes";
@@ -270,6 +273,7 @@ function SidebarRow({
     >
       <row.icon size={15} strokeWidth={1.75} className="w-4 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1 truncate">{row.label}</span>
+      <CleanupBadge folder={row.path} />
       {row.volume?.isEjectable && (
         <button
           className="hidden shrink-0 cursor-default rounded px-1 text-[11px] text-tertiary hover:text-primary group-hover:block"
@@ -283,6 +287,28 @@ function SidebarRow({
         </button>
       )}
     </div>
+  );
+}
+
+/** Count of items in a rule folder that go to the Trash by tomorrow. */
+function CleanupBadge({ folder }: { folder: string }) {
+  const count = useCleanup((s) => {
+    if (!s.folders.has(folder)) return 0;
+    let n = 0;
+    for (const item of s.items.values()) {
+      if (item.folder === folder && leavingSoon(item, s.now)) n++;
+    }
+    return n;
+  });
+  if (count === 0) return null;
+  return (
+    <span
+      className="tnum flex shrink-0 items-center gap-0.5 text-[11px] text-danger"
+      title={`${count} ${count === 1 ? "item goes" : "items go"} to the Trash by tomorrow`}
+    >
+      <Hourglass size={11} strokeWidth={1.75} aria-hidden />
+      {count}
+    </span>
   );
 }
 

@@ -3,12 +3,17 @@
  * Everything else calls these functions.
  */
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   COMMANDS,
   EVENTS,
   type AppCandidate,
+  type CleanupFolderReport,
+  type CleanupOptions,
+  type CleanupRestoreResult,
+  type CleanupSweepResult,
   type ConflictPolicy,
   type DefaultFolders,
   type DirSizeEvent,
@@ -198,6 +203,30 @@ export function undoStackTop(): Promise<UndoDescription | null> {
 
 export function redoStackTop(): Promise<UndoDescription | null> {
   return invoke(COMMANDS.redoStackTop);
+}
+
+// ---------------------------------------------------------------------------
+// Auto-cleanup
+// ---------------------------------------------------------------------------
+
+export function cleanupScan(opts: CleanupOptions): Promise<CleanupFolderReport[]> {
+  return invoke(COMMANDS.cleanupScan, { opts });
+}
+
+export function cleanupSweep(opts: CleanupOptions): Promise<CleanupSweepResult> {
+  return invoke(COMMANDS.cleanupSweep, { opts });
+}
+
+export function cleanupRestore(
+  pairs: Array<{ original: string; trashed: string }>,
+): Promise<CleanupRestoreResult> {
+  return invoke(COMMANDS.cleanupRestore, { pairs });
+}
+
+/** Native folder picker; null when cancelled. */
+export async function pickFolder(defaultPath?: string): Promise<string | null> {
+  const picked = await openDialog({ directory: true, multiple: false, defaultPath });
+  return typeof picked === "string" ? picked : null;
 }
 
 export function setShortcutRecording(recording: boolean): Promise<void> {

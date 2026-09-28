@@ -13,6 +13,7 @@ import { usePanes } from "./stores/panes";
 import { useVolumes } from "./stores/volumes";
 import { useApp } from "./stores/app";
 import { useVim } from "./stores/vim";
+import { startCleanup } from "./stores/cleanup";
 import { pluralize } from "./lib/format";
 import { Toolbar } from "./components/chrome/Toolbar";
 import { StatusBar } from "./components/chrome/StatusBar";
@@ -86,6 +87,7 @@ function boot(): void {
     await volumes.init();
     const home = useVolumes.getState().folders?.home ?? "/";
     usePanes.getState().boot(home);
+    startCleanup();
 
     // journal recovery report
     try {

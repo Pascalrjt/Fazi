@@ -385,6 +385,81 @@ export interface TextPreview {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-cleanup (src-tauri/src/core/cleanup.rs, commands/cleanup.rs)
+// ---------------------------------------------------------------------------
+
+export interface CleanupRule {
+  /** Absolute, or "~"-relative (the default rule is "~/Downloads"). */
+  path: string;
+  days: number;
+}
+
+/** A kept item, matched by inode so it survives renames in place. */
+export interface CleanupPin {
+  dev: number;
+  ino: number;
+}
+
+export interface CleanupOptions {
+  rules: CleanupRule[];
+  pins: CleanupPin[];
+  /** Files opened within this many days stay until the window passes; 0 = off. */
+  skipOpenedDays: number;
+  /** Top-level subfolder that is never touched; "" = none. */
+  keepFolder: string;
+}
+
+export type CleanupStatus = "scheduled" | "kept" | "excluded" | "inProgress";
+
+export interface CleanupItem {
+  path: string;
+  name: string;
+  dev: number;
+  ino: number;
+  isDir: boolean;
+  /** Bytes for files; null for folders. */
+  size: number | null;
+  /** Date Added, epoch ms. */
+  added: number;
+  /** Last opened, epoch ms, when macOS recorded one. */
+  lastUsed: number | null;
+  /** When the item becomes due, epoch ms; set for "scheduled" items only. */
+  expires: number | null;
+  status: CleanupStatus;
+}
+
+export interface CleanupFolderReport {
+  /** The rule's path exactly as configured. */
+  rulePath: string;
+  /** Absolute folder path after "~" expansion. */
+  folder: string;
+  days: number;
+  items: CleanupItem[];
+  error: string | null;
+}
+
+export interface CleanupSweptItem {
+  original: string;
+  trashed: string;
+  name: string;
+  size: number | null;
+  isDir: boolean;
+}
+
+export interface CleanupSweepResult {
+  swept: CleanupSweptItem[];
+  errors: string[];
+  /** A fresh scan taken after the sweep. */
+  reports: CleanupFolderReport[];
+}
+
+export interface CleanupRestoreResult {
+  /** Identity after the move, so put-back items can be kept. */
+  restored: Array<{ path: string; dev: number; ino: number }>;
+  errors: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Command names (invoke keys) — keep in lockstep with lib.rs generate_handler!
 // ---------------------------------------------------------------------------
 
@@ -419,6 +494,9 @@ export const COMMANDS = {
   setShortcutRecording: "set_shortcut_recording",
   setNativeMenuShortcuts: "set_native_menu_shortcuts",
   interruptedOps: "interrupted_ops", // () -> InterruptedOp[] (journal recovery report)
+  cleanupScan: "cleanup_scan", // (opts) -> CleanupFolderReport[]
+  cleanupSweep: "cleanup_sweep", // (opts) -> CleanupSweepResult — rescans, trashes due items (not undo-stacked)
+  cleanupRestore: "cleanup_restore", // ({original, trashed}[]) -> CleanupRestoreResult
   // search
   search: "search",
   cancelSearch: "cancel_search",

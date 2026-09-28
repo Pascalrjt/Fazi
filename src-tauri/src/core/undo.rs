@@ -360,7 +360,7 @@ fn apply_inverse(op: &UndoOp, trasher: &dyn Trasher) -> io::Result<UndoOutcome> 
     }
 }
 
-fn validate_exists(p: &Path) -> io::Result<()> {
+pub(crate) fn validate_exists(p: &Path) -> io::Result<()> {
     if p.symlink_metadata().is_err() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -370,7 +370,7 @@ fn validate_exists(p: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_absent(p: &Path) -> io::Result<()> {
+pub(crate) fn validate_absent(p: &Path) -> io::Result<()> {
     if p.symlink_metadata().is_ok() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -381,7 +381,7 @@ fn validate_absent(p: &Path) -> io::Result<()> {
 }
 
 /// Move with the ladder: rename, or (EXDEV) staged copy + delete.
-fn move_back(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn move_back(from: &Path, to: &Path) -> io::Result<()> {
     match copier::rename(from, to) {
         Ok(()) => Ok(()),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {

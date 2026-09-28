@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { SortDir, SortKey } from "../lib/sort";
+import type { CleanupPin, CleanupRule } from "../types/ipc";
 
 export type ViewMode = "list" | "grid";
 export type Theme = "system" | "light" | "dark";
@@ -19,6 +20,11 @@ export interface FavoriteFolder {
  * (first entry is the primary), `null` unbinds it, absent = default.
  */
 export type KeybindingOverrides = Record<string, string[] | null>;
+
+/** A kept item; `path` is where it was when kept (for pruning and display). */
+export interface KeptItem extends CleanupPin {
+  path: string;
+}
 
 interface SettingsState {
   // General
@@ -69,6 +75,17 @@ interface SettingsState {
   showTrashInSidebar: boolean;
   /** Which edge of the window the sidebar docks to. */
   sidebarPosition: SidebarPosition;
+  // Cleanup
+  /** Opt-in: move old items in `cleanupRules` folders to the Trash, at
+   *  launch and hourly while Fazi runs. */
+  cleanupEnabled: boolean;
+  cleanupRules: CleanupRule[];
+  /** Files opened within this many days stay until the window passes; 0 = off. */
+  cleanupSkipOpenedDays: number;
+  /** Top-level subfolder name that auto-cleanup never touches; "" = none. */
+  cleanupKeepFolder: string;
+  /** Items the user chose to keep (⌥⌘K). */
+  cleanupKept: KeptItem[];
   // Advanced
   /** Lazy folder sizes in list view (M7) — explicitly approximate. */
   showFolderSizes: boolean;
@@ -91,7 +108,8 @@ interface SettingsState {
   patch(partial: Partial<SettingsValues>): void;
   setKeybindingOverride(commandId: string, shortcuts: string[] | null): void;
   clearKeybindingOverride(commandId: string): void;
-  /** Reset everything except favorites (fazi-cols lives outside this store). */
+  /** Reset everything except favorites and kept items (fazi-cols lives
+   *  outside this store). */
   resetToDefaults(): void;
   /**
    * Pin folders, skipping paths already pinned or matching a default sidebar
@@ -148,6 +166,11 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   favorites: [],
   showTrashInSidebar: true,
   sidebarPosition: "left",
+  cleanupEnabled: false,
+  cleanupRules: [{ path: "~/Downloads", days: 14 }],
+  cleanupSkipOpenedDays: 3,
+  cleanupKeepFolder: "Keep",
+  cleanupKept: [],
   showFolderSizes: false,
   dragOutEnabled: true,
   nativeSharePicker: false,
@@ -182,10 +205,10 @@ export const useSettings = create<SettingsState>()(
       },
 
       resetToDefaults: () => {
-        // Favorites survive a reset (and fazi-cols lives outside this store —
-        // noted in the Advanced pane copy).
-        const { favorites } = get();
-        set({ ...SETTINGS_DEFAULTS, favorites });
+        // Favorites and kept items survive a reset (and fazi-cols lives
+        // outside this store — noted in the Advanced pane copy).
+        const { favorites, cleanupKept } = get();
+        set({ ...SETTINGS_DEFAULTS, favorites, cleanupKept });
       },
 
       addFavorites: (items, defaultPaths, atIndex) => {
