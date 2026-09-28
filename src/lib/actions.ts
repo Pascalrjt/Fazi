@@ -488,6 +488,28 @@ export function showOpenWithMenuAtCenter(): void {
 // Share menu
 // ---------------------------------------------------------------------------
 
+/** Lucide "settings" gear in the secondary text grey, readable both on the
+ *  menu background and on the accent highlight. */
+const GEAR_ICON = `data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#9aa0aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
+)}`;
+
+/** Finder's "Edit Extensions…": third-party share extensions (LocalSend,
+ *  Tailscale, …) ship switched off and only appear once enabled there. */
+const EDIT_SHARE_EXTENSIONS: MenuItem[] = [
+  { type: "separator" },
+  {
+    type: "item",
+    label: "Edit Extensions…",
+    icon: GEAR_ICON,
+    action: () => {
+      void ipc.openShareExtensionsSettings().catch((err) => {
+        toast(`Couldn't open System Settings: ${err}`, { danger: true });
+      });
+    },
+  },
+];
+
 export function shareMenuItems(entry: Entry): () => Promise<MenuItem[]> {
   return async () => {
     const paths = selectedEntries().map((e) => e.path);
@@ -495,7 +517,10 @@ export function shareMenuItems(entry: Entry): () => Promise<MenuItem[]> {
     try {
       const { generation, services } = await ipc.shareServices(targets);
       if (services.length === 0) {
-        return [{ type: "item", label: "No share destinations", disabled: true }];
+        return [
+          { type: "item", label: "No share destinations", disabled: true },
+          ...EDIT_SHARE_EXTENSIONS,
+        ];
       }
       const items: MenuItem[] = services.map((svc, index) => ({
         type: "item",
@@ -507,7 +532,7 @@ export function shareMenuItems(entry: Entry): () => Promise<MenuItem[]> {
           });
         },
       }));
-      return items;
+      return [...items, ...EDIT_SHARE_EXTENSIONS];
     } catch (err) {
       return [{ type: "item", label: `Unavailable: ${err}`, disabled: true }];
     }

@@ -446,6 +446,7 @@ export const COMMANDS = {
   defaultFolders: "default_folders",
   checkFullDiskAccess: "check_full_disk_access",
   openFullDiskAccessSettings: "open_full_disk_access_settings",
+  openShareExtensionsSettings: "open_share_extensions_settings", // System Settings → Sharing extensions
   pbWriteFiles: "pb_write_files", // (paths, isCut)
   pbReadFiles: "pb_read_files", // () -> PasteboardContents | null
   pbCutValid: "pb_cut_valid", // () -> bool: pasteboard still holds our cut write

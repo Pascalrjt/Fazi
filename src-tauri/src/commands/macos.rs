@@ -335,6 +335,18 @@ pub fn open_full_disk_access_settings(app: AppHandle) {
     });
 }
 
+/// Login Items & Extensions → Sharing, where third-party share extensions
+/// (which macOS ships switched off) are turned on. Finder's "Edit
+/// Extensions…" goes to the same place.
+#[tauri::command]
+pub fn open_share_extensions_settings(app: AppHandle) {
+    on_main(&app, || {
+        workspace::open_settings_url(
+            "x-apple.systempreferences:com.apple.ExtensionsPreferences?extensionPointIdentifier=com.apple.share-services",
+        )
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Pasteboard
 // ---------------------------------------------------------------------------
