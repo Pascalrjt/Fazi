@@ -10,6 +10,8 @@ import { useVolumes } from "../../stores/volumes";
 import { isExtractableArchive } from "../../lib/fileTypes";
 import { FINDER_TAG_COLORS } from "../../lib/tags";
 import { pluralize } from "../../lib/format";
+import { toggleKeep, useCleanup } from "../../stores/cleanup";
+import { getCommand } from "../../lib/commands/registry";
 
 function countLabel(verb: string, n: number): string {
   return n > 1 ? `${verb} ${pluralize(n, "item")}` : verb;
@@ -121,6 +123,20 @@ export function entryMenuItems(paneId: PaneId, tabId: string, entry: Entry): Men
     shortcut: "cmd+x",
     action: () => actions.cutSelection(),
   });
+  const { items: cleanupItems } = useCleanup.getState();
+  const keepable = targets
+    .map((t) => cleanupItems.get(t.path))
+    .filter((i) => i != null && (i.status === "scheduled" || i.status === "kept"));
+  if (keepable.length > 0) {
+    items.push({
+      type: "item",
+      label: keepable.every((i) => i?.status === "kept")
+        ? "Stop Keeping"
+        : "Keep (Skip Auto-cleanup)",
+      shortcut: getCommand("toggleCleanupKeep")?.shortcut,
+      action: () => toggleKeep(targets.map((t) => t.path)),
+    });
+  }
   items.push({
     type: "item",
     label: n > 1 ? `Move ${pluralize(n, "item")} to Trash` : "Move to Trash",

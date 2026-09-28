@@ -56,6 +56,10 @@ Off by default; turn it on in Settings → Keyboard. `hjkl` moves, `gg` and `G` 
 
 Streamed `mdfind` by filename or contents, with `kind:`, `date:`, and `size:` predicates. Volumes Spotlight hasn't indexed fall back to a fuzzy walker automatically.
 
+### Auto-cleanup
+
+Off by default; turn it on in Settings → Cleanup. Items in Downloads (or any folder you add, each with its own day count) move to the Trash a set number of days after they arrive, measured from Date Added so a fresh download with an old modified date stays put. Sweeps run at launch and hourly while Fazi is open. A Cleanup column counts down each item, and anything leaving by tomorrow turns red with a banner, a sidebar badge, and a status-bar count. `⌥⌘K` keeps an item, a `Keep` subfolder is never touched, files you opened recently get a grace period, and every sweep's toast has Put Back.
+
 ### Big directories
 
 A 100k-entry folder paints in under 50 ms. Listings stream in two stages and hydrate from the viewport outward, so scrolling stays smooth no matter the size.

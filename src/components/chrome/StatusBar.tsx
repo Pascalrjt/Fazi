@@ -1,11 +1,34 @@
 /** "14 items, 3 selected — 2.4 GB" + hidden-files and Vim-mode indicators. */
 import clsx from "clsx";
+import { Hourglass } from "lucide-react";
 import { useApp } from "../../stores/app";
 import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVim } from "../../stores/vim";
 import { vimPendingLabel } from "../../lib/vim";
 import { formatBytes, pluralize } from "../../lib/format";
+import { useCleanup } from "../../stores/cleanup";
+import { leavingSoon } from "../../lib/cleanup";
+
+const sweepTimeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+
+/** "⌛ 4 to Trash by tomorrow · next sweep 3:00 pm", from any folder. */
+function CleanupIndicator() {
+  const count = useCleanup((s) => {
+    let n = 0;
+    for (const item of s.items.values()) if (leavingSoon(item, s.now)) n++;
+    return n;
+  });
+  const nextSweepAt = useCleanup((s) => s.nextSweepAt);
+  if (count === 0) return null;
+  return (
+    <span className="tnum flex items-center gap-1 text-tertiary">
+      <Hourglass size={11} strokeWidth={1.75} className="text-danger" aria-hidden />
+      <span className="text-danger">{count} to Trash by tomorrow</span>
+      {nextSweepAt != null && <span>· next sweep {sweepTimeFmt.format(nextSweepAt)}</span>}
+    </span>
+  );
+}
 
 /** NORMAL / VISUAL plus the in-flight count/prefix ("12", "g"); FILTER while
  *  a text field owns the keyboard — the explicit state the feedback loop
@@ -75,6 +98,7 @@ export function StatusBar() {
       <div className="flex-1" />
       {tab?.showHidden && <span className="text-tertiary">hidden files shown</span>}
       {tab?.sorting && <span className="text-tertiary">sorting…</span>}
+      <CleanupIndicator />
     </div>
   );
 }

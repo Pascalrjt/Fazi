@@ -5,7 +5,7 @@
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { Lock } from "lucide-react";
+import { Hourglass, Lock, Pin } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
@@ -32,6 +32,10 @@ import { useSettings } from "../../stores/settings";
 import { useDirSizes } from "../../stores/dirSizes";
 import { useViewportHydration } from "../../hooks/useViewportHydration";
 import { tagCss } from "../../lib/tags";
+import { useCleanup } from "../../stores/cleanup";
+import { cleanupTooltip, expiryLabel, leavingSoon } from "../../lib/cleanup";
+import { getCommand } from "../../lib/commands/registry";
+import { shortcutLabel } from "../../lib/keyboard";
 import { EmptyFolder, ListingError, NoFilterMatches } from "./EmptyStates";
 
 /** Row height by density (Settings → Appearance). */
@@ -44,9 +48,10 @@ interface ColWidths {
   size: number;
   mtime: number;
   tags: number;
+  cleanup: number;
 }
 
-const DEFAULT_COLS: ColWidths = { kind: 110, size: 84, mtime: 148, tags: 64 };
+const DEFAULT_COLS: ColWidths = { kind: 110, size: 84, mtime: 148, tags: 64, cleanup: 96 };
 
 function loadCols(): ColWidths {
   try {
@@ -78,6 +83,69 @@ function DirSizeCell({ path }: { path: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-cleanup cells (only in folders with a cleanup rule)
+// ---------------------------------------------------------------------------
+
+/** Countdown to the Trash: red for the next sweep/today/tomorrow, then the
+ *  grey text tiers, so an ordinary folder reads calm. */
+function CleanupCell({ path, width }: { path: string; width: number }) {
+  const item = useCleanup(useCallback((s) => s.items.get(path), [path]));
+  const now = useCleanup((s) => s.now);
+  if (!item) return <span className="shrink-0" style={{ width }} />;
+  const keep = getCommand("toggleCleanupKeep")?.shortcut;
+  const title = cleanupTooltip(item, item, now, keep ? shortcutLabel(keep) : undefined);
+  if (item.status === "kept" || item.status === "excluded") {
+    return (
+      <span
+        className="flex shrink-0 items-center gap-1 truncate text-xs text-secondary"
+        style={{ width }}
+        title={title}
+      >
+        <Pin size={11} aria-hidden />
+        {item.status === "kept" ? "Kept" : "Excluded"}
+      </span>
+    );
+  }
+  if (item.status === "inProgress" || item.expires == null) {
+    return (
+      <span className="shrink-0 text-xs text-tertiary" style={{ width }} title={title}>
+        —
+      </span>
+    );
+  }
+  const label = expiryLabel(item.expires, now);
+  return (
+    <span
+      className={clsx(
+        "tnum shrink-0 truncate text-xs",
+        label.tone === "due" ? "text-danger" : label.tone === "soon" ? "text-secondary" : "text-tertiary",
+      )}
+      style={{ width }}
+      title={title}
+    >
+      {label.text}
+    </span>
+  );
+}
+
+/** Hourglass beside the name for items leaving by tomorrow; it stays visible
+ *  when the Cleanup column is squeezed. */
+function CleanupFlag({ path }: { path: string }) {
+  const soon = useCleanup(
+    useCallback((s) => {
+      const item = s.items.get(path);
+      return item != null && leavingSoon(item, s.now);
+    }, [path]),
+  );
+  if (!soon) return null;
+  return (
+    <span className="text-danger" title="Moves to the Trash soon">
+      <Hourglass size={11} aria-hidden />
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Row
 // ---------------------------------------------------------------------------
 
@@ -86,6 +154,8 @@ interface RowProps {
   paneId: PaneId;
   tabId: string;
   cols: ColWidths;
+  /** The listed folder has an auto-cleanup rule. */
+  showCleanup: boolean;
   onMouseDown: (e: React.MouseEvent, entry: Entry) => void;
   onDoubleClick: (entry: Entry) => void;
   onContextMenu: (e: React.MouseEvent, entry: Entry) => void;
@@ -111,6 +181,7 @@ const FileRow = memo(function FileRow({
   paneId,
   tabId,
   cols,
+  showCleanup,
   onMouseDown,
   onDoubleClick,
   onContextMenu,
@@ -213,6 +284,7 @@ const FileRow = memo(function FileRow({
             <Lock size={11} aria-hidden />
           </span>
         )}
+        {showCleanup && <CleanupFlag path={entry.path} />}
       </span>
       <span className="shrink-0 truncate text-xs text-secondary" style={{ width: cols.kind }}>
         {entry.hydrated || entry.ext !== "" || entry.kind !== "unknown"
@@ -241,11 +313,20 @@ const FileRow = memo(function FileRow({
           />
         ))}
       </span>
+      {showCleanup && <CleanupCell path={entry.path} width={cols.cleanup} />}
     </div>
   );
 });
 
-function GhostRow({ ghost, cols }: { ghost: GhostEntry; cols: ColWidths }) {
+function GhostRow({
+  ghost,
+  cols,
+  showCleanup,
+}: {
+  ghost: GhostEntry;
+  cols: ColWidths;
+  showCleanup: boolean;
+}) {
   return (
     <div className="ghost-row flex h-full items-center gap-2 px-2 text-[13px]">
       <span className="w-4 shrink-0 text-center text-xs text-tertiary">{ghost.isDir ? "▸" : "·"}</span>
@@ -256,6 +337,7 @@ function GhostRow({ ghost, cols }: { ghost: GhostEntry; cols: ColWidths }) {
         pending…
       </span>
       <span className="shrink-0" style={{ width: cols.tags }} />
+      {showCleanup && <span className="shrink-0" style={{ width: cols.cleanup }} />}
     </div>
   );
 }
@@ -341,6 +423,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const restoredListing = useRef<string>("");
   const density = useSettings((s) => s.density);
   const zebra = useSettings((s) => s.zebraStripes);
+  const showCleanup = useCleanup((s) => tab != null && s.folders.has(tab.path));
   const ROW_H = rowHeight(density);
 
   const visible = useMemo(
@@ -656,6 +739,16 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           onResize={(dx) => setCols((c) => ({ ...c, mtime: Math.max(80, c.mtime + dx) }))}
         />
         <HeaderCell label="Tags" sortKey={null} tab={tab} paneId={paneId} width={cols.tags} />
+        {showCleanup && (
+          <HeaderCell
+            label="Cleanup"
+            sortKey={null}
+            tab={tab}
+            paneId={paneId}
+            width={cols.cleanup}
+            onResize={(dx) => setCols((c) => ({ ...c, cleanup: Math.max(64, c.cleanup + dx) }))}
+          />
+        )}
       </div>
 
       {/* body */}
@@ -699,7 +792,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                 const ghost = ghosts[vi.index - visible.length];
                 return (
                   <div key={`g${ghost.id}`} style={style} data-row>
-                    <GhostRow ghost={ghost} cols={cols} />
+                    <GhostRow ghost={ghost} cols={cols} showCleanup={showCleanup} />
                   </div>
                 );
               }
@@ -711,6 +804,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                     paneId={paneId}
                     tabId={tabId}
                     cols={cols}
+                    showCleanup={showCleanup}
                     onMouseDown={handleRowMouseDown}
                     onDoubleClick={handleDoubleClick}
                     onContextMenu={handleContextMenu}

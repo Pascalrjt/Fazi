@@ -1,3 +1,4 @@
+pub mod cleanup;
 pub mod fuzzy;
 pub mod listing;
 pub mod macos;

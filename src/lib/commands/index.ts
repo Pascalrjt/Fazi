@@ -27,6 +27,7 @@ import { useFuzzy } from "../../stores/fuzzy";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
 import { useVolumes } from "../../stores/volumes";
+import { isInCleanupFolder, toggleKeep, useCleanup } from "../../stores/cleanup";
 import {
   hasKeyboardContextMenuTarget,
   openKeyboardContextMenu,
@@ -359,6 +360,28 @@ function buildCommandSpecs(): CommandSpec[] {
       keywords: "trash empty delete purge",
       shortcut: "cmd+shift+delete",
       run: () => actions.confirmEmptyTrash(),
+    },
+    {
+      id: "toggleCleanupKeep",
+      title: "Keep (Skip Auto-cleanup)",
+      keywords: "auto cleanup pin keep downloads expire",
+      shortcut: "cmd+opt+k",
+      enabled: () => selectedEntries().some((e) => isInCleanupFolder(e.path)),
+      run: () => toggleKeep(selectedEntries().map((e) => e.path)),
+    },
+    {
+      id: "cleanupNow",
+      title: "Run Auto-cleanup Now",
+      keywords: "downloads trash old expire sweep clean",
+      enabled: () => useSettings.getState().cleanupEnabled,
+      run: () => void useCleanup.getState().sweep({ manual: true }),
+    },
+    {
+      id: "cleanupSettings",
+      title: "Auto-cleanup Settings…",
+      keywords: "downloads trash old expire rules clean",
+      context: ["browse", "search", "preview", "palette"],
+      run: () => useApp.getState().openSettingsPane("cleanup"),
     },
     {
       id: "goTrash",

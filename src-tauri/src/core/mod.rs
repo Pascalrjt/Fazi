@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod batch_rename;
+pub mod cleanup;
 pub mod copier;
 pub mod entry;
 pub mod journal;

@@ -7,6 +7,8 @@ import clsx from "clsx";
 import {
   ArrowRightLeft,
   Check,
+  Folder,
+  Hourglass,
   Keyboard,
   Palette,
   PanelLeft,
@@ -21,6 +23,13 @@ import { NumberField, Segmented, SettingRow, SettingsFilterContext, Toggle } fro
 import { KeyboardPane } from "./KeyboardPane";
 import type { SortDir, SortKey } from "../../lib/sort";
 import { useBrowseFocusRestore } from "../../hooks/useBrowseFocusRestore";
+import { useCleanup } from "../../stores/cleanup";
+import { useVolumes } from "../../stores/volumes";
+import { displayPath, pluralize } from "../../lib/format";
+import { ruleFolderName } from "../../lib/cleanup";
+import { getCommand } from "../../lib/commands/registry";
+import { shortcutLabel } from "../../lib/keyboard";
+import * as ipc from "../../lib/ipc";
 
 type PaneId =
   | "general"
@@ -29,6 +38,7 @@ type PaneId =
   | "search"
   | "operations"
   | "sidebar"
+  | "cleanup"
   | "advanced";
 
 const PANES: Array<[PaneId, string, LucideIcon]> = [
@@ -38,6 +48,7 @@ const PANES: Array<[PaneId, string, LucideIcon]> = [
   ["search", "Search", Search],
   ["operations", "Operations", ArrowRightLeft],
   ["sidebar", "Sidebar", PanelLeft],
+  ["cleanup", "Cleanup", Hourglass],
   ["advanced", "Advanced", Wrench],
 ];
 
@@ -282,6 +293,151 @@ function SidebarPane() {
   );
 }
 
+const DEFAULT_RULE_DAYS = 14;
+
+function expandHome(path: string, home: string | null): string {
+  if (home == null) return path;
+  if (path === "~") return home;
+  return path.startsWith("~/") ? `${home}${path.slice(1)}` : path;
+}
+
+function CleanupPane() {
+  const s = useSettings();
+  const reports = useCleanup((c) => c.reports);
+  const home = useVolumes((v) => v.folders?.home ?? null);
+  const keepShortcut = getCommand("toggleCleanupKeep")?.shortcut;
+
+  const setRuleDays = (path: string, days: number) =>
+    s.patch({ cleanupRules: s.cleanupRules.map((r) => (r.path === path ? { ...r, days } : r)) });
+  const removeRule = (path: string) =>
+    s.patch({ cleanupRules: s.cleanupRules.filter((r) => r.path !== path) });
+  const addRule = async () => {
+    const picked = await ipc.pickFolder(home ?? undefined).catch(() => null);
+    if (picked == null) return;
+    if (s.cleanupRules.some((r) => expandHome(r.path, home) === picked)) return;
+    s.patch({ cleanupRules: [...s.cleanupRules, { path: picked, days: DEFAULT_RULE_DAYS }] });
+  };
+
+  return (
+    <>
+      <SettingRow
+        label="Auto-cleanup"
+        hint="Moves old items in the folders below to the Trash when Fazi opens and every hour while it's open. The first sweep after turning this on waits an hour."
+      >
+        <Toggle checked={s.cleanupEnabled} onChange={(v) => s.patch({ cleanupEnabled: v })} />
+      </SettingRow>
+      <SettingRow
+        label="Folders"
+        hint="Only items directly inside each folder count. Age runs from Date Added: when the item arrived in the folder."
+      >
+        <div className="flex max-w-[360px] flex-col gap-1.5">
+          {s.cleanupRules.map((rule) => {
+            const error = reports.find((r) => r.rulePath === rule.path)?.error;
+            return (
+              <div key={rule.path}>
+                <div className="flex items-center gap-2 rounded-md border border-edge bg-pane px-2 py-1 text-[12px] text-secondary">
+                  <Folder size={13} strokeWidth={1.75} className="shrink-0" aria-hidden />
+                  <span
+                    className="min-w-0 flex-1 truncate text-primary"
+                    title={displayPath(expandHome(rule.path, home), home)}
+                  >
+                    {ruleFolderName(rule.path)}
+                  </span>
+                  <span className="shrink-0">after</span>
+                  <input
+                    key={`${rule.path}:${rule.days}`}
+                    type="number"
+                    aria-label={`Days before items in ${ruleFolderName(rule.path)} move to the Trash`}
+                    className="tnum w-14 rounded border border-edge bg-window px-1.5 py-0.5 text-right text-[12px] text-primary outline-none focus:border-accent"
+                    defaultValue={rule.days}
+                    min={1}
+                    max={365}
+                    onBlur={(e) => {
+                      const n = Math.round(Number(e.target.value));
+                      if (Number.isFinite(n) && n >= 1) setRuleDays(rule.path, Math.min(365, n));
+                      else e.target.value = String(rule.days);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      e.stopPropagation();
+                    }}
+                  />
+                  <span className="shrink-0">{rule.days === 1 ? "day" : "days"}</span>
+                  <button
+                    className="shrink-0 cursor-default rounded border border-edge px-1.5 text-[11px] text-secondary hover:bg-hov"
+                    onClick={() => removeRule(rule.path)}
+                  >
+                    Remove
+                  </button>
+                </div>
+                {error && s.cleanupEnabled && (
+                  <div className="mt-0.5 px-1 text-[11px] text-danger">{error}</div>
+                )}
+              </div>
+            );
+          })}
+          <button
+            className="cursor-default rounded-md border border-dashed border-edge-strong px-2 py-1 text-[12px] text-secondary hover:bg-hov"
+            onClick={() => void addRule()}
+          >
+            Add Folder…
+          </button>
+        </div>
+      </SettingRow>
+      <SettingRow
+        label="Skip recently opened files"
+        hint="A file opened within this window stays until the window passes."
+      >
+        <Segmented
+          value={String(s.cleanupSkipOpenedDays)}
+          options={[
+            ["0", "Off"],
+            ["1", "1 day"],
+            ["3", "3 days"],
+            ["7", "7 days"],
+          ]}
+          onChange={(v) => s.patch({ cleanupSkipOpenedDays: Number(v) })}
+        />
+      </SettingRow>
+      <SettingRow
+        label="Excluded subfolder"
+        hint="A folder with this name directly inside a cleanup folder is never touched. Leave empty for none."
+      >
+        <input
+          key={s.cleanupKeepFolder}
+          className="w-40 rounded-md border border-edge bg-pane px-2 py-1 text-[12px] text-primary outline-none focus:border-accent"
+          defaultValue={s.cleanupKeepFolder}
+          placeholder="None"
+          spellCheck={false}
+          onBlur={(e) => s.patch({ cleanupKeepFolder: e.target.value.trim() })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            e.stopPropagation();
+          }}
+        />
+      </SettingRow>
+      <SettingRow
+        label="Kept items"
+        hint={`Items you chose to keep${keepShortcut ? ` (${shortcutLabel(keepShortcut)})` : ""} or put back after a sweep. Auto-cleanup leaves them alone.`}
+      >
+        <div className="flex items-center gap-2 text-[12px] text-secondary">
+          <span className="tnum">
+            {s.cleanupKept.length === 0 ? "None" : pluralize(s.cleanupKept.length, "item")}
+          </span>
+          {s.cleanupKept.length > 0 && (
+            <button
+              className="cursor-default rounded border border-edge px-1.5 text-[11px] text-secondary hover:bg-hov"
+              onClick={() => s.patch({ cleanupKept: [] })}
+            >
+              Clear All
+            </button>
+          )}
+        </div>
+      </SettingRow>
+    </>
+  );
+}
+
 function AdvancedPane() {
   const s = useSettings();
   return (
@@ -312,7 +468,7 @@ function AdvancedPane() {
       </SettingRow>
       <SettingRow
         label="Reset to defaults"
-        hint="Restores every setting above. Pinned folders and column widths are kept."
+        hint="Restores every setting above. Pinned folders, kept items, and column widths are kept."
       >
         <button
           className="cursor-default rounded border border-edge px-2.5 py-1 text-[12px] text-danger hover:bg-hov"
@@ -366,6 +522,7 @@ function SearchResults({ openPane }: { openPane: (pane: PaneId) => void }) {
       <SearchSection label="Search"><SearchPane /></SearchSection>
       <SearchSection label="Operations"><OperationsPane /></SearchSection>
       <SearchSection label="Sidebar"><SidebarPane /></SearchSection>
+      <SearchSection label="Cleanup"><CleanupPane /></SearchSection>
       <SearchSection label="Advanced"><AdvancedPane /></SearchSection>
       <div className="settings-empty pt-6 text-center text-[12px] text-tertiary">
         No matching settings
@@ -470,6 +627,7 @@ export function SettingsOverlay() {
                 {pane === "search" && <SearchPane />}
                 {pane === "operations" && <OperationsPane />}
                 {pane === "sidebar" && <SidebarPane />}
+                {pane === "cleanup" && <CleanupPane />}
                 {pane === "advanced" && <AdvancedPane />}
               </div>
             )}
