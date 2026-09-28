@@ -205,6 +205,7 @@ pub fn run() {
             commands::macos::default_folders,
             commands::macos::check_full_disk_access,
             commands::macos::open_full_disk_access_settings,
+            commands::macos::open_share_extensions_settings,
             commands::macos::pb_write_files,
             commands::macos::pb_read_files,
             commands::macos::pb_cut_valid,

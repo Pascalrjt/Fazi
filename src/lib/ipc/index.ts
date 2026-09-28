@@ -340,6 +340,10 @@ export function openFullDiskAccessSettings(): Promise<void> {
   return invoke(COMMANDS.openFullDiskAccessSettings);
 }
 
+export function openShareExtensionsSettings(): Promise<void> {
+  return invoke(COMMANDS.openShareExtensionsSettings);
+}
+
 export function pbWriteFiles(paths: string[], isCut: boolean): Promise<void> {
   return invoke(COMMANDS.pbWriteFiles, { paths, isCut });
 }
