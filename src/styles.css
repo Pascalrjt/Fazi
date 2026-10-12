@@ -391,10 +391,10 @@ textarea {
   border-radius: 5px;
 }
 
-/* Keyboard surface ownership: the pane card that holds keyboard focus gets
-   an accent ring (Settings → Appearance → Focus ring) instead of the
-   browser's outline, so gs transitions are visible without shifting layout.
-   Sidebar rows show their own focus ring. */
+/* Keyboard surface ownership: in Vim mode, the pane card that holds
+   keyboard focus gets an accent ring (Settings → Appearance → Focus ring)
+   instead of the browser's outline, so gs transitions are visible without
+   shifting layout. Sidebar rows show their own focus ring. */
 .keyboard-surface {
   position: relative;
 }

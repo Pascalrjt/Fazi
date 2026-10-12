@@ -90,7 +90,10 @@ export function Pane({ paneId }: { paneId: PaneId }) {
   const setActivePane = useApp((s) => s.setActivePane);
   const searchActive = useApp((s) => s.globalSearch.active);
   const viewMode = useSettings((s) => s.viewMode);
-  const paneAccentLine = useSettings((s) => s.paneAccentLine);
+  // The ring only earns its place in Vim mode, where gs moves keyboard
+  // ownership between surfaces; otherwise the caption, tab group, and
+  // address-field chip already mark the active pane.
+  const focusRing = useSettings((s) => s.paneAccentLine && s.vimMode);
   const trashPath = useVolumes((s) => s.folders?.trash ?? null);
   const cleanupFolders = useCleanup((s) => s.folders);
 
@@ -108,7 +111,7 @@ export function Pane({ paneId }: { paneId: PaneId }) {
       tabIndex={-1}
       className={clsx(
         "keyboard-surface relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-pane shadow-[var(--shadow-card)] outline-none",
-        paneAccentLine && "pane-focus-ring",
+        focusRing && "pane-focus-ring",
       )}
       onMouseDownCapture={(e) => {
         // Controls inside the card keep keyboard ownership where it was.

@@ -173,7 +173,7 @@ function AppearancePane() {
       </SettingRow>
       <SettingRow
         label="Focus ring"
-        hint="Accent-colored ring around the pane that has keyboard focus."
+        hint="In Vim mode, an accent-colored ring marks the pane that has keyboard focus."
       >
         <Toggle checked={s.paneAccentLine} onChange={(v) => s.patch({ paneAccentLine: v })} />
       </SettingRow>
