@@ -562,7 +562,12 @@ export const usePanes = create<PanesState>()(
         if (!pane) return;
         const tab = newTab(path);
         tabId = tab.id;
-        pane.tabs.push(tab);
+        // Open right below the active tab, so a new tab stays next to the
+        // one it came from (and in view in the vertical tab list). Opening
+        // several folders in a row keeps their order: each lands below the
+        // previous one, which became active.
+        const at = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
+        pane.tabs.splice(at === -1 ? pane.tabs.length : at + 1, 0, tab);
         pane.activeTabId = tab.id;
       });
       if (tabId) startListing(set, get, paneId, tabId);
