@@ -96,6 +96,20 @@ export function collapseSelectionToLead(): void {
   usePanes.getState().setSelection(at.pane.id, at.tab.id, clickSelect(lead));
 }
 
+/**
+ * ⌃⇥ / ⌃⇧⇥ walk the active pane's tabs. From the Settings tab they step
+ * back to the pane's active tab, the way a browser leaves its settings page.
+ */
+function cycleTabs(dir: 1 | -1): void {
+  const app = useApp.getState();
+  if (app.settingsActive) {
+    app.setSettingsActive(false);
+    return;
+  }
+  const at = activePaneTab();
+  if (at) usePanes.getState().cycleTab(at.pane.id, dir);
+}
+
 function hasSelection(): boolean {
   return selectedEntries().length > 0;
 }
@@ -380,7 +394,7 @@ function buildCommandSpecs(): CommandSpec[] {
       id: "cleanupSettings",
       title: "Auto-cleanup Settings…",
       keywords: "downloads trash old expire rules clean",
-      context: ["browse", "search", "preview", "palette"],
+      context: ["browse", "search", "preview", "palette", "settings"],
       run: () => useApp.getState().openSettingsPane("cleanup"),
     },
     {
@@ -584,7 +598,7 @@ function buildCommandSpecs(): CommandSpec[] {
       title: "Command Palette",
       hidden: true,
       shortcut: "cmd+k",
-      context: ["browse", "search", "preview", "palette"],
+      context: ["browse", "search", "preview", "palette", "settings"],
       run: () => {
         const app = useApp.getState();
         app.setPaletteOpen(!app.paletteOpen);
@@ -615,7 +629,9 @@ function buildCommandSpecs(): CommandSpec[] {
       id: "newTab",
       title: "New Tab",
       shortcut: "cmd+t",
+      context: ["browse", "settings"],
       run: () => {
+        useApp.getState().setSettingsActive(false);
         const at = activePaneTab();
         if (at) usePanes.getState().openTab(at.pane.id, at.tab.path);
       },
@@ -624,7 +640,13 @@ function buildCommandSpecs(): CommandSpec[] {
       id: "closeTab",
       title: "Close Tab",
       shortcut: "cmd+w",
+      context: ["browse", "settings"],
       run: () => {
+        const app = useApp.getState();
+        if (app.settingsActive) {
+          app.setSettingsOpen(false);
+          return;
+        }
         const at = activePaneTab();
         if (at) usePanes.getState().closeTab(at.pane.id, at.tab.id);
       },
@@ -633,34 +655,34 @@ function buildCommandSpecs(): CommandSpec[] {
       id: "nextTab",
       title: "Next Tab",
       shortcut: "ctrl+tab",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().cycleTab(at.pane.id, 1);
-      },
+      context: ["browse", "settings"],
+      run: () => cycleTabs(1),
     },
     {
       id: "prevTab",
       title: "Previous Tab",
       shortcut: "ctrl+shift+tab",
-      run: () => {
-        const at = activePaneTab();
-        if (at) usePanes.getState().cycleTab(at.pane.id, -1);
-      },
+      context: ["browse", "settings"],
+      run: () => cycleTabs(-1),
     },
     {
       id: "focusSearch",
       title: "Search This Folder",
       keywords: "filter find",
       shortcut: "cmd+f",
-      context: ["browse", "search"],
-      run: () => useApp.getState().requestSearchFocus(),
+      context: ["browse", "search", "settings"],
+      run: () => {
+        const app = useApp.getState();
+        if (app.settingsActive) app.requestSettingsSearchFocus();
+        else app.requestSearchFocus();
+      },
     },
     {
       id: "fuzzyFinder",
       title: "Go to File…",
       keywords: "fuzzy finder jump quick open anything",
       shortcut: "cmd+p",
-      context: ["browse", "search"],
+      context: ["browse", "search", "settings"],
       run: () => useFuzzy.getState().openFinder(),
     },
     {
@@ -668,9 +690,10 @@ function buildCommandSpecs(): CommandSpec[] {
       title: "Search Everywhere",
       keywords: "find global spotlight mdfind",
       shortcut: "cmd+shift+f",
-      context: ["browse", "search"],
+      context: ["browse", "search", "settings"],
       run: () => {
         const app = useApp.getState();
+        app.setSettingsActive(false);
         app.openGlobalSearch(app.globalSearch.query, "mac");
         app.requestSearchFocus();
       },
@@ -679,7 +702,7 @@ function buildCommandSpecs(): CommandSpec[] {
       id: "toggleVimMode",
       title: "Toggle Vim Mode",
       keywords: "vim modal hjkl enable disable",
-      context: ["browse", "search", "preview", "palette"],
+      context: ["browse", "search", "preview", "palette", "settings"],
       run: () => {
         const settings = useSettings.getState();
         settings.patch({ vimMode: !settings.vimMode });
@@ -701,7 +724,7 @@ function buildCommandSpecs(): CommandSpec[] {
       title: "Settings…",
       keywords: "preferences options configure",
       shortcut: "cmd+,",
-      context: ["browse", "search", "preview", "palette"],
+      context: ["browse", "search", "preview", "palette", "settings"],
       run: () => useApp.getState().setSettingsOpen(true),
     },
     {
@@ -718,6 +741,7 @@ function buildCommandSpecs(): CommandSpec[] {
       id: "toggleSidebar",
       title: "Toggle Sidebar",
       shortcut: "cmd+opt+s",
+      context: ["browse", "settings"],
       run: () => useSettings.getState().toggleSidebar(),
     },
     {

@@ -1,5 +1,5 @@
 /** Fazi application shell: rail layout, boot sequence, global overlays. */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import clsx from "clsx";
 import { rebuildRegistry, registerAllCommands } from "./lib/commands";
 import { getCommand } from "./lib/commands/registry";
@@ -11,6 +11,8 @@ import { setupFinderDragIn } from "./lib/ipc/dnd";
 import { setAltDuringDrag } from "./lib/dnd";
 import { recheckCutMirror } from "./lib/actions";
 import { useVolumes } from "./stores/volumes";
+import { activeTabOf, usePanes } from "./stores/panes";
+import { focusActivePane } from "./lib/keyboardFocus";
 import { useApp } from "./stores/app";
 import { useVim } from "./stores/vim";
 import { startCleanup } from "./stores/cleanup";
@@ -22,7 +24,7 @@ import { ConfirmDialog } from "./components/chrome/ConfirmDialog";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { TitleStrip } from "./components/chrome/TitleStrip";
 import { PaneArea } from "./components/panes/PaneArea";
-import { SettingsOverlay } from "./components/settings/SettingsOverlay";
+import { SettingsTab } from "./components/settings/SettingsTab";
 import { OpCards } from "./components/ops/OpCards";
 import { ConflictDialog } from "./components/ops/ConflictDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
@@ -56,6 +58,19 @@ useSettings.subscribe((s, prev) => {
     syncNativeMenuShortcuts();
   }
   if (s.vimMode !== prev.vimMode) useVim.getState().reset();
+});
+
+/** Each pane's current tab and folder, plus its tab count. */
+function paneSignature(s: ReturnType<typeof usePanes.getState>): string {
+  return s.panes.map((p) => `${p.activeTabId}\u0000${activeTabOf(p)?.path}\u0000${p.tabs.length}`).join("\n");
+}
+
+// Anything that switches or navigates a pane's tab (the palette, Go to
+// File, Go menu commands, drag-moving tabs) brings the panes back from the
+// Settings tab, the way following a link leaves a browser's settings page.
+usePanes.subscribe((s, prev) => {
+  if (!useApp.getState().settingsActive) return;
+  if (paneSignature(s) !== paneSignature(prev)) useApp.getState().setSettingsActive(false);
 });
 
 /** Apply theme + accent to the document root. */
@@ -112,10 +127,18 @@ export default function App() {
   const accent = useSettings((s) => s.accent);
   const sidebarPosition = useSettings((s) => s.sidebarPosition);
   const sidebarCollapsed = useSettings((s) => s.sidebarCollapsed);
+  const settingsActive = useApp((s) => s.settingsActive);
 
   useEffect(() => {
     applyAppearance(theme, accent);
   }, [theme, accent]);
+
+  // Leaving the Settings tab hands the keyboard back to the active pane.
+  const wasSettings = useRef(false);
+  useEffect(() => {
+    if (wasSettings.current && !settingsActive) focusActivePane();
+    wasSettings.current = settingsActive;
+  }, [settingsActive]);
 
   useEffect(() => {
     boot();
@@ -177,7 +200,10 @@ export default function App() {
         {!sidebarCollapsed && <Sidebar />}
         <main className="flex min-w-0 flex-1 flex-col gap-2" data-tauri-drag-region>
           <FdaBanner />
-          <PaneArea />
+          {/* Panes stay mounted under the Settings tab so scroll and
+              selection survive the round trip. */}
+          <PaneArea hidden={settingsActive} />
+          {settingsActive && <SettingsTab />}
         </main>
       </div>
 
@@ -185,7 +211,6 @@ export default function App() {
       <PreviewOverlay />
       <CommandPalette />
       <FuzzyFinder />
-      <SettingsOverlay />
       <BatchRenameModal />
       <VimCheatSheet />
       <ConflictDialog />

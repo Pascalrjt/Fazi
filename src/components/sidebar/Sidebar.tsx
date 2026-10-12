@@ -52,6 +52,7 @@ import { CleanupBadge } from "./CleanupBadge";
 import { TabList, type TabDragHooks, type TabDragState } from "./TabList";
 import { SearchField } from "../chrome/SearchField";
 import { SIDEBAR_WIDTH } from "../chrome/TitleStrip";
+import { SettingsTabRow } from "../settings/SettingsTab";
 
 /** Fraction of a row's height at top/bottom where a path drag means "pin
  *  here" (insertion) rather than "move into this folder" (center). */
@@ -172,7 +173,8 @@ function SidebarRow({
     );
   }, [row.trash, inFavSection, row.path]);
 
-  const isCurrent = tab?.path === row.path;
+  const settingsActive = useApp((s) => s.settingsActive);
+  const isCurrent = !settingsActive && tab?.path === row.path;
   // Set when a pointer-reorder happened so the click that follows the
   // pointerup doesn't also navigate.
   const suppressClick = useRef(false);
@@ -241,6 +243,8 @@ function SidebarRow({
           suppressClick.current = false;
           return;
         }
+        // A place always shows its folder, even from the Settings tab.
+        useApp.getState().setSettingsActive(false);
         if (pane && tab) navigate(pane.id, tab.id, row.path);
       }}
       onContextMenu={(e) => {
@@ -727,15 +731,20 @@ export function Sidebar() {
           tabStopKey={tabStopKey}
           onFocused={setFocusedKey}
           drag={tabDragHooks}
+          beforeNewTab={split ? undefined : <SettingsTabRow />}
         />
         {split && (
-          <TabList
-            paneId="right"
-            showHeader
-            tabStopKey={tabStopKey}
-            onFocused={setFocusedKey}
-            drag={tabDragHooks}
-          />
+          <>
+            <TabList
+              paneId="right"
+              showHeader
+              tabStopKey={tabStopKey}
+              onFocused={setFocusedKey}
+              drag={tabDragHooks}
+            />
+            {/* Settings belongs to the window, not to either pane. */}
+            <SettingsTabRow />
+          </>
         )}
       </div>
       {(trashRows.length > 0 || volumeRows.length > 0) && (

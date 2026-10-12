@@ -7,6 +7,17 @@ import { safeIpc } from "../lib/safeIpc";
 import { parseSearchQuery } from "../lib/searchQuery";
 import { useSettings } from "./settings";
 
+/** Sections of the Settings tab, in section-bar order. */
+export type SettingsSectionId =
+  | "general"
+  | "appearance"
+  | "sidebar"
+  | "keyboard"
+  | "search"
+  | "transfers"
+  | "cleanup"
+  | "reset";
+
 /**
  * Not-indexed fallback: one-shot (live: false) fuzzy query with its own
  * lifecycle — queryId "search-<searchId>", never occupying the ⌘P live slot,
@@ -156,9 +167,16 @@ interface AppState {
   toasts: Toast[];
   previewOpen: boolean;
   getInfoOpen: boolean;
+  /** The Settings tab exists in the tab list (⌘, opens it, ⌘W closes it). */
   settingsOpen: boolean;
-  /** Pane the settings overlay should show on open (palette deep-links). */
-  settingsPaneRequest: string | null;
+  /** The Settings tab is showing in place of the panes. */
+  settingsActive: boolean;
+  /** Section shown in the Settings tab. */
+  settingsSection: SettingsSectionId;
+  /** Settings search; non-empty shows results from every section. */
+  settingsQuery: string;
+  /** Bump to request focus on the settings search field. */
+  settingsSearchFocusSeq: number;
   batchRenameOpen: boolean;
   /** Vim cheat-sheet overlay (g? / palette / status-bar indicator). */
   vimHelpOpen: boolean;
@@ -178,9 +196,15 @@ interface AppState {
   dismissToast(id: number): void;
   setPreviewOpen(open: boolean): void;
   setGetInfoOpen(open: boolean): void;
+  /** Open (and show) the Settings tab, or close it. */
   setSettingsOpen(open: boolean): void;
-  openSettingsPane(pane: string): void;
-  clearSettingsPaneRequest(): void;
+  /** Show the Settings tab, or switch back to the panes (it stays open). */
+  setSettingsActive(active: boolean): void;
+  /** Open the Settings tab at a section (palette deep-links). */
+  openSettingsPane(section: SettingsSectionId): void;
+  setSettingsSection(section: SettingsSectionId): void;
+  setSettingsQuery(query: string): void;
+  requestSettingsSearchFocus(): void;
   setBatchRenameOpen(open: boolean): void;
   setVimHelpOpen(open: boolean): void;
   startRename(target: RenameTarget): void;
@@ -212,7 +236,10 @@ export const useApp = create<AppState>()(
     previewOpen: false,
     getInfoOpen: false,
     settingsOpen: false,
-    settingsPaneRequest: null,
+    settingsActive: false,
+    settingsSection: "general",
+    settingsQuery: "",
+    settingsSearchFocusSeq: 0,
     batchRenameOpen: false,
     vimHelpOpen: false,
     renaming: null,
@@ -259,9 +286,24 @@ export const useApp = create<AppState>()(
 
     setPreviewOpen: (open) => set({ previewOpen: open }),
     setGetInfoOpen: (open) => set({ getInfoOpen: open }),
-    setSettingsOpen: (open) => set({ settingsOpen: open }),
-    openSettingsPane: (pane) => set({ settingsOpen: true, settingsPaneRequest: pane }),
-    clearSettingsPaneRequest: () => set({ settingsPaneRequest: null }),
+    setSettingsOpen: (open) =>
+      set(
+        open
+          ? { settingsOpen: true, settingsActive: true }
+          : { settingsOpen: false, settingsActive: false, settingsQuery: "" },
+      ),
+    setSettingsActive: (active) =>
+      set((s) => {
+        s.settingsActive = active && s.settingsOpen;
+      }),
+    openSettingsPane: (section) =>
+      set({ settingsOpen: true, settingsActive: true, settingsSection: section, settingsQuery: "" }),
+    setSettingsSection: (section) => set({ settingsSection: section, settingsQuery: "" }),
+    setSettingsQuery: (query) => set({ settingsQuery: query }),
+    requestSettingsSearchFocus: () =>
+      set((s) => {
+        s.settingsSearchFocusSeq += 1;
+      }),
     setBatchRenameOpen: (open) => set({ batchRenameOpen: open }),
     setVimHelpOpen: (open) => set({ vimHelpOpen: open }),
     startRename: (target) => set({ renaming: target }),

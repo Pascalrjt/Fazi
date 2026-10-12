@@ -99,12 +99,15 @@ export function TabList({
   tabStopKey,
   onFocused,
   drag,
+  beforeNewTab,
 }: {
   paneId: PaneId;
   showHeader: boolean;
   tabStopKey: string | null;
   onFocused(key: string): void;
   drag: TabDragHooks;
+  /** Rendered after the tabs, above "New tab" (the Settings tab). */
+  beforeNewTab?: React.ReactNode;
 }) {
   const pane = usePanes((s) => s.panes.find((p) => p.id === paneId));
   const activateTab = usePanes((s) => s.activateTab);
@@ -112,6 +115,8 @@ export function TabList({
   const openTab = usePanes((s) => s.openTab);
   const activePaneId = useApp((s) => s.activePaneId);
   const setActivePane = useApp((s) => s.setActivePane);
+  const settingsActive = useApp((s) => s.settingsActive);
+  const setSettingsActive = useApp((s) => s.setSettingsActive);
   const iconFor = useTabIcon();
   // Set when a press turned into a drag, so the click that follows the
   // pointerup doesn't also activate the tab.
@@ -183,7 +188,8 @@ export function TabList({
       )}
       {pane.tabs.map((tab, i) => {
         const isActive = tab.id === pane.activeTabId;
-        const focused = isActive && paneActive;
+        // While the Settings tab shows, no file tab reads as the current one.
+        const focused = isActive && paneActive && !settingsActive;
         const Icon = iconFor(tab.path);
         const key = `tab:${paneId}:${tab.id}`;
         return (
@@ -220,6 +226,7 @@ export function TabList({
                 suppressClick.current = false;
                 return;
               }
+              setSettingsActive(false);
               activateTab(paneId, tab.id);
               setActivePane(paneId);
               focusActivePane();
@@ -278,6 +285,7 @@ export function TabList({
         );
       })}
       {dropIndex != null && dropIndex >= pane.tabs.length && <TabInsertionLine />}
+      {beforeNewTab}
       <button
         className="flex h-[30px] w-full cursor-default items-center gap-2 rounded-lg px-2.5 text-[12.5px] text-tertiary hover:bg-hov hover:text-secondary"
         title={`New Tab${shortcutHint("newTab")}`}
@@ -285,6 +293,7 @@ export function TabList({
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => {
           const active = pane.tabs.find((t) => t.id === pane.activeTabId);
+          setSettingsActive(false);
           openTab(paneId, active?.path ?? "/");
           setActivePane(paneId);
           focusActivePane();

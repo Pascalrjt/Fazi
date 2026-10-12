@@ -71,7 +71,7 @@ export function IconButton({
 }
 
 /** Back / forward for the active pane's active tab. */
-export function NavButtons() {
+export function NavButtons({ disabled }: { disabled?: boolean }) {
   const activePaneId = useApp((s) => s.activePaneId);
   const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
   const tab = pane ? activeTabOf(pane) : null;
@@ -82,13 +82,13 @@ export function NavButtons() {
       <IconButton
         icon={ChevronLeft}
         title={withShortcut("Back", "back")}
-        disabled={!tab || tab.back.length === 0}
+        disabled={disabled || !tab || tab.back.length === 0}
         onClick={() => pane && tab && back(pane.id, tab.id)}
       />
       <IconButton
         icon={ChevronRight}
         title={withShortcut("Forward", "forward")}
-        disabled={!tab || tab.forward.length === 0}
+        disabled={disabled || !tab || tab.forward.length === 0}
         onClick={() => pane && tab && forward(pane.id, tab.id)}
       />
     </div>

@@ -7,10 +7,10 @@ import { usePanes } from "../../stores/panes";
 import { GetInfoPanel } from "../info/GetInfoPanel";
 import { Pane } from "./Pane";
 
-export function PaneArea() {
+export function PaneArea({ hidden }: { hidden?: boolean }) {
   const split = usePanes((s) => s.split);
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 gap-2" data-tauri-drag-region>
+    <div className={hidden ? "hidden" : "flex min-h-0 min-w-0 flex-1 gap-2"} data-tauri-drag-region>
       <Pane paneId="left" />
       {split && <Pane paneId="right" />}
       <GetInfoPanel />

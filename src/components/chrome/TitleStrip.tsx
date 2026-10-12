@@ -6,6 +6,8 @@
  * after the lights when the sidebar docks left, and at the strip's end,
  * above the sidebar, when it docks right. The sidebar and the pane cards
  * both start below the strip, so the lights always sit in a real title bar.
+ * While the Settings tab shows, the address field reads Settings › Section
+ * and the view controls give way to the settings search.
  */
 import clsx from "clsx";
 import { ArrowUp, Folder } from "lucide-react";
@@ -15,13 +17,14 @@ import { useSettings } from "../../stores/settings";
 import { getCommand } from "../../lib/commands/registry";
 import { shortcutLabel } from "../../lib/keyboard";
 import { PathBar } from "./PathBar";
+import { SettingsAddress, SettingsSearchField } from "../settings/SettingsTab";
 import { SearchField } from "./SearchField";
 import { IconButton, NavButtons, SidebarToggle, ViewControls } from "./WindowControls";
 
 /** Matches the sidebar's width so a right-docked toggle sits above it. */
 export const SIDEBAR_WIDTH = 236;
 
-function UpButton() {
+function UpButton({ disabled }: { disabled?: boolean }) {
   const activePaneId = useApp((s) => s.activePaneId);
   const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
   const tab = pane ? activeTabOf(pane) : null;
@@ -31,7 +34,7 @@ function UpButton() {
     <IconButton
       icon={ArrowUp}
       title={`Enclosing Folder${shortcut ? ` (${shortcutLabel(shortcut)})` : ""}`}
-      disabled={!tab || tab.path === "/"}
+      disabled={disabled || !tab || tab.path === "/"}
       onClick={() => pane && tab && up(pane.id, tab.id)}
     />
   );
@@ -60,6 +63,7 @@ function AddressField() {
 export function TitleStrip() {
   const position = useSettings((s) => s.sidebarPosition);
   const collapsed = useSettings((s) => s.sidebarCollapsed);
+  const settings = useApp((s) => s.settingsActive);
   return (
     <header
       className="relative flex h-11 shrink-0 items-center gap-1 pr-2"
@@ -68,13 +72,19 @@ export function TitleStrip() {
       {/* room for the traffic lights */}
       <div className="w-[84px] shrink-0 self-stretch" data-tauri-drag-region />
       {position === "left" && <SidebarToggle />}
-      <NavButtons />
-      <UpButton />
+      <NavButtons disabled={settings} />
+      <UpButton disabled={settings} />
       <div className="ml-1 mr-1.5 flex min-w-0 flex-1">
-        <AddressField />
+        {settings ? <SettingsAddress /> : <AddressField />}
       </div>
-      {collapsed && <SearchField className="mr-1 w-[200px] shrink-0" />}
-      <ViewControls />
+      {settings ? (
+        <SettingsSearchField />
+      ) : (
+        <>
+          {collapsed && <SearchField className="mr-1 w-[200px] shrink-0" />}
+          <ViewControls />
+        </>
+      )}
       {position === "right" && (
         <div
           className={clsx("flex shrink-0 justify-end self-stretch items-center")}

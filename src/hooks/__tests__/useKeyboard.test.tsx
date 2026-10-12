@@ -32,6 +32,7 @@ beforeEach(() => {
   useApp.setState({
     renaming: null,
     settingsOpen: false,
+    settingsActive: false,
     batchRenameOpen: false,
     paletteOpen: false,
     previewOpen: false,
@@ -74,8 +75,25 @@ describe("rename context escape hatch", () => {
 
 describe("currentKeyContext precedence", () => {
   it("ranks modal above palette, rename, and preview", () => {
-    useApp.setState({ settingsOpen: true, paletteOpen: true, renaming: { paneId: "left", tabId: "t", entryId: 1 } });
+    useApp.setState({ batchRenameOpen: true, paletteOpen: true, renaming: { paneId: "left", tabId: "t", entryId: 1 } });
     expect(currentKeyContext()).toBe("modal");
+  });
+
+  it("gives the Settings tab its own context, even in its text fields", () => {
+    useApp.setState({ settingsOpen: true, settingsActive: true });
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    expect(currentKeyContext(input)).toBe("settings");
+    expect(currentKeyContext()).toBe("settings");
+    input.remove();
+    // An open but inactive Settings tab leaves the panes in charge.
+    useApp.setState({ settingsActive: false });
+    expect(currentKeyContext()).toBe("browse");
+  });
+
+  it("ranks the palette above the Settings tab", () => {
+    useApp.setState({ settingsOpen: true, settingsActive: true, paletteOpen: true });
+    expect(currentKeyContext()).toBe("palette");
   });
 
   it("ranks rename above preview but below palette", () => {
@@ -91,5 +109,36 @@ describe("currentKeyContext precedence", () => {
     expect(currentKeyContext(input)).toBe("search");
     expect(currentKeyContext()).toBe("browse");
     input.remove();
+  });
+});
+
+describe("Settings tab shortcuts", () => {
+  it("closes the tab with ⌘W and keeps file shortcuts away from the hidden panes", () => {
+    render(<Probe />);
+    useApp.setState({ settingsOpen: true, settingsActive: true });
+
+    // Space would open Quick Look in browse.
+    fireEvent.keyDown(window, { key: " ", code: "Space" });
+    expect(useApp.getState().previewOpen).toBe(false);
+
+    fireEvent.keyDown(window, { key: "w", code: "KeyW", metaKey: true });
+    expect(useApp.getState().settingsOpen).toBe(false);
+    expect(useApp.getState().settingsActive).toBe(false);
+  });
+
+  it("leaves the tab open but switches back to the panes on ⌃⇥", () => {
+    render(<Probe />);
+    useApp.setState({ settingsOpen: true, settingsActive: true });
+    fireEvent.keyDown(window, { key: "Tab", code: "Tab", ctrlKey: true });
+    expect(useApp.getState().settingsOpen).toBe(true);
+    expect(useApp.getState().settingsActive).toBe(false);
+  });
+
+  it("focuses the settings search on ⌘F", () => {
+    render(<Probe />);
+    useApp.setState({ settingsOpen: true, settingsActive: true, settingsSearchFocusSeq: 0, searchFocusSeq: 0 });
+    fireEvent.keyDown(window, { key: "f", code: "KeyF", metaKey: true });
+    expect(useApp.getState().settingsSearchFocusSeq).toBe(1);
+    expect(useApp.getState().searchFocusSeq).toBe(0);
   });
 });

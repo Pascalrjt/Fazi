@@ -95,6 +95,7 @@ beforeEach(() => {
     activePaneId: "left",
     renaming: null,
     settingsOpen: false,
+    settingsActive: false,
     batchRenameOpen: false,
     paletteOpen: false,
     previewOpen: false,
