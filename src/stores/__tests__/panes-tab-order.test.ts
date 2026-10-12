@@ -39,3 +39,48 @@ describe("openTab placement", () => {
     expect(paths()).toEqual(["/a", "/x", "/y", "/z", "/b", "/c"]);
   });
 });
+
+describe("moveTab", () => {
+  const pathsOf = (id: "left" | "right") =>
+    usePanes.getState().panes.find((p) => p.id === id)?.tabs.map((t) => t.path);
+
+  beforeEach(() => {
+    usePanes.getState().boot("/a");
+    const s = usePanes.getState();
+    s.openTab("left", "/b");
+    s.openTab("left", "/c");
+  });
+
+  it("reorders within a pane (insertion index counted before the move)", () => {
+    const c = usePanes.getState().panes[0].tabs[2].id;
+    usePanes.getState().moveTab("left", c, "left", 0);
+    expect(pathsOf("left")).toEqual(["/c", "/a", "/b"]);
+    const a = usePanes.getState().panes[0].tabs[1].id;
+    usePanes.getState().moveTab("left", a, "left", 3);
+    expect(pathsOf("left")).toEqual(["/c", "/b", "/a"]);
+  });
+
+  it("moves a tab into the other pane and activates it there", () => {
+    usePanes.getState().setSplit(true, "/r");
+    const b = usePanes.getState().panes[0].tabs[1].id;
+    usePanes.getState().moveTab("left", b, "right", 0);
+    expect(pathsOf("left")).toEqual(["/a", "/c"]);
+    expect(pathsOf("right")).toEqual(["/b", "/r"]);
+    const right = usePanes.getState().panes.find((p) => p.id === "right");
+    expect(right?.tabs.find((t) => t.id === right.activeTabId)?.path).toBe("/b");
+  });
+
+  it("keeps the left pane's last tab, and closes dual pane when the right one empties", () => {
+    usePanes.getState().boot("/solo");
+    usePanes.getState().setSplit(true, "/r");
+    const solo = usePanes.getState().panes[0].tabs[0].id;
+    usePanes.getState().moveTab("left", solo, "right", 0);
+    expect(pathsOf("left")).toEqual(["/solo"]);
+
+    const r = usePanes.getState().panes.find((p) => p.id === "right")!.tabs[0].id;
+    usePanes.getState().moveTab("right", r, "left", 1);
+    expect(usePanes.getState().split).toBe(false);
+    expect(usePanes.getState().panes.map((p) => p.id)).toEqual(["left"]);
+    expect(pathsOf("left")).toEqual(["/solo", "/r"]);
+  });
+});

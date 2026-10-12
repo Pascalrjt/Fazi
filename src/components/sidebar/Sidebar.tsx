@@ -8,7 +8,8 @@
  * while a row's center still means "move into that folder". The same
  * contract applies to native drags (Finder drag-in and self-drops).
  * Dropping on the Trash row trashes the dragged items (never a copy into
- * ~/.Trash).
+ * ~/.Trash). Dropping folders anywhere else in the sidebar (the tabs,
+ * the empty space, the footer) pins them after the existing pins.
  *
  * Pin reorder is POINTER-event based (pointerdown + tracked pointermove),
  * not HTML5 drag & drop: with Tauri's dragDropEnabled (required for Finder
@@ -48,7 +49,7 @@ import {
 } from "../../lib/keyboardFocus";
 import { useVim } from "../../stores/vim";
 import { CleanupBadge } from "./CleanupBadge";
-import { TabList } from "./TabList";
+import { TabList, type TabDragHooks, type TabDragState } from "./TabList";
 import { SearchField } from "../chrome/SearchField";
 import { NavButtons, SidebarToggle } from "../chrome/WindowControls";
 
@@ -441,9 +442,39 @@ function FavoritesSection({
   );
 }
 
+/** Which tab group the pointer is over, and the insertion index in it. */
+function tabDropTarget(
+  nav: HTMLElement | null,
+  clientY: number,
+): { pane: "left" | "right"; index: number } | null {
+  const groups = [...(nav?.querySelectorAll<HTMLElement>("[data-tab-group]") ?? [])];
+  if (groups.length === 0) return null;
+  // The group under the pointer; above or below every group clamps to the
+  // nearest one.
+  let group = groups[groups.length - 1];
+  for (const g of groups) {
+    if (clientY <= g.getBoundingClientRect().bottom) {
+      group = g;
+      break;
+    }
+  }
+  const rows = [...group.querySelectorAll<HTMLElement>("[data-tab-row]")];
+  let index = rows.length;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i].getBoundingClientRect();
+    if (clientY < r.top + r.height / 2) {
+      index = i;
+      break;
+    }
+  }
+  return { pane: group.dataset.tabGroup === "right" ? "right" : "left", index };
+}
+
 export function Sidebar() {
   const sidebarRef = useRef<HTMLElement>(null);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const [tabDrag, setTabDrag] = useState<TabDragState | null>(null);
+  const moveTab = usePanes((s) => s.moveTab);
   const collapsed = useSettings((s) => s.sidebarCollapsed);
   const position = useSettings((s) => s.sidebarPosition);
   const pinned = useSettings((s) => s.favorites);
@@ -455,6 +486,47 @@ export function Sidebar() {
   const tabKeys = usePanes((s) =>
     s.panes.flatMap((p) => p.tabs.map((t) => `tab:${p.id}:${t.id}`)).join("\n"),
   );
+
+  // Folder drops anywhere in the sidebar pin after the existing pins. The
+  // lowest-priority sidebar zone: the Favorites section's own pin zone
+  // (15), folder rows and tiles (16), and the Trash row (20) all win.
+  useEffect(() => {
+    return registerDropZone({
+      priority: 5,
+      hitTest: (x, y) => {
+        const nav = sidebarRef.current;
+        const rect = nav?.getBoundingClientRect();
+        if (!nav || !rect || rect.width <= 0) return null;
+        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
+        return { action: "pin", index: nav.querySelectorAll("[data-fav-index]").length };
+      },
+    });
+  }, []);
+
+  const tabDragHooks: TabDragHooks = {
+    state: tabDrag,
+    begin: (fromPane, tabId, clientY) => {
+      const target = tabDropTarget(sidebarRef.current, clientY);
+      setTabDrag({
+        tabId,
+        fromPane,
+        overPane: target?.pane ?? fromPane,
+        index: target?.index ?? 0,
+      });
+    },
+    update: (clientY) => {
+      const target = tabDropTarget(sidebarRef.current, clientY);
+      if (!target) return;
+      setTabDrag((d) => (d ? { ...d, overPane: target.pane, index: target.index } : d));
+    },
+    commit: (fromPane, tabId, clientY) => {
+      // Read the target from the pointer, never from possibly-stale state.
+      const target = tabDropTarget(sidebarRef.current, clientY);
+      setTabDrag(null);
+      if (target) moveTab(fromPane, tabId, target.pane, target.index);
+    },
+    cancel: () => setTabDrag(null),
+  };
 
   if (collapsed) return null;
 
@@ -662,6 +734,7 @@ export function Sidebar() {
           showHeader={split}
           tabStopKey={tabStopKey}
           onFocused={setFocusedKey}
+          drag={tabDragHooks}
         />
         {split && (
           <TabList
@@ -669,6 +742,7 @@ export function Sidebar() {
             showHeader
             tabStopKey={tabStopKey}
             onFocused={setFocusedKey}
+            drag={tabDragHooks}
           />
         )}
       </div>
