@@ -53,6 +53,12 @@ interface ColWidths {
 
 const DEFAULT_COLS: ColWidths = { kind: 110, size: 84, mtime: 148, tags: 64, cleanup: 96 };
 
+
+/** Narrow panes (dual pane, Get Info open) shed Tags, then Kind, so the
+ *  Name column keeps room instead of collapsing to nothing. */
+const NARROW_HIDES_TAGS = "@max-[720px]:hidden";
+const NARROW_HIDES_KIND = "@max-[600px]:hidden";
+
 function loadCols(): ColWidths {
   try {
     const raw = localStorage.getItem("fazi-cols");
@@ -286,7 +292,7 @@ const FileRow = memo(function FileRow({
         )}
         {showCleanup && <CleanupFlag path={entry.path} />}
       </span>
-      <span className="shrink-0 truncate text-xs text-secondary" style={{ width: cols.kind }}>
+      <span className={clsx("shrink-0 truncate text-xs text-secondary", NARROW_HIDES_KIND)} style={{ width: cols.kind }}>
         {entry.hydrated || entry.ext !== "" || entry.kind !== "unknown"
           ? entryKindLabel(entry)
           : ""}
@@ -303,7 +309,7 @@ const FileRow = memo(function FileRow({
       <span className="tnum shrink-0 truncate text-xs text-secondary" style={{ width: cols.mtime }}>
         {entry.hydrated ? formatDate(entry.mtime) : <span className="shimmer" />}
       </span>
-      <span className="flex shrink-0 items-center gap-1" style={{ width: cols.tags }}>
+      <span className={clsx("flex shrink-0 items-center gap-1", NARROW_HIDES_TAGS)} style={{ width: cols.tags }}>
         {entry.tags.slice(0, 5).map((t) => (
           <span
             key={t.color + t.name}
@@ -331,12 +337,12 @@ function GhostRow({
     <div className="ghost-row flex h-full items-center gap-2 px-2 text-[13px]">
       <span className="w-4 shrink-0 text-center text-xs text-tertiary">{ghost.isDir ? "▸" : "·"}</span>
       <span className="min-w-0 flex-1 truncate text-primary">{ghost.name}</span>
-      <span className="shrink-0" style={{ width: cols.kind }} />
+      <span className={clsx("shrink-0", NARROW_HIDES_KIND)} style={{ width: cols.kind }} />
       <span className="shrink-0" style={{ width: cols.size }} />
       <span className="shrink-0 text-xs text-tertiary" style={{ width: cols.mtime }}>
         pending…
       </span>
-      <span className="shrink-0" style={{ width: cols.tags }} />
+      <span className={clsx("shrink-0", NARROW_HIDES_TAGS)} style={{ width: cols.tags }} />
       {showCleanup && <span className="shrink-0" style={{ width: cols.cleanup }} />}
     </div>
   );
@@ -354,6 +360,7 @@ function HeaderCell({
   width,
   align,
   onResize,
+  className,
 }: {
   label: string;
   sortKey: SortKey | null;
@@ -362,12 +369,13 @@ function HeaderCell({
   width?: number;
   align?: "right";
   onResize?: (dx: number) => void;
+  className?: string;
 }) {
   const setSort = usePanes((s) => s.setSort);
   const active = sortKey != null && tab.sort.key === sortKey;
   return (
     <div
-      className={clsx("relative flex shrink-0 items-center", width == null && "min-w-0 flex-1")}
+      className={clsx("relative flex shrink-0 items-center", width == null && "min-w-0 flex-1", className)}
       style={width != null ? { width } : undefined}
     >
       <button
@@ -707,7 +715,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
     !tab.loading && tab.entries.length > 0 && visible.length === 0 && tab.filter !== "";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="@container flex h-full min-h-0 flex-col">
       {/* header */}
       <div className="flex h-6 shrink-0 items-center gap-2 border-b border-edge px-2">
         <span className="w-4 shrink-0" />
@@ -719,6 +727,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           tab={tab}
           paneId={paneId}
           width={cols.kind}
+          className={NARROW_HIDES_KIND}
           onResize={(dx) => setCols((c) => ({ ...c, kind: Math.max(60, c.kind + dx) }))}
         />
         <HeaderCell
@@ -738,7 +747,14 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           width={cols.mtime}
           onResize={(dx) => setCols((c) => ({ ...c, mtime: Math.max(80, c.mtime + dx) }))}
         />
-        <HeaderCell label="Tags" sortKey={null} tab={tab} paneId={paneId} width={cols.tags} />
+        <HeaderCell
+          label="Tags"
+          sortKey={null}
+          tab={tab}
+          paneId={paneId}
+          width={cols.tags}
+          className={NARROW_HIDES_TAGS}
+        />
         {showCleanup && (
           <HeaderCell
             label="Cleanup"

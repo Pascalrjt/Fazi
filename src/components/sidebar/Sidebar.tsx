@@ -1,7 +1,9 @@
 /**
- * Sidebar: Favorites (default folders + user pins), Trash, Volumes with
- * eject. Rows navigate on click, act as drop targets, and offer a context
- * menu. Dragging folders over the Favorites section pins them Finder-style:
+ * Sidebar (the "rail"): window controls and search on top, the default
+ * folders as icon tiles, user pins as rows, then the open tabs (see
+ * TabList), with Trash and Volumes at the bottom. Hiding the sidebar hides
+ * the tabs with it. Rows navigate on click, act as drop targets, and offer
+ * a context menu. Dragging folders over the Favorites section pins them Finder-style:
  * row edges and section chrome show an insertion line and pin at that slot,
  * while a row's center still means "move into that folder". The same
  * contract applies to native drags (Finder drag-in and self-drops).
@@ -23,7 +25,6 @@ import {
   FileText,
   Folder,
   HardDrive,
-  Hourglass,
   House,
   LayoutGrid,
   Monitor,
@@ -31,8 +32,6 @@ import {
   Usb,
 } from "lucide-react";
 import { useVolumes } from "../../stores/volumes";
-import { useCleanup } from "../../stores/cleanup";
-import { leavingSoon } from "../../lib/cleanup";
 import { useSettings } from "../../stores/settings";
 import { useApp } from "../../stores/app";
 import { usePanes, activeTabOf } from "../../stores/panes";
@@ -48,6 +47,10 @@ import {
   openKeyboardContextMenu,
 } from "../../lib/keyboardFocus";
 import { useVim } from "../../stores/vim";
+import { CleanupBadge } from "./CleanupBadge";
+import { TabList } from "./TabList";
+import { SearchField } from "../chrome/SearchField";
+import { NavButtons, SidebarToggle } from "../chrome/WindowControls";
 
 /** Fraction of a row's height at top/bottom where a path drag means "pin
  *  here" (insertion) rather than "move into this folder" (center). */
@@ -106,11 +109,14 @@ function SidebarRow({
   favSection,
   tabStop,
   onFocused,
+  variant = "row",
 }: {
   row: RowSpec;
   favSection?: FavSectionHooks;
   tabStop: boolean;
   onFocused(key: string): void;
+  /** "tile": icon-only square for the default folders. */
+  variant?: "row" | "tile";
 }) {
   const activePaneId = useApp((s) => s.activePaneId);
   const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
@@ -138,7 +144,9 @@ function SidebarRow({
 
   // Native drags over a Favorites-section row: the center copies into the
   // folder; the edge bands return null so the section's pin zone wins.
+  // Tiles have no insertion edges — the whole tile copies into the folder.
   const inFavSection = favSection != null;
+  const isTile = variant === "tile";
   useEffect(() => {
     if (!inFavSection) return;
     return registerDropZone({
@@ -148,11 +156,11 @@ function SidebarRow({
         if (!rect || rect.height <= 0) return null;
         if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
         const frac = (y - rect.top) / rect.height;
-        if (frac < EDGE_FRACTION || frac > 1 - EDGE_FRACTION) return null;
+        if (!isTile && (frac < EDGE_FRACTION || frac > 1 - EDGE_FRACTION)) return null;
         return { action: "copyTo", destDir: row.path, targetKey: `fav:${row.path}` };
       },
     });
-  }, [inFavSection, row.path]);
+  }, [inFavSection, isTile, row.path]);
 
   // Drop-ring during native/pointer drags, fed by the registry hover channel.
   useEffect(() => {
@@ -177,8 +185,18 @@ function SidebarRow({
       role="link"
       aria-current={isCurrent ? "page" : undefined}
       className={clsx(
-        "group mx-2 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-accent",
-        isCurrent ? "bg-accent-dim text-primary" : "text-secondary hover:bg-hov",
+        "group cursor-default outline-none focus-visible:ring-1 focus-visible:ring-accent",
+        isTile
+          ? clsx(
+              "relative flex h-10 items-center justify-center rounded-[9px]",
+              isCurrent
+                ? "bg-tab text-accent shadow-[var(--shadow-tab)]"
+                : "bg-field text-secondary shadow-[inset_0_0_0_0.5px_var(--border)] hover:bg-hov hover:text-primary",
+            )
+          : clsx(
+              "flex h-7 items-center gap-2 rounded-md px-2 text-[13px]",
+              isCurrent ? "bg-accent-dim text-primary" : "text-secondary hover:bg-hov",
+            ),
         dropping && "drop-ring",
         favSection?.reorderingPath === row.path && "opacity-60",
       )}
@@ -268,61 +286,53 @@ function SidebarRow({
       title={
         row.volume
           ? `${row.label} — ${formatBytes(row.volume.availableBytes)} available`
-          : row.path
+          : isTile
+            ? row.label
+            : row.path
       }
     >
-      <row.icon size={15} strokeWidth={1.75} className="w-4 shrink-0" aria-hidden />
-      <span className="min-w-0 flex-1 truncate">{row.label}</span>
-      <CleanupBadge folder={row.path} />
-      {row.volume?.isEjectable && (
-        <button
-          className="hidden shrink-0 cursor-default rounded px-1 text-[11px] text-tertiary hover:text-primary group-hover:block"
-          title={`Eject ${row.label}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            ejectVolume(row.path, row.label);
-          }}
-        >
-          <EjectIcon size={12} />
-        </button>
+      {isTile ? (
+        <>
+          <row.icon size={17} strokeWidth={1.75} aria-hidden />
+          <span className="sr-only">{row.label}</span>
+          <CleanupBadge folder={row.path} variant="bubble" />
+        </>
+      ) : (
+        <>
+          <row.icon size={15} strokeWidth={1.75} className="w-4 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{row.label}</span>
+          <CleanupBadge folder={row.path} />
+          {row.volume && (
+            <span
+              className={clsx(
+                "tnum shrink-0 text-[11px] text-tertiary",
+                row.volume.isEjectable && "group-hover:hidden",
+              )}
+            >
+              {formatBytes(row.volume.availableBytes)}
+            </span>
+          )}
+          {row.volume?.isEjectable && (
+            <button
+              className="hidden shrink-0 cursor-default rounded px-1 text-[11px] text-tertiary hover:text-primary group-hover:block"
+              title={`Eject ${row.label}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                ejectVolume(row.path, row.label);
+              }}
+            >
+              <EjectIcon size={12} />
+            </button>
+          )}
+        </>
       )}
-    </div>
-  );
-}
-
-/** Count of items in a rule folder that go to the Trash by tomorrow. */
-function CleanupBadge({ folder }: { folder: string }) {
-  const count = useCleanup((s) => {
-    if (!s.folders.has(folder)) return 0;
-    let n = 0;
-    for (const item of s.items.values()) {
-      if (item.folder === folder && leavingSoon(item, s.now)) n++;
-    }
-    return n;
-  });
-  if (count === 0) return null;
-  return (
-    <span
-      className="tnum flex shrink-0 items-center gap-0.5 text-[11px] text-danger"
-      title={`${count} ${count === 1 ? "item goes" : "items go"} to the Trash by tomorrow`}
-    >
-      <Hourglass size={11} strokeWidth={1.75} aria-hidden />
-      {count}
-    </span>
-  );
-}
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <div className="mx-4 mb-1 mt-4 text-[11px] font-semibold uppercase tracking-wide text-tertiary">
-      {children}
     </div>
   );
 }
 
 /** 2px accent insertion marker shown during favorite reorder and pin drags. */
 function InsertionLine() {
-  return <div data-testid="insertion-line" className="mx-2 h-0.5 rounded bg-accent" />;
+  return <div data-testid="insertion-line" className="h-0.5 rounded bg-accent" />;
 }
 
 /** Insertion index over the favorite rows from the pointer's Y position.
@@ -395,17 +405,23 @@ function FavoritesSection({
   useEffect(() => onPinHover(setInsertIndex), []);
 
   return (
-    <div ref={containerRef} className="rounded-md">
-      <SectionLabel>Favorites</SectionLabel>
-      {defaults.map((row) => (
-        <SidebarRow
-          key={row.key}
-          row={row}
-          favSection={favSection}
-          tabStop={row.key === tabStopKey}
-          onFocused={onFocused}
-        />
-      ))}
+    <div ref={containerRef} className="shrink-0 pb-2 pt-3">
+      <h2 className="sr-only">Favorites</h2>
+      {defaults.length > 0 && (
+        <div className="grid grid-cols-5 gap-1.5">
+          {defaults.map((row) => (
+            <SidebarRow
+              key={row.key}
+              row={row}
+              variant="tile"
+              favSection={favSection}
+              tabStop={row.key === tabStopKey}
+              onFocused={onFocused}
+            />
+          ))}
+        </div>
+      )}
+      <div className={clsx("max-h-[30vh] overflow-y-auto", favorites.length > 0 && "mt-2")}>
       {favorites.map((row, i) => (
         <Fragment key={row.key}>
           {insertIndex === i && <InsertionLine />}
@@ -420,6 +436,7 @@ function FavoritesSection({
         </Fragment>
       ))}
       {insertIndex === favorites.length && <InsertionLine />}
+      </div>
     </div>
   );
 }
@@ -431,9 +448,13 @@ export function Sidebar() {
   const position = useSettings((s) => s.sidebarPosition);
   const pinned = useSettings((s) => s.favorites);
   const showTrash = useSettings((s) => s.showTrashInSidebar);
-  const paneAccentLine = useSettings((s) => s.paneAccentLine);
   const folders = useVolumes((s) => s.folders);
   const volumes = useVolumes((s) => s.volumes);
+  const split = usePanes((s) => s.split);
+  // Joined so the selector stays referentially stable between renders.
+  const tabKeys = usePanes((s) =>
+    s.panes.flatMap((p) => p.tabs.map((t) => `tab:${p.id}:${t.id}`)).join("\n"),
+  );
 
   if (collapsed) return null;
 
@@ -474,9 +495,9 @@ export function Sidebar() {
   }));
 
   const rows = [...defaults, ...favoriteRows, ...trashRows, ...volumeRows];
-  const tabStopKey = rows.some((row) => row.key === focusedKey)
-    ? focusedKey
-    : (rows[0]?.key ?? null);
+  const keys = [...rows.map((row) => row.key), ...tabKeys.split("\n")];
+  const tabStopKey =
+    focusedKey != null && keys.includes(focusedKey) ? focusedKey : (rows[0]?.key ?? null);
 
   const focusRow = (index: number) => {
     const elements = sidebarRef.current?.querySelectorAll<HTMLElement>("[data-sidebar-row]");
@@ -609,55 +630,73 @@ export function Sidebar() {
     <nav
       ref={sidebarRef}
       data-vim-surface="sidebar"
-      aria-label="Locations"
+      aria-label="Locations and tabs"
       onKeyDown={onKeyDown}
       onFocusCapture={(e) => {
         if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) {
           useVim.getState().reset();
         }
       }}
-      className={clsx(
-        "keyboard-surface flex w-[200px] shrink-0 flex-col overflow-hidden border-edge bg-window",
-        paneAccentLine && "keyboard-surface-accent",
-        position === "right" ? "border-l" : "border-r",
-      )}
+      className="keyboard-surface flex w-[244px] shrink-0 flex-col overflow-hidden bg-window px-2.5 pb-2.5"
     >
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-        {(defaults.length > 0 || favoriteRows.length > 0) && (
-          <FavoritesSection
-            defaults={defaults}
-            favorites={favoriteRows}
+      <div
+        className={clsx("flex h-[46px] shrink-0 items-center", position === "left" && "traffic-pad")}
+        data-tauri-drag-region
+      >
+        <div className="min-w-0 flex-1 self-stretch" data-tauri-drag-region />
+        <NavButtons />
+        <SidebarToggle />
+      </div>
+      <SearchField />
+      {(defaults.length > 0 || favoriteRows.length > 0) && (
+        <FavoritesSection
+          defaults={defaults}
+          favorites={favoriteRows}
+          tabStopKey={tabStopKey}
+          onFocused={setFocusedKey}
+        />
+      )}
+      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto border-t border-edge px-1 pb-1 pt-1.5">
+        <TabList
+          paneId="left"
+          showHeader={split}
+          tabStopKey={tabStopKey}
+          onFocused={setFocusedKey}
+        />
+        {split && (
+          <TabList
+            paneId="right"
+            showHeader
             tabStopKey={tabStopKey}
             onFocused={setFocusedKey}
           />
         )}
-        {trashRows.map((row) => (
-          <SidebarRow
-            key={row.key}
-            row={row}
-            tabStop={row.key === tabStopKey}
-            onFocused={setFocusedKey}
-          />
-        ))}
-        {volumeRows.length > 0 && (
-          <>
-            <SectionLabel>Volumes</SectionLabel>
-            {volumeRows.map((row) => (
-              <SidebarRow
-                key={row.key}
-                row={row}
-                tabStop={row.key === tabStopKey}
-                onFocused={setFocusedKey}
-              />
-            ))}
-          </>
-        )}
-        {defaults.length === 0 && volumeRows.length === 0 && (
-          <div className="px-4 py-6 text-xs text-tertiary">
-            Locations appear here when the backend is running.
-          </div>
-        )}
       </div>
+      {(trashRows.length > 0 || volumeRows.length > 0) && (
+        <div className="shrink-0 border-t border-edge pt-2">
+          {trashRows.map((row) => (
+            <SidebarRow
+              key={row.key}
+              row={row}
+              tabStop={row.key === tabStopKey}
+              onFocused={setFocusedKey}
+            />
+          ))}
+          {volumeRows.map((row) => (
+            <SidebarRow
+              key={row.key}
+              row={row}
+              tabStop={row.key === tabStopKey}
+              onFocused={setFocusedKey}
+            />
+          ))}
+        </div>
+      )}
+      {defaults.length === 0 && volumeRows.length === 0 && (
+        <div className="px-2 py-3 text-xs text-tertiary">
+          Locations appear here when the backend is running.
+        </div>
+      )}
     </nav>
   );
 }

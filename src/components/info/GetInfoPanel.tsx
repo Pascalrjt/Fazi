@@ -1,5 +1,5 @@
 /**
- * Get Info slide-over (⌘I): icon, kind, sizes (lazy dir_size with live count),
+ * Get Info card (⌘I), beside the panes: icon, kind, sizes (lazy dir_size with live count),
  * dates, where-from, permissions, tag editor. Aggregates multi-selections.
  */
 import { useEffect, useMemo, useState } from "react";
@@ -221,11 +221,9 @@ export function GetInfoPanel() {
   if (!open || !tab) return null;
 
   return (
-    <div className="anim-slide-left flex w-[280px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-raised py-3">
+    <div className="anim-slide-left flex w-[270px] shrink-0 flex-col overflow-y-auto rounded-[10px] bg-pane py-3 shadow-[var(--shadow-card)]">
       <div className="flex items-center justify-between px-4 pb-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-tertiary">
-          Info
-        </span>
+        <span className="text-[12px] font-semibold text-secondary">Info</span>
         <button
           className="cursor-default rounded px-1 text-tertiary hover:text-primary"
           onClick={() => setOpen(false)}

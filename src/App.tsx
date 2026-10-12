@@ -1,5 +1,6 @@
-/** Fazi application shell: layout grid, boot sequence, global overlays. */
+/** Fazi application shell: rail layout, boot sequence, global overlays. */
 import { useEffect } from "react";
+import clsx from "clsx";
 import { rebuildRegistry, registerAllCommands } from "./lib/commands";
 import { getCommand } from "./lib/commands/registry";
 import { runMenuCommand } from "./lib/commands/menuCommand";
@@ -15,14 +16,11 @@ import { useApp } from "./stores/app";
 import { useVim } from "./stores/vim";
 import { startCleanup } from "./stores/cleanup";
 import { pluralize } from "./lib/format";
-import { Toolbar } from "./components/chrome/Toolbar";
-import { StatusBar } from "./components/chrome/StatusBar";
 import { Toasts } from "./components/chrome/Toasts";
 import { FdaBanner } from "./components/chrome/FdaBanner";
 import { ConfirmDialog } from "./components/chrome/ConfirmDialog";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { PaneArea } from "./components/panes/PaneArea";
-import { GetInfoPanel } from "./components/info/GetInfoPanel";
 import { SettingsOverlay } from "./components/settings/SettingsOverlay";
 import { OpCards } from "./components/ops/OpCards";
 import { ConflictDialog } from "./components/ops/ConflictDialog";
@@ -112,6 +110,7 @@ export default function App() {
   const theme = useSettings((s) => s.theme);
   const accent = useSettings((s) => s.accent);
   const sidebarPosition = useSettings((s) => s.sidebarPosition);
+  const sidebarCollapsed = useSettings((s) => s.sidebarCollapsed);
 
   useEffect(() => {
     applyAppearance(theme, accent);
@@ -162,17 +161,23 @@ export default function App() {
     };
   }, []);
 
+  // Rail layout: the sidebar is part of the window frame, and the panes
+  // float beside it as cards. No toolbar or window-wide status bar — each
+  // card carries its own path header and status footer.
   return (
-    <div className="flex h-full flex-col bg-window text-primary">
-      <Toolbar />
-      <FdaBanner />
-      <div className="flex min-h-0 flex-1">
-        {sidebarPosition === "left" && <Sidebar />}
+    <div className="flex h-full bg-window text-primary">
+      {sidebarPosition === "left" && <Sidebar />}
+      <main
+        className={clsx(
+          "flex min-w-0 flex-1 flex-col gap-2 py-2",
+          sidebarPosition === "left" && !sidebarCollapsed ? "pr-2" : "px-2",
+        )}
+        data-tauri-drag-region
+      >
+        <FdaBanner />
         <PaneArea />
-        <GetInfoPanel />
-        {sidebarPosition === "right" && <Sidebar />}
-      </div>
-      <StatusBar />
+      </main>
+      {sidebarPosition === "right" && <Sidebar />}
 
       {/* overlays & transient chrome */}
       <PreviewOverlay />

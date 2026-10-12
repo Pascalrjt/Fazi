@@ -2,30 +2,39 @@
 
 /* ---------------------------------------------------------------------------
  * Design tokens — dark-first, light theme via prefers-color-scheme.
+ * The window color is the frame (sidebar + gutters); panes float on it as
+ * cards in the pane color.
  * ------------------------------------------------------------------------- */
 
 :root {
-  /* backgrounds, layered */
-  --bg-window: #1a1c20;
-  --bg-pane: #202329;
+  /* the window frame: sidebar and the gutters between cards */
+  --bg-window: #15181d;
+  /* content cards (panes, Get Info) */
+  --bg-pane: #1f2228;
+  /* popovers, menus, dialogs, subtle fills */
   --bg-raised: #2a2e36;
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-stripe: rgba(255, 255, 255, 0.03);
+  /* fields and tiles sitting on the frame */
+  --bg-field: rgba(255, 255, 255, 0.05);
+  /* the focused vertical tab / current place tile */
+  --bg-tab: #2a2e36;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-stripe: rgba(255, 255, 255, 0.025);
 
-  /* text */
-  --text-primary: #e8eaed;
-  --text-secondary: #9aa0aa;
-  --text-tertiary: #61666e;
+  --text-primary: #e7eaf0;
+  --text-secondary: #a0a7b3;
+  --text-tertiary: #666d79;
 
-  /* the one accent — selection, focus rings, progress. Nothing else. */
-  --accent: #4f8ef7;
-  --accent-dim: rgba(79, 142, 247, 0.28);
-  --accent-faint: rgba(79, 142, 247, 0.14);
+  /* the one accent: selection, focus rings, progress. Nothing else. */
+  --accent: #7088f5;
+  --accent-dim: rgba(112, 136, 245, 0.26);
+  --accent-faint: rgba(112, 136, 245, 0.11);
 
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --danger: #e5534b;
-  --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --danger: #ef6b62;
+  --shadow-overlay: 0 10px 40px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 0 0 0.5px rgba(255, 255, 255, 0.07), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-tab: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.07);
 
   color-scheme: dark;
 }
@@ -33,24 +42,33 @@
 @media (prefers-color-scheme: light) {
   /* System theme only — an explicit data-theme wins below. */
   :root:not([data-theme="dark"]) {
-    --bg-window: #f2f3f5;
+    /* the window frame: sidebar and the gutters between cards */
+    --bg-window: #dbe1e9;
+    /* content cards (panes, Get Info) */
     --bg-pane: #ffffff;
-    --bg-raised: #eceef1;
-    --bg-hover: rgba(0, 0, 0, 0.045);
-    --bg-stripe: rgba(0, 0, 0, 0.03);
+    /* popovers, menus, dialogs, subtle fills */
+    --bg-raised: #f3f5f8;
+    /* fields and tiles sitting on the frame */
+    --bg-field: rgba(255, 255, 255, 0.72);
+    /* the focused vertical tab / current place tile */
+    --bg-tab: #ffffff;
+    --bg-hover: rgba(24, 38, 66, 0.06);
+    --bg-stripe: rgba(24, 38, 66, 0.028);
 
-    --text-primary: #1c1e22;
-    --text-secondary: #5c626c;
-    --text-tertiary: #9aa0aa;
+    --text-primary: #18202e;
+    --text-secondary: #4f5a6c;
+    --text-tertiary: #8690a0;
 
-    --accent: #3478f6;
-    --accent-dim: rgba(52, 120, 246, 0.24);
-    --accent-faint: rgba(52, 120, 246, 0.1);
+    --accent: #3352d4;
+    --accent-dim: rgba(51, 82, 212, 0.16);
+    --accent-faint: rgba(51, 82, 212, 0.08);
 
-    --border: rgba(0, 0, 0, 0.1);
-    --border-strong: rgba(0, 0, 0, 0.18);
-    --danger: #d0342c;
-    --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
+    --border: rgba(24, 38, 66, 0.1);
+    --border-strong: rgba(24, 38, 66, 0.18);
+    --danger: #d03b33;
+    --shadow-overlay: 0 10px 40px rgba(20, 30, 50, 0.18), 0 0 0 0.5px rgba(20, 30, 50, 0.12);
+    --shadow-card: 0 0 0 0.5px rgba(20, 30, 50, 0.12), 0 1px 3px rgba(20, 30, 50, 0.08);
+    --shadow-tab: 0 1px 2px rgba(20, 30, 50, 0.12), 0 0 0 0.5px rgba(20, 30, 50, 0.08);
 
     color-scheme: light;
   }
@@ -58,47 +76,66 @@
 
 /* Explicit theme override (Settings → Appearance). */
 :root[data-theme="light"] {
-    --bg-window: #f2f3f5;
+    /* the window frame: sidebar and the gutters between cards */
+    --bg-window: #dbe1e9;
+    /* content cards (panes, Get Info) */
     --bg-pane: #ffffff;
-    --bg-raised: #eceef1;
-    --bg-hover: rgba(0, 0, 0, 0.045);
-    --bg-stripe: rgba(0, 0, 0, 0.03);
+    /* popovers, menus, dialogs, subtle fills */
+    --bg-raised: #f3f5f8;
+    /* fields and tiles sitting on the frame */
+    --bg-field: rgba(255, 255, 255, 0.72);
+    /* the focused vertical tab / current place tile */
+    --bg-tab: #ffffff;
+    --bg-hover: rgba(24, 38, 66, 0.06);
+    --bg-stripe: rgba(24, 38, 66, 0.028);
 
-    --text-primary: #1c1e22;
-    --text-secondary: #5c626c;
-    --text-tertiary: #9aa0aa;
+    --text-primary: #18202e;
+    --text-secondary: #4f5a6c;
+    --text-tertiary: #8690a0;
 
-    --accent: #3478f6;
-    --accent-dim: rgba(52, 120, 246, 0.24);
-    --accent-faint: rgba(52, 120, 246, 0.1);
+    --accent: #3352d4;
+    --accent-dim: rgba(51, 82, 212, 0.16);
+    --accent-faint: rgba(51, 82, 212, 0.08);
 
-    --border: rgba(0, 0, 0, 0.1);
-    --border-strong: rgba(0, 0, 0, 0.18);
-    --danger: #d0342c;
-    --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
+    --border: rgba(24, 38, 66, 0.1);
+    --border-strong: rgba(24, 38, 66, 0.18);
+    --danger: #d03b33;
+    --shadow-overlay: 0 10px 40px rgba(20, 30, 50, 0.18), 0 0 0 0.5px rgba(20, 30, 50, 0.12);
+    --shadow-card: 0 0 0 0.5px rgba(20, 30, 50, 0.12), 0 1px 3px rgba(20, 30, 50, 0.08);
+    --shadow-tab: 0 1px 2px rgba(20, 30, 50, 0.12), 0 0 0 0.5px rgba(20, 30, 50, 0.08);
 
     color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg-window: #1a1c20;
-  --bg-pane: #202329;
+  /* the window frame: sidebar and the gutters between cards */
+  --bg-window: #15181d;
+  /* content cards (panes, Get Info) */
+  --bg-pane: #1f2228;
+  /* popovers, menus, dialogs, subtle fills */
   --bg-raised: #2a2e36;
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-stripe: rgba(255, 255, 255, 0.03);
+  /* fields and tiles sitting on the frame */
+  --bg-field: rgba(255, 255, 255, 0.05);
+  /* the focused vertical tab / current place tile */
+  --bg-tab: #2a2e36;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-stripe: rgba(255, 255, 255, 0.025);
 
-  --text-primary: #e8eaed;
-  --text-secondary: #9aa0aa;
-  --text-tertiary: #61666e;
+  --text-primary: #e7eaf0;
+  --text-secondary: #a0a7b3;
+  --text-tertiary: #666d79;
 
-  --accent: #4f8ef7;
-  --accent-dim: rgba(79, 142, 247, 0.28);
-  --accent-faint: rgba(79, 142, 247, 0.14);
+  /* the one accent: selection, focus rings, progress. Nothing else. */
+  --accent: #7088f5;
+  --accent-dim: rgba(112, 136, 245, 0.26);
+  --accent-faint: rgba(112, 136, 245, 0.11);
 
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --danger: #e5534b;
-  --shadow-overlay: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --danger: #ef6b62;
+  --shadow-overlay: 0 10px 40px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 0 0 0.5px rgba(255, 255, 255, 0.07), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-tab: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.07);
 
   color-scheme: dark;
 }
@@ -107,6 +144,8 @@
   --color-window: var(--bg-window);
   --color-pane: var(--bg-pane);
   --color-raised: var(--bg-raised);
+  --color-field: var(--bg-field);
+  --color-tab: var(--bg-tab);
   --color-hov: var(--bg-hover);
   --color-stripe: var(--bg-stripe);
   --color-primary: var(--text-primary);
@@ -360,31 +399,18 @@ textarea {
   border-radius: 5px;
 }
 
-/* Keyboard surface ownership: a single accent rule replaces the browser's
-   full focus outline and makes gs transitions visible without shifting layout. */
+/* Keyboard surface ownership: the pane card that holds keyboard focus gets
+   an accent ring (Settings → Appearance → Focus ring) instead of the
+   browser's outline, so gs transitions are visible without shifting layout.
+   Sidebar rows show their own focus ring. */
 .keyboard-surface {
   position: relative;
 }
 
-.keyboard-surface::after {
-  content: "";
-  position: absolute;
-  z-index: 20;
-  top: 0;
-  right: 0;
-  left: 0;
-  height: 2px;
-  pointer-events: none;
-  background: var(--accent);
-  opacity: 0;
-}
-
-.keyboard-surface[data-vim-surface="sidebar"].keyboard-surface-accent:focus-within::after {
-  opacity: 1;
-}
-
-.keyboard-surface[data-vim-surface="pane"]:focus > .keyboard-pane-accent {
-  border-top-color: var(--accent);
+.pane-focus-ring[data-vim-surface="pane"]:focus {
+  box-shadow:
+    0 0 0 1.5px var(--accent),
+    var(--shadow-card);
 }
 
 /* Settings search: rows filter themselves (SettingsFilterContext), so hide

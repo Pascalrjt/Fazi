@@ -280,16 +280,16 @@ describe("sidebar favorites drag & drop", () => {
     expect(useOps.getState().cards).toHaveLength(0);
   });
 
-  it("edge drop over a default row pins at slot 0", async () => {
+  it("drop in the gap around the default tiles pins at slot 0", async () => {
     seedListing([dirEntry(1, "Projects", "/files/Projects")]);
     render(<Sidebar />);
     mockSectionRect(0, 200);
-    // Documents sits above the pins; its edge band clamps to slot 0.
+    // The tiles sit above the pins; the gap below them clamps to slot 0.
     mockRowRects("Documents", 40, 68);
     mockRowRects("FavA", 100, 128);
     mockRowRects("FavB", 128, 156);
 
-    pointerDragTo(["/files/Projects"], 50, 42); // Documents' top edge band
+    pointerDragTo(["/files/Projects"], 50, 80); // between the tiles and FavA
 
     await waitFor(() => {
       expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
@@ -299,6 +299,23 @@ describe("sidebar favorites drag & drop", () => {
       ]);
     });
     expect(mocks.runOpCalls).toHaveLength(0);
+  });
+
+  it("a default tile has no pin edges: its whole face copies into the folder", async () => {
+    render(<Sidebar />);
+    mockSectionRect(0, 200);
+    mockRowRects("Documents", 40, 68);
+    mockRowRects("FavA", 100, 128);
+
+    pointerDragTo(["/files/report.pdf"], 50, 42); // a row's edge band, but on a tile
+
+    await waitFor(() => {
+      // copy vs move follows the usual volume rules; the point is the target.
+      expect(mocks.runOpCalls.map(({ sources, destDir }) => ({ sources, destDir }))).toEqual([
+        { sources: ["/files/report.pdf"], destDir: FOLDERS.documents },
+      ]);
+    });
+    expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
   });
 
   it("hovering a row's center clears the insertion line from a prior edge hover", () => {

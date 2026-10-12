@@ -330,7 +330,7 @@ build, never in jsdom. The menu event is routed by `lib/commands/menuCommand.ts`
       guard: the Edit menu's Undo/Redo items must stay enabled even with an
       empty undo stack — a disabled NSMenuItem swallows nothing, so greying
       them out kills text undo everywhere.)
-- [ ] Repeat in each text surface: toolbar filter, path bar (⌘⇧G), command
+- [ ] Repeat in each text surface: sidebar filter, path bar (⌘⇧G), command
       palette (⌘K), fuzzy finder (⌘P), a Batch Rename field (⌘⇧R), Settings
       search, and the Settings excludes textarea.
 - [ ] With a rename active, click **Edit ▸ Paste** with the mouse → inserts

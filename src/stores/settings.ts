@@ -43,7 +43,7 @@ interface SettingsState {
   density: Density;
   /** Finder-style alternating row colors in list view and search results. */
   zebraStripes: boolean;
-  /** Accent-colored line above the active pane's tab strip. */
+  /** Accent ring around the pane card that has keyboard focus (key name kept for persisted settings). */
   paneAccentLine: boolean;
   // Keyboard
   keybindingOverrides: KeybindingOverrides;
