@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · Traffic lights with the sidebar on either side</title>
+    <style>
+      /* Rail tokens (light + dark), same values as src/styles.css */
+      :root,
+      [data-theme="light"] {
+        --page: #eef0f3;
+        --page-text: #1b1e24;
+        --page-text-2: #545b67;
+        --page-line: #dde1e7;
+        --win: #dbe1e9;
+        --pane: #ffffff;
+        --field: rgba(255, 255, 255, 0.72);
+        --tab: #ffffff;
+        --hover: rgba(24, 38, 66, 0.06);
+        --stripe: rgba(24, 38, 66, 0.028);
+        --text: #18202e;
+        --text-2: #4f5a6c;
+        --text-3: #8690a0;
+        --accent: #3352d4;
+        --accent-dim: rgba(51, 82, 212, 0.16);
+        --border: rgba(24, 38, 66, 0.1);
+        --card-shadow: 0 0 0 0.5px rgba(20, 30, 50, 0.12), 0 1px 3px rgba(20, 30, 50, 0.08);
+        --tab-shadow: 0 1px 2px rgba(20, 30, 50, 0.12), 0 0 0 0.5px rgba(20, 30, 50, 0.08);
+        --mark: #d6336c;
+        color-scheme: light;
+      }
+      [data-theme="dark"] {
+        --page: #121417;
+        --page-text: #e8eaee;
+        --page-text-2: #a3a9b4;
+        --page-line: #2a2e35;
+        --win: #15181d;
+        --pane: #1f2228;
+        --field: rgba(255, 255, 255, 0.05);
+        --tab: #2a2e36;
+        --hover: rgba(255, 255, 255, 0.06);
+        --stripe: rgba(255, 255, 255, 0.025);
+        --text: #e7eaf0;
+        --text-2: #a0a7b3;
+        --text-3: #666d79;
+        --accent: #7088f5;
+        --accent-dim: rgba(112, 136, 245, 0.26);
+        --border: rgba(255, 255, 255, 0.08);
+        --card-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.07), 0 1px 3px rgba(0, 0, 0, 0.4);
+        --tab-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.07);
+        --mark: #ff6b9a;
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--page-text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 40px 28px 80px;
+      }
+      header.top {
+        display: flex;
+        align-items: flex-start;
+        gap: 24px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 26px;
+        letter-spacing: -0.01em;
+      }
+      .lede {
+        max-width: 78ch;
+        margin: 8px 0 0;
+        color: var(--page-text-2);
+      }
+      .theme-btn {
+        margin-left: auto;
+        flex-shrink: 0;
+        height: 30px;
+        padding: 0 12px;
+        border-radius: 7px;
+        border: 1px solid var(--page-line);
+        background: transparent;
+        color: var(--page-text);
+        font: inherit;
+        font-size: 13px;
+      }
+      section {
+        margin-top: 44px;
+      }
+      h2 {
+        margin: 0 0 4px;
+        font-size: 18px;
+      }
+      h2 small {
+        margin-left: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .desc {
+        max-width: 92ch;
+        margin: 0 0 14px;
+        color: var(--page-text-2);
+        font-size: 13.5px;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 22px;
+      }
+      @media (max-width: 1280px) {
+        .pair {
+          grid-template-columns: 1fr;
+        }
+      }
+      figure {
+        margin: 0;
+      }
+      figcaption {
+        margin-top: 8px;
+        font-size: 12.5px;
+        color: var(--page-text-2);
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        gap: 4px 14px;
+        max-width: 92ch;
+        margin: 14px 0 0;
+        font-size: 13px;
+      }
+      .facts dt {
+        color: var(--page-text-2);
+      }
+      .facts dd {
+        margin: 0;
+      }
+      code {
+        font: 12.5px ui-monospace, "SF Mono", Menlo, monospace;
+      }
+
+      /* ------------------------------------------------- the mini windows */
+
+      .win {
+        position: relative;
+        height: 250px;
+        overflow: hidden;
+        border-radius: 11px;
+        background: var(--win);
+        color: var(--text);
+        font-size: 12px;
+        box-shadow:
+          0 0 0 0.5px rgba(0, 0, 0, 0.35),
+          0 12px 40px rgba(0, 0, 0, 0.18);
+      }
+      /* traffic lights: 16pt frames at x 8 / 31 / 54 (measured), 12pt dots */
+      .lights {
+        position: absolute;
+        z-index: 5;
+        display: flex;
+        gap: 7px;
+      }
+      .lights i {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+      }
+      .lights i::after {
+        content: "";
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #ff5f57;
+        box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+      }
+      .lights i:nth-child(2)::after {
+        background: #febc2e;
+      }
+      .lights i:nth-child(3)::after {
+        background: #28c840;
+      }
+      .lights-slot {
+        width: 70px;
+        flex-shrink: 0;
+      }
+
+      .abs {
+        position: absolute;
+      }
+      .rail {
+        display: flex;
+        flex-direction: column;
+        padding: 0 10px;
+        background: var(--win);
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .ib {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 6px;
+        color: var(--text-2);
+        flex-shrink: 0;
+      }
+      .ib.dim {
+        color: var(--text-3);
+        opacity: 0.6;
+      }
+      .ib svg {
+        width: 15px;
+        height: 15px;
+      }
+      .search {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+        height: 28px;
+        padding: 0 9px;
+        border-radius: 8px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+        color: var(--text-3);
+        font-size: 11.5px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .rail > .search {
+        flex: none;
+      }
+      .search svg {
+        width: 12px;
+        height: 12px;
+        flex-shrink: 0;
+      }
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 5px;
+        margin-top: 9px;
+      }
+      .tiles span {
+        height: 30px;
+        border-radius: 8px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+      }
+      .tiles span:first-child {
+        background: var(--tab);
+        box-shadow: var(--tab-shadow);
+      }
+      .tabs {
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid var(--border);
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        height: 26px;
+        padding: 0 8px;
+        border-radius: 7px;
+        color: var(--text-2);
+        font-size: 12px;
+      }
+      .tab.on {
+        background: var(--tab);
+        box-shadow: var(--tab-shadow);
+        color: var(--text);
+      }
+      .tab i {
+        width: 12px;
+        height: 10px;
+        border-radius: 2px;
+        border: 1.3px solid currentColor;
+        opacity: 0.6;
+      }
+      .tab.on i {
+        color: var(--accent);
+        opacity: 1;
+      }
+
+      .card {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-radius: 10px;
+        background: var(--pane);
+        box-shadow: var(--card-shadow);
+      }
+      .card-head {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+        padding: 0 8px 0 10px;
+        border-bottom: 1px solid var(--border);
+      }
+      .crumbs {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        color: var(--text-2);
+        font-size: 12px;
+      }
+      .crumbs b {
+        color: var(--text);
+        font-size: 13px;
+      }
+      .crumbs em {
+        font-style: normal;
+        color: var(--text-3);
+        font-size: 9px;
+      }
+      .tools {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        flex-shrink: 0;
+      }
+      .seg {
+        display: flex;
+        gap: 2px;
+        padding: 2px;
+        margin-right: 3px;
+        border-radius: 6px;
+        background: var(--hover);
+      }
+      .seg span {
+        width: 22px;
+        height: 18px;
+        border-radius: 4px;
+      }
+      .seg span:first-child {
+        background: var(--tab);
+        box-shadow: var(--tab-shadow);
+      }
+      .list {
+        flex: 1;
+        background-image: repeating-linear-gradient(
+          to bottom,
+          transparent 0,
+          transparent 24px,
+          var(--stripe) 24px,
+          var(--stripe) 48px
+        );
+      }
+      .list-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        height: 24px;
+        padding: 0 12px;
+        color: var(--text);
+        font-size: 12px;
+      }
+      .list-row span:last-child {
+        margin-left: auto;
+        color: var(--text-3);
+      }
+      .list-row.head {
+        height: 22px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-3);
+        font-size: 10.5px;
+      }
+      .title {
+        flex: 1;
+        text-align: center;
+        font-weight: 600;
+        color: var(--text-2);
+        font-size: 12px;
+      }
+
+      /* annotations */
+      .ann {
+        position: absolute;
+        z-index: 9;
+        pointer-events: none;
+      }
+      .ann.box {
+        border: 1.5px dashed var(--mark);
+        border-radius: 6px;
+      }
+      .ann.line {
+        border-top: 1.5px dashed var(--mark);
+      }
+      .ann.tag {
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: var(--mark);
+        color: #fff;
+        font-size: 10.5px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="top">
+        <div>
+          <h1>Traffic lights with the sidebar on either side</h1>
+          <p class="lede">
+            macOS draws the close, minimize, and zoom buttons over the window's top-left corner, wherever the
+            sidebar is. Measured from the running app: 16pt frames at x 8, 31, and 54, all at y 8, so the cluster's
+            vertical center is 16pt from the top. Each mock below shows the sidebar docked left and docked right,
+            at real size.
+          </p>
+        </div>
+        <button class="theme-btn" id="theme">Dark</button>
+      </header>
+      <div id="sections"></div>
+    </main>
+
+    <script>
+      const ICON = {
+        back: '<path d="m15 18-6-6 6-6"/>',
+        fwd: '<path d="m9 18 6-6-6-6"/>',
+        panel: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+        panelR: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
+        search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+        info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+        cols: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>',
+        more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+      };
+      const svg = (n) =>
+        `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[n]}</svg>`;
+      const ib = (n, dim) => `<span class="ib ${dim ? "dim" : ""}">${svg(n)}</span>`;
+      const nav = `${ib("back")}${ib("fwd", true)}`;
+      const toggle = (dock) => ib(dock === "right" ? "panelR" : "panel");
+      const search = `<div class="search">${svg("search")}Filter — ⏎ searches</div>`;
+      const lights = (x, y) => `<div class="lights" style="left:${x}px;top:${y}px"><i></i><i></i><i></i></div>`;
+      const crumbs = `<div class="crumbs"><span>Projects</span><em>›</em><span>Tazi</span><em>›</em><b>Fazi Showcase</b></div>`;
+      const tools = `<div class="tools"><div class="seg"><span></span><span></span></div>${ib("info")}${ib("cols")}${ib("more")}</div>`;
+      const list = `<div class="list"><div class="list-row head"><span>Name</span><span>Date Modified</span></div>
+        ${["Archive", "Client Assets", "Invoices", "Photos", "Projects", "build-config.json"]
+          .map((n, i) => `<div class="list-row"><span>${n}</span><span>${5 + i} Jul 2026</span></div>`)
+          .join("")}</div>`;
+      const tabsHtml = `<div class="tabs"><div class="tab on"><i></i>Fazi Showcase</div><div class="tab"><i></i>Projects</div><div class="tab"><i></i>Pictures</div></div>`;
+      const tiles = `<div class="tiles"><span></span><span></span><span></span><span></span><span></span></div>`;
+
+      const W = 660; // window width used for every mock
+      const RAIL = 214;
+
+      /**
+       * Each layout returns absolutely positioned regions for one dock side.
+       * left/top/width/height are in window points, like the real app.
+       */
+      function frame({ rail, card, extra = "", lightsAt = [8, 8], ann = "" }) {
+        return `<div class="win">${extra}${rail}${card}${lights(...lightsAt)}${ann}</div>`;
+      }
+
+      // ---------------------------------------------------------------- today
+      function today(dock) {
+        const railX = dock === "left" ? 0 : W - RAIL;
+        const rail = `<div class="abs rail" style="left:${railX}px;top:0;width:${RAIL}px;height:100%">
+          <div class="row" style="height:46px">${dock === "left" ? '<span class="lights-slot"></span>' : ""}<span style="flex:1"></span>${nav}${toggle(dock)}</div>
+          <div class="row">${search}</div>${tiles}${tabsHtml}</div>`;
+        const cardX = dock === "left" ? RAIL : 8;
+        const cardW = W - RAIL - 8;
+        const card = `<div class="abs card" style="left:${cardX}px;top:8px;width:${cardW}px;height:234px">
+          <div class="card-head" style="height:44px;${dock === "right" ? "padding-left:80px" : ""}">${crumbs}${tools}</div>${list}</div>`;
+        let ann;
+        if (dock === "left") {
+          ann = `<div class="ann line" style="left:6px;top:16px;width:198px"></div>
+            <div class="ann line" style="left:140px;top:23px;width:64px;border-top-style:solid"></div>
+            <div class="ann tag" style="left:8px;top:84px">lights centered 7pt above the nav buttons</div>`;
+        } else {
+          ann = `<div class="ann box" style="left:5px;top:5px;width:70px;height:22px"></div>
+            <div class="ann tag" style="left:96px;top:56px">lights sit on the card's corner, 14pt above its header row</div>
+            <div class="ann box" style="left:${railX + 4}px;top:4px;width:${RAIL - 76}px;height:38px"></div>
+            <div class="ann tag" style="left:${railX + 10}px;top:46px;transform:translateY(-130%)">empty row</div>`;
+        }
+        return frame({ rail, card, ann });
+      }
+
+      // ----------------------------------------------------- 1 · lights lane
+      function lane(dock) {
+        const LANE = 32;
+        if (dock === "left") {
+          const rail = `<div class="abs rail" style="left:0;top:0;width:${RAIL}px;height:100%">
+            <div class="row" style="height:${LANE}px"><span class="lights-slot"></span><span style="flex:1"></span>${nav}${toggle(dock)}</div>
+            <div class="row">${search}</div>${tiles}${tabsHtml}</div>`;
+          const card = `<div class="abs card" style="left:${RAIL}px;top:8px;width:${W - RAIL - 8}px;height:234px">
+            <div class="card-head" style="height:44px">${crumbs}${tools}</div>${list}</div>`;
+          return frame({ rail, card });
+        }
+        const railX = W - RAIL;
+        const rail = `<div class="abs rail" style="left:${railX}px;top:0;width:${RAIL}px;height:100%;padding-top:2px">
+          <div class="row" style="height:${LANE - 2}px;gap:4px">${search}${toggle(dock)}</div>${tiles}${tabsHtml}</div>`;
+        const strip = `<div class="abs row" style="left:0;top:0;width:${railX}px;height:${LANE}px;padding-left:78px">${nav}</div>`;
+        const card = `<div class="abs card" style="left:8px;top:${LANE}px;width:${W - RAIL - 8}px;height:${250 - LANE - 8}px">
+          <div class="card-head" style="height:44px">${crumbs}${tools}</div>${list}</div>`;
+        return frame({ rail, card, extra: strip });
+      }
+
+      // ------------------------------------------------------ 2 · title strip
+      function strip(dock) {
+        const H = 34;
+        const lightsY = (H - 16) / 2;
+        const bar = `<div class="abs row" style="left:0;top:0;width:100%;height:${H}px;padding:0 8px 0 80px;gap:2px">
+          ${nav}${dock === "left" ? toggle(dock) : ""}<div class="title">Fazi Showcase</div>${dock === "right" ? toggle(dock) : '<span style="width:52px"></span>'}</div>`;
+        const railX = dock === "left" ? 0 : W - RAIL;
+        const rail = `<div class="abs rail" style="left:${railX}px;top:${H}px;width:${RAIL}px;height:${250 - H}px">
+          <div class="row">${search}</div>${tiles}${tabsHtml}</div>`;
+        const card = `<div class="abs card" style="left:${dock === "left" ? RAIL : 8}px;top:${H}px;width:${W - RAIL - 8}px;height:${250 - H - 8}px">
+          <div class="card-head" style="height:44px">${crumbs}${tools}</div>${list}</div>`;
+        return frame({ rail, card, extra: bar, lightsAt: [8, lightsY] });
+      }
+
+      // ---------------------------------------------- 3 · one row at the top
+      function oneRow(dock) {
+        // lights moved to center on the 40pt header row: frame y = 8 + 20 - 8 = 20
+        const HEAD = 40;
+        const lightsAt = [18, 8 + HEAD / 2 - 8];
+        if (dock === "left") {
+          const rail = `<div class="abs rail" style="left:0;top:0;width:${RAIL}px;height:100%;padding-top:8px">
+            <div class="row" style="height:${HEAD}px;gap:4px"><span class="lights-slot" style="width:72px"></span>${search}${toggle(dock)}</div>
+            ${tiles}${tabsHtml}</div>`;
+          const card = `<div class="abs card" style="left:${RAIL}px;top:8px;width:${W - RAIL - 8}px;height:234px">
+            <div class="card-head" style="height:${HEAD}px;padding-left:4px">${nav}${crumbs}${tools}</div>${list}</div>`;
+          return frame({ rail, card, lightsAt });
+        }
+        const railX = W - RAIL;
+        const rail = `<div class="abs rail" style="left:${railX}px;top:0;width:${RAIL}px;height:100%;padding-top:8px">
+          <div class="row" style="height:${HEAD}px;gap:4px">${search}${toggle(dock)}</div>${tiles}${tabsHtml}</div>`;
+        const card = `<div class="abs card" style="left:8px;top:8px;width:${W - RAIL - 8}px;height:234px">
+          <div class="card-head" style="height:${HEAD}px;padding-left:80px">${nav}${crumbs}${tools}</div>${list}</div>`;
+        return frame({ rail, card, lightsAt });
+      }
+
+      const SECTIONS = [
+        {
+          title: "Today",
+          desc: "Docked left, the rail's 46pt top row centers its buttons at 23pt while the lights center at 16pt. Docked right, the lights land on the left card's rounded corner, the card header reserves an 80pt blank pad below them, and the rail's top row keeps its height for just back/forward and the toggle.",
+          render: today,
+        },
+        {
+          title: "1 · Lights lane",
+          tag: "keeps the system position",
+          desc: "A 32pt strip of window frame runs above whichever column sits under the lights, sized so the lights (centered at 16pt) line up with back/forward beside them. Docked left, that strip is the rail's top row, 14pt shorter than today. Docked right, the left card starts 32pt down to leave the lane, and the rail moves its search field up into the same band, so the rail has no empty row.",
+          render: lane,
+          facts: [
+            ["Native change", "None. Uses the default traffic-light position."],
+            ["Cost", "Docked right, the content cards start 24pt lower than today."],
+            ["Sidebar hidden", "The lane stays above the cards with lights, back/forward, and the show-sidebar button."],
+          ],
+        },
+        {
+          title: "2 · Title strip",
+          tag: "same in both docks",
+          desc: "One 34pt strip of window frame spans the whole window: lights, back/forward, the active folder's name centered as a window title, and the sidebar toggle at the rail's end. The rail and cards both start below it, and the rail drops its own top row, so the search field comes first.",
+          render: strip,
+          facts: [
+            ["Native change", "Small. Moves the lights down 1pt to center on the strip (trafficLightPosition y: 9)."],
+            ["Cost", "Cards start 34pt down in both docks (26pt lower than today); the rail breaks even."],
+            ["Sidebar hidden", "Unchanged: the strip already carries every window control."],
+          ],
+        },
+        {
+          title: "3 · One row at the top",
+          tag: "most compact",
+          desc: "Move the lights down to center on the cards' header row, and give that row everything. Docked left, the rail's first row is lights, search, and toggle, while back/forward move into the left card header. Docked right, the left card's header holds lights, back/forward, and the path, and the rail opens with search and toggle aligned to the same row.",
+          render: oneRow,
+          facts: [
+            ["Native change", "Static trafficLightPosition { x: 18, y: 20 } in tauri.conf.json. The same value works in both docks."],
+            ["Cost", "Card headers shrink from 44pt to 40pt; the rail's search field narrows to make room for the lights."],
+            ["Sidebar hidden", "The left card header hosts lights, back/forward, and the show-sidebar button, as today."],
+          ],
+        },
+      ];
+
+      function render() {
+        document.getElementById("sections").innerHTML = SECTIONS.map(
+          (s) => `<section>
+            <h2>${s.title}${s.tag ? `<small>${s.tag}</small>` : ""}</h2>
+            <p class="desc">${s.desc}</p>
+            <div class="pair">
+              <figure>${s.render("left")}<figcaption>Sidebar docked left</figcaption></figure>
+              <figure>${s.render("right")}<figcaption>Sidebar docked right</figcaption></figure>
+            </div>
+            ${s.facts ? `<dl class="facts">${s.facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>` : ""}
+          </section>`,
+        ).join("");
+      }
+
+      const btn = document.getElementById("theme");
+      btn.onclick = () => {
+        const dark = document.documentElement.dataset.theme !== "dark";
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        btn.textContent = dark ? "Light" : "Dark";
+      };
+      if (location.hash === "#dark") btn.click();
+      render();
+    </script>
+  </body>
+</html>
