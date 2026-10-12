@@ -10,11 +10,11 @@ import * as ipc from "./lib/ipc";
 import { setupFinderDragIn } from "./lib/ipc/dnd";
 import { setAltDuringDrag } from "./lib/dnd";
 import { recheckCutMirror } from "./lib/actions";
-import { usePanes } from "./stores/panes";
 import { useVolumes } from "./stores/volumes";
 import { useApp } from "./stores/app";
 import { useVim } from "./stores/vim";
 import { startCleanup } from "./stores/cleanup";
+import { restoreOrBoot } from "./stores/session";
 import { pluralize } from "./lib/format";
 import { Toasts } from "./components/chrome/Toasts";
 import { FdaBanner } from "./components/chrome/FdaBanner";
@@ -84,7 +84,7 @@ function boot(): void {
     const volumes = useVolumes.getState();
     await volumes.init();
     const home = useVolumes.getState().folders?.home ?? "/";
-    usePanes.getState().boot(home);
+    await restoreOrBoot(home);
     startCleanup();
 
     // journal recovery report

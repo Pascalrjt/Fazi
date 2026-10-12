@@ -36,6 +36,8 @@ interface SettingsState {
   fdaBannerDismissed: boolean;
   confirmPermanentDelete: boolean;
   confirmEmptyTrash: boolean;
+  /** Reopen the last session's tabs and panes at launch (stores/session). */
+  restoreTabs: boolean;
   // Appearance
   theme: Theme;
   /** Custom accent CSS color; "" = the built-in accent. */
@@ -150,6 +152,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   fdaBannerDismissed: false,
   confirmPermanentDelete: true,
   confirmEmptyTrash: true,
+  restoreTabs: true,
   theme: "system",
   accent: "",
   density: "normal",

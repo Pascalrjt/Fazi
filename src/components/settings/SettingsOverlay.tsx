@@ -56,6 +56,12 @@ function GeneralPane() {
   const s = useSettings();
   return (
     <>
+      <SettingRow
+        label="Reopen tabs at launch"
+        hint="Restore the tabs and panes from your last session."
+      >
+        <Toggle checked={s.restoreTabs} onChange={(v) => s.patch({ restoreTabs: v })} />
+      </SettingRow>
       <SettingRow label="Show hidden files">
         <Toggle checked={s.showHidden} onChange={(v) => s.patch({ showHidden: v })} />
       </SettingRow>

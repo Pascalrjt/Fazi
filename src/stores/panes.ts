@@ -79,6 +79,19 @@ export interface Pane {
   activeTabId: string;
 }
 
+/** One pane's tabs as restored from a saved session (see stores/session). */
+export interface RestoredPane {
+  id: PaneId;
+  activeIndex: number;
+  tabs: Array<{
+    path: string;
+    sort: SortSpec;
+    showHidden: boolean;
+    back: HistorySnapshot[];
+    forward: HistorySnapshot[];
+  }>;
+}
+
 interface PanesState {
   panes: Pane[];
   split: boolean;
@@ -88,6 +101,8 @@ interface PanesState {
 
   // --- navigation ------------------------------------------------------
   boot(homePath: string): void;
+  /** Replace all panes with a saved layout and start their listings. */
+  restore(panes: RestoredPane[], split: boolean): void;
   navigate(paneId: PaneId, tabId: string, path: string, opts?: { selectName?: string }): void;
   refresh(paneId: PaneId, tabId: string): void;
   back(paneId: PaneId, tabId: string): void;
@@ -450,6 +465,29 @@ export const usePanes = create<PanesState>()(
       });
       const pane = get().panes[0];
       startListing(set, get, "left", pane.activeTabId);
+    },
+
+    restore: (restored, split) => {
+      const current = get();
+      for (const pane of current.panes) for (const t of pane.tabs) stopListing(t);
+      set((s) => {
+        s.panes = restored.map((rp) => {
+          const tabs = rp.tabs.map((rt) => {
+            const tab = newTab(rt.path);
+            tab.sort = rt.sort;
+            tab.showHidden = rt.showHidden;
+            tab.back = rt.back;
+            tab.forward = rt.forward;
+            return tab;
+          });
+          const active = tabs[Math.min(Math.max(rp.activeIndex, 0), tabs.length - 1)];
+          return { id: rp.id, tabs, activeTabId: active.id };
+        });
+        s.split = split && s.panes.some((p) => p.id === "right");
+      });
+      for (const pane of get().panes) {
+        for (const t of pane.tabs) startListing(set, get, pane.id, t.id);
+      }
     },
 
     navigate: (paneId, tabId, path, opts) => {
