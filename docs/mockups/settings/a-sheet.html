@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi settings · A · Sheet</title>
+    <link rel="stylesheet" href="shared/settings-base.css" />
+    <style>
+      /*
+       * A · Sheet
+       * The closest step from today: still a modal over the window, but
+       * bigger, grouped into inset cards like macOS System Settings, with
+       * tinted section icons, a changed-count per section, and the
+       * Appearance preview at the top of its page.
+       */
+      .sheet {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(880px, calc(100% - 80px));
+        height: min(620px, calc(100% - 80px));
+        display: flex;
+        border-radius: 12px;
+        overflow: hidden;
+        background: var(--sunken);
+        box-shadow: var(--shadow);
+        animation: s-pop-c 0.18s ease-out;
+      }
+      @keyframes s-pop-c {
+        from {
+          opacity: 0;
+          transform: translate(-50%, -48%) scale(0.98);
+        }
+      }
+
+      /* ------------------------------------------------------- nav */
+
+      .nav {
+        width: 214px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 12px 10px;
+        background: var(--win);
+        box-shadow: inset -0.5px 0 0 var(--border);
+      }
+      .nav-search {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 8px;
+        margin-bottom: 12px;
+        border-radius: 7px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+        color: var(--text-3);
+      }
+      .nav-search:focus-within {
+        box-shadow: inset 0 0 0 1.5px var(--accent);
+      }
+      .nav-search input {
+        flex: 1;
+        min-width: 0;
+        border: 0;
+        background: transparent;
+        outline: none;
+        color: var(--text);
+      }
+      .nav-search kbd {
+        color: var(--text-3);
+        font-size: 11px;
+      }
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 30px;
+        padding: 0 8px 0 5px;
+        border-radius: 7px;
+        color: var(--text);
+        text-align: left;
+      }
+      .nav-item:hover {
+        background: var(--hover);
+      }
+      .nav-item.is-on {
+        background: var(--accent);
+        color: var(--on-accent);
+      }
+      .nav-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        background: var(--tint);
+        box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+      }
+      .nav-label {
+        flex: 1;
+      }
+      .nav-count {
+        min-width: 18px;
+        height: 16px;
+        padding: 0 5px;
+        border-radius: 8px;
+        background: var(--accent-dim);
+        color: var(--accent);
+        font-size: 10.5px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .nav-item.is-on .nav-count {
+        background: rgba(255, 255, 255, 0.24);
+        color: #fff;
+      }
+      .nav-sep {
+        height: 0.5px;
+        margin: 8px 6px;
+        background: var(--border-strong);
+      }
+      .nav-grow {
+        flex: 1;
+      }
+      .nav-foot {
+        padding: 0 6px;
+        font-size: 11px;
+        color: var(--text-3);
+      }
+
+      /* ------------------------------------------------------- body */
+
+      .main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 52px;
+        flex-shrink: 0;
+        padding: 0 14px 0 28px;
+      }
+      .head h2 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .head p {
+        flex: 1;
+        margin: 1px 0 0;
+        color: var(--text-3);
+        font-size: 12px;
+      }
+      .close {
+        width: 26px;
+        height: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 7px;
+        color: var(--text-2);
+      }
+      .close:hover {
+        background: var(--hover);
+        color: var(--text);
+      }
+      .body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 6px 28px 28px;
+      }
+      .body .s-group + .s-group {
+        margin-top: 20px;
+      }
+      .body .s-preview-wrap {
+        padding: 18px 18px 10px;
+        border-radius: 12px;
+        background: var(--win);
+      }
+      .body .s-preview {
+        max-width: 420px;
+        margin: 0 auto;
+      }
+      .s-row.s-type-theme {
+        align-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="shared/settings-core.js"></script>
+    <script>
+      (() => {
+        const F = window.FaziSettings;
+        let section = "general";
+
+        function nav() {
+          const items = F.SECTIONS.map((s, i) => {
+            const n = F.modifiedIn(s.id);
+            const on = section === s.id && !F.U.query.trim();
+            const sep = s.id === "advanced" ? `<div class="nav-grow"></div>` : "";
+            return `${sep}<button class="nav-item ${on ? "is-on" : ""}" data-nav="${s.id}" aria-current="${on}">
+              <span class="nav-icon" style="--tint:${s.tint}">${F.icon(s.icon, 13)}</span>
+              <span class="nav-label">${s.title}</span>${n ? `<span class="nav-count" title="${n} changed">${n}</span>` : ""}</button>`;
+          }).join("");
+          return `<nav class="nav" aria-label="Settings sections">
+            <label class="nav-search">${F.icon("search", 13)}<input id="s-search" data-search placeholder="Search" value="${F.esc(F.U.query)}" aria-label="Search settings"/>${F.U.query ? "" : "<kbd>⌘F</kbd>"}</label>
+            ${items}</nav>`;
+        }
+
+        function main() {
+          const q = F.U.query.trim();
+          const sec = F.SECTIONS.find((s) => s.id === section);
+          const title = q ? `Results` : sec.title;
+          const blurb = q ? `Settings and shortcuts matching “${F.esc(q)}”` : sec.blurb;
+          const body = q ? F.searchResults({ sectionLink: true }) : F.sectionBody(section);
+          return `<div class="main">
+            <header class="head"><div style="flex:1"><h2>${title}</h2><p>${blurb}</p></div>
+              <button class="close" data-close aria-label="Close settings" title="Close (Esc)">${F.icon("x", 15)}</button></header>
+            <div class="body" data-scroll-key="body-${q ? "q" : section}">${body}</div></div>`;
+        }
+
+        F.mount({
+          backdrop: true,
+          init(api, params) {
+            if (params.has("section")) section = params.get("section");
+          },
+          render() {
+            const back = "";
+            if (!F.U.open) return `${back}<button class="s-reopen" data-open>Settings <kbd>⌘,</kbd></button>`;
+            return `${back}<div class="s-scrim" data-close></div><div class="sheet" role="dialog" aria-label="Settings">${nav()}${main()}</div>`;
+          },
+          onClick(e) {
+            const n = e.target.closest("[data-nav]");
+            if (n) {
+              section = n.dataset.nav;
+              F.U.query = "";
+              F.render();
+              return true;
+            }
+            if (e.target.closest("[data-close]") && e.target.closest("[data-close]") === e.target.closest("button,.s-scrim")) {
+              F.U.open = false;
+              F.render();
+              return true;
+            }
+            if (e.target.closest("[data-open]")) {
+              F.U.open = true;
+              F.render();
+              return true;
+            }
+          },
+          goto(id) {
+            section = id;
+          },
+          onKey(e) {
+            // ⌘↑ / ⌘↓ step through sections.
+            if (e.metaKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && F.U.open) {
+              const i = F.SECTIONS.findIndex((s) => s.id === section);
+              const j = Math.max(0, Math.min(F.SECTIONS.length - 1, i + (e.key === "ArrowUp" ? -1 : 1)));
+              section = F.SECTIONS[j].id;
+              F.U.query = "";
+              e.preventDefault();
+              F.render();
+              return true;
+            }
+          },
+        });
+      })();
+    </script>
+  </body>
+</html>

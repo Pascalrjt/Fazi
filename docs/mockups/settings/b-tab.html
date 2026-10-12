@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi settings · B · Tab</title>
+    <link rel="stylesheet" href="shared/settings-base.css" />
+    <style>
+      /*
+       * B · Tab
+       * Settings opens as a tab in the rail, like a browser's settings page.
+       * Nothing is modal: the sidebar, tabs, and strip stay live, so theme,
+       * accent, row height, pinned folders, Trash, and the sidebar side all
+       * change in the real chrome as you edit them. Sections run along the
+       * top of the card; the strip's view controls turn into a settings
+       * search while the tab is active.
+       */
+      .s-root {
+        padding: 18px;
+      }
+      .side-list {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .win {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        border-radius: 11px;
+        overflow: hidden;
+        background: var(--win);
+        box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 22px 70px rgba(0, 0, 0, 0.3);
+      }
+
+      /* ------------------------------------------------------- strip */
+
+      .strip {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        height: 44px;
+        flex-shrink: 0;
+        padding-right: 8px;
+      }
+      .lights {
+        display: flex;
+        gap: 8px;
+        padding: 0 14px;
+        width: 84px;
+      }
+      .lights i {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #ff5f57;
+      }
+      .lights i:nth-child(2) {
+        background: #febc2e;
+      }
+      .lights i:nth-child(3) {
+        background: #28c840;
+      }
+      .ibtn {
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 7px;
+        color: var(--text-2);
+      }
+      .ibtn:hover:not(:disabled) {
+        background: var(--hover);
+        color: var(--text);
+      }
+      .address {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 32px;
+        margin: 0 6px 0 4px;
+        padding: 0 10px;
+        border-radius: 9px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+        color: var(--text-3);
+      }
+      .crumb {
+        color: var(--text-2);
+        padding: 2px 5px;
+        border-radius: 5px;
+      }
+      .crumb:hover {
+        background: var(--hover);
+      }
+      .crumb.is-current {
+        color: var(--text);
+        font-weight: 600;
+        font-size: 13.5px;
+      }
+      .strip-search {
+        width: 260px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 9px;
+        border-radius: 8px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+        color: var(--text-3);
+      }
+      .strip-search:focus-within {
+        box-shadow: inset 0 0 0 1.5px var(--accent);
+      }
+      .strip-search input {
+        flex: 1;
+        min-width: 0;
+        border: 0;
+        background: transparent;
+        outline: none;
+        color: var(--text);
+      }
+      .strip-search kbd {
+        font-size: 11px;
+        color: var(--text-3);
+      }
+      .seg-icons {
+        display: flex;
+        padding: 2px;
+        border-radius: 7px;
+        background: var(--seg-bg);
+      }
+      .seg-icons button {
+        width: 28px;
+        height: 22px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 5px;
+        color: var(--text-2);
+      }
+      .seg-icons button.is-on {
+        background: var(--seg-on);
+        color: var(--text);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+      }
+
+      /* ------------------------------------------------------- body */
+
+      .body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        gap: 8px;
+        padding: 0 8px 8px;
+      }
+      :root[data-sidebar="right"] .body {
+        flex-direction: row-reverse;
+      }
+      .side {
+        width: 236px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .side-filter {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 9px;
+        border-radius: 8px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+        color: var(--text-3);
+        font-size: 12.5px;
+      }
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 6px;
+      }
+      .tile {
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+        color: var(--text-2);
+      }
+      .side-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 28px;
+        padding: 0 9px;
+        border-radius: 7px;
+        color: var(--text);
+      }
+      :root[data-density="compact"] .side-row {
+        height: 24px;
+      }
+      .side-row .ic {
+        color: var(--text-2);
+      }
+      .side-row span {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .side-row small {
+        color: var(--text-3);
+        font-size: 11px;
+      }
+      .side-sep {
+        height: 0.5px;
+        margin: 2px 8px;
+        background: var(--border-strong);
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 32px;
+        padding: 0 6px 0 9px;
+        border-radius: 8px;
+        color: var(--text);
+        text-align: left;
+      }
+      :root[data-density="compact"] .tab {
+        height: 28px;
+      }
+      .tab:hover {
+        background: var(--hover);
+      }
+      .tab.is-on {
+        background: var(--raised);
+        box-shadow: var(--card-shadow);
+      }
+      .tab-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tab .tab-x {
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 5px;
+        color: var(--text-3);
+        visibility: hidden;
+      }
+      .tab:hover .tab-x,
+      .tab.is-on .tab-x {
+        visibility: visible;
+      }
+      .tab-x:hover {
+        background: var(--hover);
+        color: var(--text);
+      }
+      .tab-gear {
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        background: var(--accent);
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .new-tab {
+        color: var(--text-3);
+      }
+      .side-grow {
+        flex: 1;
+      }
+
+      /* ------------------------------------------------------- card */
+
+      .card {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        border-radius: 10px;
+        background: var(--pane);
+        box-shadow: var(--card-shadow);
+        overflow: hidden;
+      }
+      .sections {
+        display: flex;
+        justify-content: center;
+        gap: 2px;
+        padding: 10px 12px 0;
+        flex-shrink: 0;
+        box-shadow: inset 0 -0.5px 0 var(--border);
+      }
+      .sec-tab {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        min-width: 76px;
+        padding: 6px 8px 9px;
+        border-radius: 8px 8px 0 0;
+        color: var(--text-2);
+        font-size: 11.5px;
+      }
+      .sec-tab:hover {
+        color: var(--text);
+      }
+      .sec-tab.is-on {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .sec-tab.is-on::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 0;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--accent);
+      }
+      .sec-count {
+        position: absolute;
+        top: 2px;
+        right: 16px;
+        min-width: 15px;
+        height: 15px;
+        padding: 0 4px;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 9.5px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .content {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 26px 32px 40px;
+      }
+      .column {
+        max-width: 660px;
+        margin: 0 auto;
+      }
+      .column h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+      }
+      .column .lede {
+        margin: 3px 0 22px;
+        color: var(--text-3);
+      }
+      .column .s-group + .s-group {
+        margin-top: 22px;
+      }
+      .column .s-card {
+        background: var(--sunken);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+      }
+      .column .s-list,
+      .column .s-chips,
+      .column .s-cheats,
+      .column .s-empty {
+        background: var(--pane);
+      }
+      .live-note {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: -8px 0 22px;
+        padding: 9px 12px;
+        border-radius: 9px;
+        background: var(--accent-faint);
+        color: var(--text-2);
+        font-size: 12px;
+      }
+      .live-note .ic {
+        color: var(--accent);
+      }
+
+      /* file view for the other tabs */
+      .files {
+        flex: 1;
+        overflow: auto;
+      }
+      .files .s-preview {
+        border-radius: 0;
+        box-shadow: none;
+        font-size: 13px;
+      }
+      .files .pv-row {
+        height: 26px;
+      }
+      :root[data-density="compact"] .files .pv-row {
+        height: 21px;
+      }
+      .files .pv-date {
+        width: 160px;
+      }
+      .files .pv-size {
+        width: 90px;
+      }
+      .files .s-preview.is-grid {
+        grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+        padding: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="shared/settings-core.js"></script>
+    <script>
+      (() => {
+        const F = window.FaziSettings;
+        const { icon, esc } = F;
+        let section = "general";
+        let activeTab = "settings";
+        const TABS = [
+          { id: "showcase", name: "Fazi Showcase", path: "~/Projects/Fazi Showcase" },
+          { id: "projects", name: "Projects", path: "~/Projects" },
+          { id: "pictures", name: "Pictures", path: "~/Pictures" },
+        ];
+
+        function strip() {
+          const onSettings = F.U.open && activeTab === "settings";
+          const sec = F.SECTIONS.find((s) => s.id === section);
+          const crumbs = onSettings
+            ? `${icon("settings", 14)}<button class="crumb" data-nav="general">Settings</button><span>›</span><span class="crumb is-current">${F.U.query.trim() ? "Search" : sec.title}</span>`
+            : `${icon("folder", 14)}<span class="crumb">~</span><span>›</span><span class="crumb">Projects</span><span>›</span><span class="crumb is-current">${esc(TABS.find((t) => t.id === activeTab)?.name || "Fazi Showcase")}</span>`;
+          const tools = onSettings
+            ? `<label class="strip-search">${icon("search", 13)}<input id="s-search" data-search placeholder="Search settings" value="${esc(F.U.query)}" aria-label="Search settings"/>${F.U.query ? "" : "<kbd>⌘F</kbd>"}</label>`
+            : `<div class="seg-icons"><button class="${F.V.viewMode === "list" ? "is-on" : ""}" data-set="viewMode" data-val="list" aria-label="List">${icon("list", 14)}</button><button class="${F.V.viewMode === "grid" ? "is-on" : ""}" data-set="viewMode" data-val="grid" aria-label="Icons">${icon("grid", 14)}</button></div>
+               <button class="ibtn" data-open-settings title="Settings (⌘,)" aria-label="Settings">${icon("settings", 15)}</button>`;
+          const toggle = `<button class="ibtn" aria-label="Hide sidebar">${icon("sidebar", 15)}</button>`;
+          const left = F.V.sidebarPosition === "left";
+          return `<div class="strip"><div class="lights"><i></i><i></i><i></i></div>${left ? toggle : ""}
+            <button class="ibtn" disabled>${icon("chevronLeft", 16)}</button><button class="ibtn" disabled>${icon("chevronRight", 16)}</button>
+            <div class="address">${crumbs}</div>${tools}${left ? "" : toggle}</div>`;
+        }
+
+        function side() {
+          const favs = F.V.favorites.map((f) => `<div class="side-row">${icon("folder", 15)}<span>${esc(f.name)}</span></div>`).join("");
+          const tabs = TABS.map(
+            (t) => `<button class="tab ${activeTab === t.id ? "is-on" : ""}" data-tab="${t.id}">${F.fileGlyph({ dir: true }, 16)}<span class="tab-name">${esc(t.name)}</span><span class="tab-x">${icon("x", 11)}</span></button>`,
+          ).join("");
+          const st = F.U.open
+            ? `<button class="tab ${activeTab === "settings" ? "is-on" : ""}" data-tab="settings"><span class="tab-gear">${icon("settings", 11)}</span><span class="tab-name">Settings</span><span class="tab-x" data-close-tab aria-label="Close Settings">${icon("x", 11)}</span></button>`
+            : "";
+          return `<aside class="side">
+            <div class="side-filter">${icon("search", 13)}Filter · ⏎ searches</div>
+            <div class="tiles"><span class="tile">${icon("house", 17)}</span><span class="tile">${icon("monitor", 17)}</span><span class="tile">${icon("fileText", 17)}</span><span class="tile">${icon("download", 17)}</span><span class="tile">${icon("grid", 17)}</span></div>
+            ${favs ? `<div class="side-list">${favs}</div><div class="side-sep"></div>` : ""}
+            <div class="side-list">${tabs}${st}<div class="tab new-tab">${icon("plus", 14)}New tab</div></div>
+            <div class="side-grow"></div>
+            ${F.V.showTrash ? `<div class="side-row">${icon("trash", 15)}<span>Trash</span><small>4</small></div>` : ""}
+            <div class="side-row">${icon("monitor", 15)}<span>Macintosh HD</span><small>182 GB</small></div></aside>`;
+        }
+
+        function settingsCard() {
+          const q = F.U.query.trim();
+          const sec = F.SECTIONS.find((s) => s.id === section);
+          const bar = F.SECTIONS.map((s) => {
+            const n = F.modifiedIn(s.id);
+            return `<button class="sec-tab ${s.id === section && !q ? "is-on" : ""}" data-nav="${s.id}">${icon(s.icon, 17)}${s.title}${n ? `<span class="sec-count">${n}</span>` : ""}</button>`;
+          }).join("");
+          const live =
+            section === "appearance" && !q
+              ? `<div class="live-note">${icon("eye", 14)}Changes apply to this window as you make them. Switch to another tab to see a folder with them.</div>`
+              : "";
+          const body = q
+            ? `<h1>Search</h1><p class="lede">Settings and shortcuts matching “${esc(q)}”</p>${F.searchResults({ sectionLink: true })}`
+            : `<h1>${sec.title}</h1><p class="lede">${sec.blurb}</p>${live}${F.sectionBody(section, { preview: false })}`;
+          return `<section class="card" aria-label="Settings"><nav class="sections" aria-label="Settings sections">${bar}</nav>
+            <div class="content" data-scroll-key="c-${q ? "q" : section}"><div class="column">${body}</div></div></section>`;
+        }
+
+        function filesCard() {
+          return `<section class="card"><div class="files">${F.preview()}</div></section>`;
+        }
+
+        F.mount({
+          init(api, params) {
+            if (params.has("section")) section = params.get("section");
+            if (params.has("tab")) activeTab = params.get("tab");
+          },
+          render() {
+            const card = F.U.open && activeTab === "settings" ? settingsCard() : filesCard();
+            return `<div class="win">${strip()}<div class="body">${side()}${card}</div></div>`;
+          },
+          onClick(e) {
+            if (e.target.closest("[data-close-tab]")) {
+              F.U.open = false;
+              activeTab = "showcase";
+              F.render();
+              return true;
+            }
+            const t = e.target.closest("[data-tab]");
+            if (t) {
+              activeTab = t.dataset.tab;
+              F.render();
+              return true;
+            }
+            const n = e.target.closest("[data-nav]");
+            if (n) {
+              section = n.dataset.nav;
+              F.U.query = "";
+              F.render();
+              return true;
+            }
+            if (e.target.closest("[data-open-settings]")) {
+              F.U.open = true;
+              activeTab = "settings";
+              F.render();
+              return true;
+            }
+          },
+          goto(id) {
+            section = id;
+          },
+          onKey(e) {
+            // ⌘, focuses the Settings tab (opening it if closed); Esc only clears search.
+            if (e.key === "," && e.metaKey) {
+              e.preventDefault();
+              F.U.open = true;
+              activeTab = "settings";
+              F.render();
+              return true;
+            }
+            if (e.key === "Escape" && !F.U.query && !F.U.confirmReset) return true;
+            if (e.key === "w" && e.metaKey && activeTab === "settings") {
+              e.preventDefault();
+              F.U.open = false;
+              activeTab = "showcase";
+              F.render();
+              return true;
+            }
+          },
+        });
+      })();
+    </script>
+  </body>
+</html>
