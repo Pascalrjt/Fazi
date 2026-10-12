@@ -226,14 +226,6 @@ textarea {
 }
 
 /* ---------------------------------------------------------------------------
- * Traffic lights / drag region
- * ------------------------------------------------------------------------- */
-
-.traffic-pad {
-  padding-left: 80px; /* room for macOS traffic lights under titleBarStyle: Overlay */
-}
-
-/* ---------------------------------------------------------------------------
  * Overlay / panel transitions (subtle, ease-out; NEVER on list rows)
  * ------------------------------------------------------------------------- */
 

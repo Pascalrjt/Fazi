@@ -1,6 +1,8 @@
 /**
- * Per-pane breadcrumb path bar: clickable crumbs, native drop targets, and
- * an editable mode (double-click, or ⌘⇧G for the active pane).
+ * Breadcrumb path bar for one pane: clickable crumbs, native drop targets,
+ * and an editable mode (double-click, or ⌘⇧G for the active pane). The
+ * "address" variant lives inside the title strip's address field: inside
+ * the home folder it starts at "~", and editing happens in place.
  */
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
@@ -11,7 +13,16 @@ import { pathSegments } from "../../lib/format";
 import { activeDragPaths, isInvalidDrop, onDropHover, registerDropZone } from "../../lib/dnd";
 import { captureBrowseFocus, restoreBrowseFocus } from "../../lib/keyboardFocus";
 
-export function PathBar({ paneId, maxSegments = 4 }: { paneId: PaneId; maxSegments?: number }) {
+export function PathBar({
+  paneId,
+  maxSegments = 4,
+  variant = "plain",
+}: {
+  paneId: PaneId;
+  maxSegments?: number;
+  variant?: "plain" | "address";
+}) {
+  const home = useVolumes((s) => s.folders?.home ?? null);
   const activePaneId = useApp((s) => s.activePaneId);
   // Path editing is app-wide state; only the active pane's bar edits.
   const editing = useApp((s) => s.pathBarEditing) && activePaneId === paneId;
@@ -104,14 +115,24 @@ export function PathBar({ paneId, maxSegments = 4 }: { paneId: PaneId; maxSegmen
           }
         }}
         onBlur={() => finishEditing(false)}
-        className="h-7 min-w-0 flex-1 rounded-md border border-accent bg-pane px-2 font-mono text-xs text-primary outline-none"
+        className={clsx(
+          "h-7 min-w-0 flex-1 font-mono text-xs text-primary outline-none",
+          variant === "address"
+            ? "bg-transparent px-1"
+            : "rounded-md border border-accent bg-pane px-2",
+        )}
         spellCheck={false}
         placeholder="/path/to/folder"
       />
     );
   }
 
-  const segs = pathSegments(tab.path);
+  let segs = pathSegments(tab.path);
+  if (variant === "address" && home != null && home !== "/") {
+    // Inside the home folder, start at "~" like a typed path would.
+    const at = segs.findIndex((seg) => seg.path === home);
+    if (at !== -1) segs = [{ name: "~", path: home }, ...segs.slice(at + 1)];
+  }
   const shown = segs.length > maxSegments ? segs.slice(-maxSegments) : segs;
   const elided = segs.length > maxSegments;
 

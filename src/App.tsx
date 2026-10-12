@@ -20,6 +20,7 @@ import { Toasts } from "./components/chrome/Toasts";
 import { FdaBanner } from "./components/chrome/FdaBanner";
 import { ConfirmDialog } from "./components/chrome/ConfirmDialog";
 import { Sidebar } from "./components/sidebar/Sidebar";
+import { TitleStrip } from "./components/chrome/TitleStrip";
 import { PaneArea } from "./components/panes/PaneArea";
 import { SettingsOverlay } from "./components/settings/SettingsOverlay";
 import { OpCards } from "./components/ops/OpCards";
@@ -161,23 +162,24 @@ export default function App() {
     };
   }, []);
 
-  // Rail layout: the sidebar is part of the window frame, and the panes
-  // float beside it as cards. No toolbar or window-wide status bar — each
-  // card carries its own path header and status footer.
+  // Rail layout: a title strip across the window (traffic lights, path,
+  // view controls), then the sidebar and the pane cards side by side on the
+  // window frame. Each card carries its own status footer.
   return (
-    <div className="flex h-full bg-window text-primary">
-      {sidebarPosition === "left" && <Sidebar />}
-      <main
+    <div className="flex h-full flex-col bg-window text-primary">
+      <TitleStrip />
+      <div
         className={clsx(
-          "flex min-w-0 flex-1 flex-col gap-2 py-2",
-          sidebarPosition === "left" && !sidebarCollapsed ? "pr-2" : "px-2",
+          "flex min-h-0 flex-1 gap-2 px-2 pb-2",
+          sidebarPosition === "right" && "flex-row-reverse",
         )}
-        data-tauri-drag-region
       >
-        <FdaBanner />
-        <PaneArea />
-      </main>
-      {sidebarPosition === "right" && <Sidebar />}
+        {!sidebarCollapsed && <Sidebar />}
+        <main className="flex min-w-0 flex-1 flex-col gap-2" data-tauri-drag-region>
+          <FdaBanner />
+          <PaneArea />
+        </main>
+      </div>
 
       {/* overlays & transient chrome */}
       <PreviewOverlay />

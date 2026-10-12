@@ -1,6 +1,6 @@
 /**
- * Sidebar (the "rail"): window controls and search on top, the default
- * folders as icon tiles, user pins as rows, then the open tabs (see
+ * Sidebar (the "rail"), below the title strip: the filter field, the
+ * default folders as icon tiles, user pins as rows, then the open tabs (see
  * TabList), with Trash and Volumes at the bottom. Hiding the sidebar hides
  * the tabs with it. Rows navigate on click, act as drop targets, and offer
  * a context menu. Dragging folders over the Favorites section pins them Finder-style:
@@ -51,7 +51,7 @@ import { useVim } from "../../stores/vim";
 import { CleanupBadge } from "./CleanupBadge";
 import { TabList, type TabDragHooks, type TabDragState } from "./TabList";
 import { SearchField } from "../chrome/SearchField";
-import { NavButtons, SidebarToggle } from "../chrome/WindowControls";
+import { SIDEBAR_WIDTH } from "../chrome/TitleStrip";
 
 /** Fraction of a row's height at top/bottom where a path drag means "pin
  *  here" (insertion) rather than "move into this folder" (center). */
@@ -476,7 +476,6 @@ export function Sidebar() {
   const [tabDrag, setTabDrag] = useState<TabDragState | null>(null);
   const moveTab = usePanes((s) => s.moveTab);
   const collapsed = useSettings((s) => s.sidebarCollapsed);
-  const position = useSettings((s) => s.sidebarPosition);
   const pinned = useSettings((s) => s.favorites);
   const showTrash = useSettings((s) => s.showTrashInSidebar);
   const folders = useVolumes((s) => s.folders);
@@ -709,17 +708,10 @@ export function Sidebar() {
           useVim.getState().reset();
         }
       }}
-      className="keyboard-surface flex w-[244px] shrink-0 flex-col overflow-hidden bg-window px-2.5 pb-2.5"
+      className="keyboard-surface flex shrink-0 flex-col overflow-hidden bg-window"
+      style={{ width: SIDEBAR_WIDTH }}
     >
-      <div
-        className={clsx("flex h-[46px] shrink-0 items-center", position === "left" && "traffic-pad")}
-        data-tauri-drag-region
-      >
-        <div className="min-w-0 flex-1 self-stretch" data-tauri-drag-region />
-        <NavButtons />
-        <SidebarToggle />
-      </div>
-      <SearchField />
+      <SearchField className="shrink-0" />
       {(defaults.length > 0 || favoriteRows.length > 0) && (
         <FavoritesSection
           defaults={defaults}

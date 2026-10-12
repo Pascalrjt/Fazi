@@ -11,8 +11,8 @@ export function PaneArea() {
   const split = usePanes((s) => s.split);
   return (
     <div className="flex min-h-0 min-w-0 flex-1 gap-2" data-tauri-drag-region>
-      <Pane paneId="left" isFirst isLast={!split} />
-      {split && <Pane paneId="right" isFirst={false} isLast />}
+      <Pane paneId="left" />
+      {split && <Pane paneId="right" />}
       <GetInfoPanel />
     </div>
   );
