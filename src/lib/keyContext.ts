@@ -20,9 +20,11 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 export function currentKeyContext(target: EventTarget | null = null): KeyContext {
   const app = useApp.getState();
   const ops = useOps.getState();
-  if (app.confirm || app.settingsOpen || app.batchRenameOpen || ops.conflicts.length > 0)
-    return "modal";
+  if (app.confirm || app.batchRenameOpen || ops.conflicts.length > 0) return "modal";
   if (app.paletteOpen || useFuzzy.getState().open) return "palette";
+  // The Settings tab hides the panes, so file commands must not reach them,
+  // even from its text fields (those edit themselves).
+  if (app.settingsActive) return "settings";
   if (app.renaming) return "rename";
   if (app.previewOpen) return "preview";
   if (app.searchFieldFocused || app.pathBarEditing || isEditableTarget(target)) return "search";

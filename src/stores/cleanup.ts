@@ -138,7 +138,6 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
         const from = folders.size === 1 ? ` from ${ruleFolderName([...folders][0])}` : "";
         const pairs = result.swept.map(({ original, trashed }) => ({ original, trashed }));
         toast(`Moved ${countWithSize(result.swept)}${from} to Trash`, {
-          sticky: true,
           action: { label: "Put Back", run: () => void putBack(pairs) },
         });
       } else if (opts?.manual && result.errors.length === 0) {

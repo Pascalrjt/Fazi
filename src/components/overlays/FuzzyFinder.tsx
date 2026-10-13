@@ -9,6 +9,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { iconUrl } from "../../types/ipc";
+import { isPlainFolderHit } from "../../lib/folderTint";
 import type { FuzzyItem } from "../../types/ipc";
 import * as ipc from "../../lib/ipc";
 import { useFuzzy, type FuzzyScope } from "../../stores/fuzzy";
@@ -89,7 +90,7 @@ const ResultsList = memo(function ResultsList({
               <img
                 src={iconUrl(hit.icon, 32)}
                 alt=""
-                className="h-5 w-5 shrink-0"
+                className={clsx("h-5 w-5 shrink-0", isPlainFolderHit(hit) && "folder-tint")}
                 draggable={false}
                 loading="lazy"
               />

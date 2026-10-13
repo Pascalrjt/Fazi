@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { thumbUrl } from "../../types/ipc";
+import { isPlainFolder } from "../../lib/folderTint";
 import { usePanes, visibleEntries } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
 import { finishRename } from "../../lib/actions";
@@ -112,7 +113,7 @@ const GridCell = memo(function GridCell({
         <img
           src={thumbUrl(entry.icon, 128)}
           alt=""
-          className="h-14 w-14 object-contain"
+          className={clsx("h-14 w-14 object-contain", isPlainFolder(entry) && "folder-tint")}
           draggable={false}
           loading="lazy"
         />

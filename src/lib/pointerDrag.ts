@@ -1,6 +1,6 @@
 /**
- * Pointer-event internal drag — the kill-switch path (Settings → Advanced →
- * native drag-out OFF). HTML5 drops never reach the DOM in the running app
+ * Pointer-event internal drag — the kill-switch path (Settings → Transfers →
+ * Drag files to other apps OFF). HTML5 drops never reach the DOM in the running app
  * (wry swallows NSDraggingDestination callbacks), so internal drags reuse the
  * same DropZone registry + hover channel as native sessions: pointermove
  * hit-tests and feeds rings/highlights/spring, pointerup dispatches, Escape

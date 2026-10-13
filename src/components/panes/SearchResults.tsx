@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { iconUrl } from "../../types/ipc";
+import { isPlainFolderHit } from "../../lib/folderTint";
 import * as ipc from "../../lib/ipc";
 import { useApp, toast, type SearchHit } from "../../stores/app";
 import { useSettings } from "../../stores/settings";
@@ -180,7 +181,7 @@ export function SearchResults() {
                   <img
                     src={iconUrl(hit.icon, 32)}
                     alt=""
-                    className="h-6 w-6 shrink-0"
+                    className={clsx("h-6 w-6 shrink-0", isPlainFolderHit(hit) && "folder-tint")}
                     draggable={false}
                     loading="lazy"
                   />

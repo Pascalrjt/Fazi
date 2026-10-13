@@ -36,6 +36,7 @@ function entry(id: number, hydrated: boolean): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   };
 }
 

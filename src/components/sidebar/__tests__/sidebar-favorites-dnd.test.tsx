@@ -146,6 +146,7 @@ function dirEntry(id: number, name: string, path: string): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   };
 }
 
@@ -280,16 +281,16 @@ describe("sidebar favorites drag & drop", () => {
     expect(useOps.getState().cards).toHaveLength(0);
   });
 
-  it("edge drop over a default row pins at slot 0", async () => {
+  it("drop in the gap around the default tiles pins at slot 0", async () => {
     seedListing([dirEntry(1, "Projects", "/files/Projects")]);
     render(<Sidebar />);
     mockSectionRect(0, 200);
-    // Documents sits above the pins; its edge band clamps to slot 0.
+    // The tiles sit above the pins; the gap below them clamps to slot 0.
     mockRowRects("Documents", 40, 68);
     mockRowRects("FavA", 100, 128);
     mockRowRects("FavB", 128, 156);
 
-    pointerDragTo(["/files/Projects"], 50, 42); // Documents' top edge band
+    pointerDragTo(["/files/Projects"], 50, 80); // between the tiles and FavA
 
     await waitFor(() => {
       expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
@@ -299,6 +300,23 @@ describe("sidebar favorites drag & drop", () => {
       ]);
     });
     expect(mocks.runOpCalls).toHaveLength(0);
+  });
+
+  it("a default tile has no pin edges: its whole face copies into the folder", async () => {
+    render(<Sidebar />);
+    mockSectionRect(0, 200);
+    mockRowRects("Documents", 40, 68);
+    mockRowRects("FavA", 100, 128);
+
+    pointerDragTo(["/files/report.pdf"], 50, 42); // a row's edge band, but on a tile
+
+    await waitFor(() => {
+      // copy vs move follows the usual volume rules; the point is the target.
+      expect(mocks.runOpCalls.map(({ sources, destDir }) => ({ sources, destDir }))).toEqual([
+        { sources: ["/files/report.pdf"], destDir: FOLDERS.documents },
+      ]);
+    });
+    expect(useSettings.getState().favorites.map((f) => f.path)).toEqual(["/p/A", "/p/B"]);
   });
 
   it("hovering a row's center clears the insertion line from a prior edge hover", () => {
@@ -317,5 +335,66 @@ describe("sidebar favorites drag & drop", () => {
     // Escape cancels without dispatching anything.
     fireEvent.keyDown(window, { key: "Escape" });
     expect(useOps.getState().cards).toHaveLength(0);
+  });
+
+  it("dropping a folder anywhere else in the sidebar pins it after the pins", async () => {
+    seedListing([dirEntry(1, "Projects", "/files/Projects")]);
+    render(<Sidebar />);
+    mockSectionRect(0, 100); // the Favorites section ends at y = 100
+    mockRect(screen.getByRole("navigation"), 0, 800);
+
+    pointerDragTo(["/files/Projects"], 50, 400); // over the tab list
+
+    await waitFor(() => {
+      expect(useSettings.getState().favorites.map((f) => f.path)).toEqual([
+        "/p/A",
+        "/p/B",
+        "/files/Projects",
+      ]);
+    });
+    expect(mocks.runOpCalls).toHaveLength(0);
+  });
+});
+
+describe("sidebar tab drag", () => {
+  beforeEach(() => {
+    useVolumes.setState({ folders: FOLDERS, volumes: [], loaded: true, error: null });
+    useSettings.setState({ favorites: [] });
+    usePanes.getState().boot("/t/a");
+    usePanes.getState().openTab("left", "/t/b");
+    usePanes.getState().openTab("left", "/t/c");
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("dragging a tab shows the insertion line and reorders on pointerup", () => {
+    render(<Sidebar />);
+    const group = document.querySelector('[data-tab-group="left"]') as HTMLElement;
+    mockRect(group, 290, 430);
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-tab-row]")];
+    rows.forEach((row, i) => mockRect(row, 300 + i * 32, 332 + i * 32));
+
+    fireEvent.pointerDown(rows[2], { button: 0, clientX: 50, clientY: 380 });
+    firePointer(window, "pointermove", { clientX: 50, clientY: 305 }); // above /t/a's middle
+    expect(screen.getByTestId("tab-insertion-line")).toBeTruthy();
+    firePointer(window, "pointerup", { clientX: 50, clientY: 305 });
+
+    expect(usePanes.getState().panes[0].tabs.map((t) => t.path)).toEqual(["/t/c", "/t/a", "/t/b"]);
+    expect(screen.queryByTestId("tab-insertion-line")).toBeNull();
+  });
+
+  it("Escape cancels a tab drag without moving anything", () => {
+    render(<Sidebar />);
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-tab-row]")];
+    rows.forEach((row, i) => mockRect(row, 300 + i * 32, 332 + i * 32));
+
+    fireEvent.pointerDown(rows[2], { button: 0, clientX: 50, clientY: 380 });
+    firePointer(window, "pointermove", { clientX: 50, clientY: 305 });
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByTestId("tab-insertion-line")).toBeNull();
+    expect(usePanes.getState().panes[0].tabs.map((t) => t.path)).toEqual(["/t/a", "/t/b", "/t/c"]);
   });
 });

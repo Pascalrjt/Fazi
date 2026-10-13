@@ -7,7 +7,16 @@
  * listener routes to the command registry based on the active KeyContext.
  */
 
-export type KeyContext = "browse" | "rename" | "palette" | "preview" | "modal" | "search";
+/** "settings": the Settings tab is showing; only tab and app-level
+ *  chords (⌘W, ⌘T, ⌃⇥, ⌘K, ⌘F…) apply, never file commands. */
+export type KeyContext =
+  | "browse"
+  | "rename"
+  | "palette"
+  | "preview"
+  | "modal"
+  | "search"
+  | "settings";
 
 export interface ParsedShortcut {
   code: string;

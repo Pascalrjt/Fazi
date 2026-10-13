@@ -21,7 +21,7 @@ export function FdaBanner() {
   if (!fdaMissing || dismissed) return null;
 
   return (
-    <div className="anim-slide-up mx-3 mb-2 flex items-center gap-3 rounded-lg border border-edge bg-raised px-3 py-2">
+    <div className="anim-slide-up flex shrink-0 items-center gap-3 rounded-[10px] bg-pane px-3 py-2 shadow-[var(--shadow-card)]">
       <Lock size={20} className="shrink-0 text-secondary" aria-hidden />
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-primary">Grant Full Disk Access</div>

@@ -50,6 +50,7 @@ function entry(id: number, name: string): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   } as Entry;
 }
 
@@ -95,6 +96,7 @@ beforeEach(() => {
     activePaneId: "left",
     renaming: null,
     settingsOpen: false,
+    settingsActive: false,
     batchRenameOpen: false,
     paletteOpen: false,
     previewOpen: false,

@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi settings · D · Panel</title>
+    <link rel="stylesheet" href="shared/settings-base.css" />
+    <style>
+      /*
+       * D · Panel
+       * A popover that drops from the strip, like Control Center. The
+       * settings people flip most sit up top as quick tiles; everything else
+       * is one tap deeper, pushed in place with a back button. No scrim:
+       * the window stays visible beside it. Arrow keys walk the list,
+       * → or Return opens a section, ← goes back.
+       */
+      .anchor {
+        position: absolute;
+        top: 26px;
+        right: 26px;
+        width: 28px;
+        height: 28px;
+        border-radius: 7px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--on-accent);
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--raised);
+        z-index: 2;
+      }
+      .panel {
+        position: absolute;
+        top: 64px;
+        right: 22px;
+        width: 392px;
+        max-height: calc(100% - 92px);
+        display: flex;
+        flex-direction: column;
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--raised) 94%, transparent);
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        transition: width 0.18s ease;
+        animation: d-drop 0.16s ease-out;
+        transform-origin: 96% 0;
+      }
+      .panel.is-wide {
+        width: 560px;
+      }
+      @keyframes d-drop {
+        from {
+          opacity: 0;
+          transform: scale(0.97) translateY(-4px);
+        }
+      }
+      .p-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 12px 12px 8px;
+        flex-shrink: 0;
+      }
+      .p-back {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        height: 26px;
+        padding: 0 8px 0 2px;
+        border-radius: 7px;
+        color: var(--accent);
+        font-weight: 500;
+      }
+      .p-back:hover {
+        background: var(--accent-faint);
+      }
+      .p-title {
+        flex: 1;
+        text-align: center;
+        font-weight: 600;
+        margin-right: 66px;
+      }
+      .p-search {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        height: 30px;
+        padding: 0 10px;
+        border-radius: 8px;
+        background: var(--seg-bg);
+        color: var(--text-3);
+      }
+      .p-search:focus-within {
+        box-shadow: 0 0 0 1.5px var(--accent);
+      }
+      .p-search input {
+        flex: 1;
+        min-width: 0;
+        border: 0;
+        background: transparent;
+        outline: none;
+        color: var(--text);
+      }
+      .p-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 4px 12px 12px;
+      }
+
+      /* quick tiles */
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .qt {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 10px 9px;
+        border-radius: 11px;
+        background: var(--seg-bg);
+        text-align: left;
+      }
+      .qt:hover {
+        background: var(--border-strong);
+      }
+      .qt-ic {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--switch-off);
+        color: var(--text);
+      }
+      .qt.is-on .qt-ic {
+        background: var(--accent);
+        color: var(--on-accent);
+      }
+      .qt b {
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.2;
+      }
+      .qt small {
+        display: block;
+        margin-top: 1px;
+        font-size: 11px;
+        color: var(--text-3);
+      }
+      .qt.is-on small {
+        color: var(--accent);
+      }
+
+      /* section list */
+      .list {
+        border-radius: 11px;
+        background: var(--seg-bg);
+        padding: 4px;
+      }
+      .li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        height: 36px;
+        padding: 0 8px 0 6px;
+        border-radius: 8px;
+        text-align: left;
+      }
+      .li:hover,
+      .li:focus-visible {
+        background: var(--hover);
+        outline: none;
+      }
+      .li:focus-visible {
+        box-shadow: inset 0 0 0 1.5px var(--accent);
+      }
+      .li-ic {
+        width: 24px;
+        height: 24px;
+        border-radius: 7px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        background: var(--tint);
+      }
+      .li-label {
+        flex: 1;
+      }
+      .li-sum {
+        color: var(--text-3);
+        font-size: 11.5px;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .li-n {
+        min-width: 16px;
+        height: 16px;
+        padding: 0 5px;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .li .chev {
+        color: var(--text-3);
+      }
+      .p-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 4px 0;
+        font-size: 11px;
+        color: var(--text-3);
+      }
+
+      /* section view: compact rows */
+      .p-body .s-group + .s-group {
+        margin-top: 14px;
+      }
+      .p-body .s-group-title {
+        font-size: 11px;
+      }
+      .p-body .s-card {
+        background: var(--seg-bg);
+        box-shadow: none;
+      }
+      .p-body .s-row {
+        padding: var(--row-pad) 12px;
+        gap: 12px;
+      }
+      .p-body .s-hint {
+        font-size: 11px;
+      }
+      .p-body .s-list,
+      .p-body .s-chips,
+      .p-body .s-cheats,
+      .p-body .s-empty {
+        background: var(--raised);
+      }
+      .p-body .s-row.s-type-theme,
+      .p-body .s-row.s-type-accent,
+      .p-body .s-row.s-type-sort {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+      }
+      .p-body .s-themes {
+        justify-content: space-between;
+      }
+      .p-body .s-swatches {
+        justify-content: space-between;
+      }
+      .p-body .s-preview-wrap {
+        margin-bottom: 14px;
+      }
+      .p-body .s-cheats {
+        grid-template-columns: auto 1fr;
+      }
+      .panel.is-wide .p-body .s-cheats {
+        grid-template-columns: auto 1fr auto 1fr;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="shared/settings-core.js"></script>
+    <script>
+      (() => {
+        const F = window.FaziSettings;
+        const { icon, esc } = F;
+        let view = "home";
+        let focusNav = null;
+
+        const THEME_NEXT = { system: "light", light: "dark", dark: "system" };
+        const THEME_NAME = { system: "Auto", light: "Light", dark: "Dark" };
+
+        /* The six settings people flip most. */
+        function tiles() {
+          const V = F.V;
+          const t = [
+            ["theme", V.theme === "dark" ? "moon" : V.theme === "light" ? "sun" : "monitor", "Theme", THEME_NAME[V.theme], V.theme !== "system", `data-set="theme" data-val="${THEME_NEXT[V.theme]}"`],
+            ["showHidden", "eye", "Hidden files", V.showHidden ? "Shown" : "Hidden", V.showHidden, `data-toggle="showHidden"`],
+            ["vimMode", "terminal", "Vim mode", V.vimMode ? "On" : "Off", V.vimMode, `data-toggle="vimMode"`],
+            ["density", "rows", "Row height", V.density === "compact" ? "Compact" : "Regular", V.density === "compact", `data-set="density" data-val="${V.density === "compact" ? "normal" : "compact"}"`],
+            ["zebraStripes", "list", "Row stripes", V.zebraStripes ? "On" : "Off", V.zebraStripes, `data-toggle="zebraStripes"`],
+            ["sidebarPosition", "sidebar", "Sidebar", V.sidebarPosition === "left" ? "Left" : "Right", V.sidebarPosition === "right", `data-set="sidebarPosition" data-val="${V.sidebarPosition === "left" ? "right" : "left"}"`],
+          ];
+          return `<div class="tiles">${t
+            .map(([id, ic, label, state, on, attrs]) => `<button class="qt ${on ? "is-on" : ""}" ${attrs} aria-pressed="${on}"><span class="qt-ic">${icon(ic, 14)}</span><span><b>${label}</b><small>${state}</small></span></button>`)
+            .join("")}</div>`;
+        }
+
+        /* One-line summary of a section's state, shown beside its name. */
+        function summary(id) {
+          const V = F.V;
+          switch (id) {
+            case "general": return V.restoreTabs ? "Reopens tabs" : "Starts fresh";
+            case "appearance": return `${THEME_NAME[V.theme]}, ${V.density === "compact" ? "compact" : "regular"}`;
+            case "sidebar": return `${V.favorites.length} pinned`;
+            case "keyboard": {
+              const n = Object.keys(V.keys).length;
+              return V.vimMode ? "Vim on" : n ? `${n} custom` : "Defaults";
+            }
+            case "search": return V.searchContentsDefault ? "Names and contents" : "Names";
+            case "transfers": return V.verifyCopies ? "Verifying copies" : "";
+            case "cleanup": return V.cleanupEnabled ? `${V.cleanupRules.length} folder${V.cleanupRules.length === 1 ? "" : "s"}` : "Off";
+            default: return "";
+          }
+        }
+
+        function home() {
+          const q = F.U.query.trim();
+          if (q) return F.searchResults({ sectionLink: true });
+          const rows = F.SECTIONS.map((s) => {
+            const n = F.modifiedIn(s.id);
+            return `<button class="li" data-nav="${s.id}"><span class="li-ic" style="--tint:${s.tint}">${icon(s.icon, 14)}</span><span class="li-label">${s.title}</span>
+              <span class="li-sum">${esc(summary(s.id))}</span>${n ? `<span class="li-n">${n}</span>` : ""}${icon("chevronRight", 14, "chev")}</button>`;
+          }).join("");
+          return `${tiles()}<div class="list" role="list">${rows}</div><div class="p-foot"><span>↑↓ move · → open · ← back</span><span>⌘, toggles</span></div>`;
+        }
+
+        function panel() {
+          const isHome = view === "home";
+          const sec = F.SECTIONS.find((s) => s.id === view);
+          const head = isHome
+            ? `<label class="p-search">${icon("search", 13)}<input id="s-search" data-search placeholder="Search settings" value="${esc(F.U.query)}" aria-label="Search settings"/></label>`
+            : `<button class="p-back" data-back>${icon("chevronLeft", 16)}Settings</button><div class="p-title">${sec.title}</div>`;
+          const body = isHome ? home() : F.sectionBody(view);
+          const wide = view === "keyboard" || view === "cleanup";
+          return `<div class="panel ${wide ? "is-wide" : ""}" role="dialog" aria-label="Settings"><div class="p-head">${head}</div>
+            <div class="p-body" data-scroll-key="p-${view}-${F.U.query.trim() ? "q" : ""}">${body}</div></div>`;
+        }
+
+        F.mount({
+          backdrop: true,
+          init(api, params) {
+            if (params.has("section")) view = params.get("section");
+          },
+          render() {
+            if (!F.U.open) return `<button class="anchor" data-open title="Settings (⌘,)" aria-label="Settings" style="background:var(--seg-bg);color:var(--text);box-shadow:none">${icon("settings", 15)}</button>`;
+            return `<button class="anchor" data-open aria-label="Close settings">${icon("settings", 15)}</button>${panel()}`;
+          },
+          afterRender() {
+            if (focusNav) {
+              document.querySelector(`[data-nav="${focusNav}"]`)?.focus();
+              focusNav = null;
+            }
+          },
+          onClick(e) {
+            const n = e.target.closest("[data-nav]");
+            if (n) {
+              view = n.dataset.nav;
+              F.U.query = "";
+              F.render();
+              return true;
+            }
+            if (e.target.closest("[data-back]")) {
+              focusNav = view;
+              view = "home";
+              F.render();
+              return true;
+            }
+            if (e.target.closest("[data-open]")) {
+              F.U.open = !F.U.open;
+              F.render();
+              return true;
+            }
+          },
+          goto(id) {
+            view = id;
+          },
+          onKey(e) {
+            if (!F.U.open) return;
+            const inField = e.target.matches?.("input");
+            if (view === "home") {
+              const items = [...document.querySelectorAll(".li")];
+              const i = items.indexOf(document.activeElement);
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                if (F.U.query.trim()) return;
+                e.preventDefault();
+                const j = i < 0 ? 0 : Math.max(0, Math.min(items.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
+                items[j]?.focus();
+                return true;
+              }
+              if ((e.key === "ArrowRight" || e.key === "Enter") && i >= 0) {
+                e.preventDefault();
+                view = items[i].dataset.nav;
+                F.render();
+                document.querySelector(".p-back")?.focus();
+                return true;
+              }
+            } else if ((e.key === "ArrowLeft" && !inField) || (e.key === "Escape" && !F.U.query && !F.U.confirmReset && !inField)) {
+              e.preventDefault();
+              focusNav = view;
+              view = "home";
+              F.render();
+              return true;
+            }
+          },
+        });
+      })();
+    </script>
+  </body>
+</html>

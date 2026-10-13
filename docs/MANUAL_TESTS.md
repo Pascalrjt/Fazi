@@ -283,26 +283,43 @@ in `npm run tauri dev`.
       interactive, no blank white pane.
 
 ## Settings (⌘,)
-- [x] ⌘, opens the overlay; browse shortcuts don't fire underneath; Esc
-      closes. Theme Light/Dark/System applies live (System follows the OS);
-      accent swatches recolor selection/focus; Compact density tightens list
-      rows without breaking marquee selection.
-- [ ] Operations → Verify copies: a large copy shows "Verifying…" after the
-      bytes land; flip a byte in the source mid-copy is impractical — instead
-      verify a normal copy passes clean, and confirm cross-volume moves still
-      verify with the toggle OFF (mandatory gate unaffected).
-- [x] Keyboard pane: Record ⌘⇧M for New Folder → palette label updates, old
-      binding dead, new one fires; recording ⌘D (Duplicate's) is blocked with
-      "unbind the other command"; Unbind removes a shortcut; Reset restores
-      the default; all of it survives relaunch. **PASSED 2026-07-13 RETEST:**
-      ⌘D shows the inline Duplicate conflict, and recording ⌘C also reaches the
-      webview and shows the inline Copy conflict.
+- [ ] ⌘, opens Settings as a tab in the sidebar (above "New tab"; after both
+      groups in dual pane) and shows it in place of the panes. The strip
+      reads Settings › Section and its view controls become a settings
+      search (⌘F focuses it, Esc clears it).
+- [ ] Browse shortcuts don't reach the hidden panes (Space, ⌘C, ⌘V, ⌘⌫, and
+      Vim keys do nothing). ⌘W closes the tab; ⌃⇥ or clicking any file tab,
+      place, or pin returns to the panes and keeps the Settings tab; ⌘T opens
+      a file tab. Scroll and selection in the panes survive the round trip.
+- [ ] Appearance applies live to the real window: Theme Auto/Light/Dark,
+      accent swatches (the Default swatch keeps the built-in color), Row
+      height, alternating rows, and Sidebar position (the sidebar jumps sides
+      while you watch).
+- [ ] A custom accent recolors folder icons in list, icon view, search,
+      ⌘P, and Get Info, keeping their shading and glyphs (Downloads arrow).
+      Apps, packages, volumes in /Volumes, and folders with a custom icon
+      keep their own colors. Default restores the system folder color.
+- [ ] Changing a setting shows a dot, a restore arrow on hover, and a count
+      on its section; the arrow restores the default.
+- [ ] Search finds settings by synonyms ("dotfiles", "node_modules") and
+      commands by name ("rename" lists its shortcut row).
+- [ ] Transfers → Verify copies: a large copy shows "Verifying…" after the
+      bytes land; verify a normal copy passes clean, and confirm cross-volume
+      moves still verify with the toggle OFF (mandatory gate unaffected).
+- [ ] Keyboard: click New Folder's shortcut, press ⌘⇧M → palette label
+      updates, old binding dead, new one fires; pressing ⌘D shows "⌘D
+      already runs Duplicate" with Move it here; × removes a shortcut; the
+      restore arrow brings back the default; all of it survives relaunch.
+      With Vim mode on, recording j says it belongs to Vim mode.
 - [ ] Corrupt-blob recovery: hand-edit localStorage fazi-settings
       keybindingOverrides to garbage → app still boots with default
       shortcuts.
-- [ ] Confirm toggles: disabling "Confirm permanent delete" / "Confirm Empty
-      Trash" skips those dialogs; Reset-to-defaults restores everything but
-      keeps pinned folders and column widths.
+- [ ] Confirm toggles: turning off "Ask before deleting immediately" / "Ask
+      before emptying the Trash" skips those dialogs. Reset asks first, then
+      restores everything but pinned folders, kept items, and column widths.
+- [ ] Auto-cleanup: each folder shows what goes to the Trash by tomorrow, and
+      Run now sweeps; Sidebar: the arrows reorder pins and Pin a Folder…
+      adds one.
 
 ## Batch rename & paste-as-file
 - [x] Select 5 files → ⌘⇧R: live preview updates per keystroke; a colliding
@@ -330,16 +347,16 @@ build, never in jsdom. The menu event is routed by `lib/commands/menuCommand.ts`
       guard: the Edit menu's Undo/Redo items must stay enabled even with an
       empty undo stack — a disabled NSMenuItem swallows nothing, so greying
       them out kills text undo everywhere.)
-- [ ] Repeat in each text surface: toolbar filter, path bar (⌘⇧G), command
+- [ ] Repeat in each text surface: sidebar filter, path bar (⌘⇧G), command
       palette (⌘K), fuzzy finder (⌘P), a Batch Rename field (⌘⇧R), Settings
-      search, and the Settings excludes textarea.
+      search, and the Settings index-exclude field.
 - [ ] With a rename active, click **Edit ▸ Paste** with the mouse → inserts
       text, does not create a file. (Clicking never blurs the field, so this
       path is distinct from the keyboard one.)
 - [ ] Browse mode is unchanged: select files → ⌘C → navigate → ⌘V copies them;
       ⌘Z undoes it; ⌘A selects all files; ⌘X + ⌘V moves.
-- [ ] With Settings / Batch Rename / a conflict dialog open and no field
-      focused, ⌘Z does **not** run filesystem undo.
+- [ ] With the Settings tab showing, Batch Rename, or a conflict dialog open
+      and no field focused, ⌘Z does **not** run filesystem undo.
 - [ ] Settings → Keyboard: recording a shortcut still captures ⌘C/⌘V while the
       recorder is armed (the `set_recording` path is untouched).
 

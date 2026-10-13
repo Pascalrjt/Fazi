@@ -40,6 +40,7 @@ const entry: Entry = {
   linkTarget: null,
   tags: [],
   noAccess: false,
+  customIcon: false,
 };
 
 const labels = (items: Awaited<ReturnType<ReturnType<typeof shareMenuItems>>>) =>

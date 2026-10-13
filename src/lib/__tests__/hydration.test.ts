@@ -50,6 +50,7 @@ function entry(id: number, hydrated = false): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   };
 }
 

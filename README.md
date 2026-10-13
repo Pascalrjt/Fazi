@@ -50,7 +50,7 @@ Finder-parity shortcuts out of the box, custom keybindings with a recorder and c
 
 ### Vim mode
 
-Off by default; turn it on in Settings → Keyboard. `hjkl` moves, `gg` and `G` jump to the ends, counts work (`12j`), `v` starts a visual selection, and `yy`/`dd`/`p` copy, cut, and paste. `dd` cuts rather than trashing anything, because a two-key reflex shouldn't delete files. `m` opens the selected item's context menu, while `gs` cycles focus through the sidebar and every visible explorer pane. `/` filters the current folder, `:` opens the command palette, `⌃P` the fuzzy finder, `gt` and `gT` switch tabs. The status bar shows the mode and any pending count or prefix, and sequences never time out. `g?` (or clicking the mode indicator) pops up a cheat sheet of all of this. Text fields are left alone, so renaming a file to "dd" does what you'd expect. Every ⌘ shortcut keeps working, and a cheat sheet lives next to the toggle.
+Off by default; turn it on in Settings → Keyboard. `hjkl` moves, `gg` and `G` jump to the ends, counts work (`12j`), `v` starts a visual selection, and `yy`/`dd`/`p` copy, cut, and paste. `dd` cuts rather than trashing anything, because a two-key reflex shouldn't delete files. `m` opens the selected item's context menu, while `gs` cycles focus through the sidebar and every visible explorer pane. `/` filters the current folder, `:` opens the command palette, `⌃P` the fuzzy finder, `gt` and `gT` switch tabs. The focused pane's footer shows the mode and any pending count or prefix, and sequences never time out. `g?` (or clicking the mode indicator) pops up a cheat sheet of all of this. Text fields are left alone, so renaming a file to "dd" does what you'd expect. Every ⌘ shortcut keeps working, and a cheat sheet lives next to the toggle.
 
 ### Search
 
@@ -58,7 +58,7 @@ Streamed `mdfind` by filename or contents, with `kind:`, `date:`, and `size:` pr
 
 ### Auto-cleanup
 
-Off by default; turn it on in Settings → Cleanup. Items in Downloads (or any folder you add, each with its own day count) move to the Trash a set number of days after they arrive, measured from Date Added so a fresh download with an old modified date stays put. Sweeps run at launch and hourly while Fazi is open. A Cleanup column counts down each item, and anything leaving by tomorrow turns red with a banner, a sidebar badge, and a status-bar count. `⌥⌘K` keeps an item, a `Keep` subfolder is never touched, files you opened recently get a grace period, and every sweep's toast has Put Back.
+Off by default; turn it on in Settings → Auto-cleanup. Items in Downloads (or any folder you add, each with its own day count) move to the Trash a set number of days after they arrive, measured from Date Added so a fresh download with an old modified date stays put. Sweeps run at launch and hourly while Fazi is open. A Cleanup column counts down each item, and anything leaving by tomorrow turns red with a banner, a sidebar badge, and a count in the pane footer. `⌥⌘K` keeps an item, a `Keep` subfolder is never touched, files you opened recently get a grace period, and every sweep's toast has Put Back.
 
 ### Big directories
 
@@ -66,7 +66,7 @@ A 100k-entry folder paints in under 50 ms. Listings stream in two stages and hyd
 
 ### And the rest
 
-Tabs and dual pane, spacebar previews through Quick Look's renderer (PDFs included), Finder tags, Open With plus per-type defaults, drag and drop in both directions, pasteboard interop with other apps, batch rename with live preview, zip and tar archives, paste clipboard images or text as files, Trash with Empty Trash, live updates from FSEvents.
+Vertical tabs in the sidebar and dual pane, spacebar previews through Quick Look's renderer (PDFs included), Finder tags, Open With plus per-type defaults, drag and drop in both directions, pasteboard interop with other apps, batch rename with live preview, zip and tar archives, paste clipboard images or text as files, Trash with Empty Trash, live updates from FSEvents.
 
 ![Dual pane](docs/screenshots/dual-pane.png)
 

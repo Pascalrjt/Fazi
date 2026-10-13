@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi layouts with vertical tabs</title>
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --card: #ffffff;
+        --text: #1b1e24;
+        --text-2: #545b67;
+        --text-3: #8a919c;
+        --line: #e2e5ea;
+        --accent: #3352d4;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181c;
+          --card: #1f2227;
+          --text: #e8eaee;
+          --text-2: #a3a9b4;
+          --text-3: #6c727d;
+          --line: #2c3037;
+          --accent: #8098ff;
+          color-scheme: dark;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 56px 28px 80px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.2;
+        letter-spacing: -0.015em;
+      }
+      .lede {
+        max-width: 68ch;
+        margin: 12px 0 0;
+        color: var(--text-2);
+      }
+      .lede + .lede {
+        margin-top: 10px;
+      }
+      a {
+        color: var(--accent);
+      }
+      .designs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 22px;
+        margin-top: 40px;
+      }
+      @media (max-width: 860px) {
+        .designs {
+          grid-template-columns: 1fr;
+        }
+      }
+      .design {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--card);
+        overflow: hidden;
+      }
+      .shots {
+        position: relative;
+        display: block;
+        aspect-ratio: 1440 / 860;
+        background: #2b2e35;
+        overflow: hidden;
+      }
+      .shots img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: opacity 0.2s;
+      }
+      .shots img.split {
+        opacity: 0;
+      }
+      .shots:hover img.split,
+      .shots:focus-visible img.split {
+        opacity: 1;
+      }
+      .shots:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: -3px;
+      }
+      .design-body {
+        padding: 18px 20px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+      }
+      .design h2 {
+        margin: 0;
+        font-size: 19px;
+        letter-spacing: -0.01em;
+      }
+      .design h2 span {
+        color: var(--text-3);
+        font-weight: 500;
+      }
+      .design p {
+        margin: 0;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 6px 14px;
+        margin: 4px 0 0;
+        font-size: 13.5px;
+      }
+      dt {
+        color: var(--text-3);
+      }
+      dd {
+        margin: 0;
+        color: var(--text-2);
+      }
+      .open {
+        margin-top: auto;
+        padding-top: 6px;
+        font-weight: 600;
+        font-size: 14px;
+      }
+      h3 {
+        margin: 56px 0 6px;
+        font-size: 19px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      th,
+      td {
+        padding: 10px 14px;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--line);
+      }
+      th {
+        font-weight: 600;
+        color: var(--text);
+      }
+      td {
+        color: var(--text-2);
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td:first-child {
+        color: var(--text);
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .note {
+        max-width: 72ch;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      kbd {
+        font: 12.5px ui-monospace, "SF Mono", Menlo, monospace;
+        padding: 1px 5px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: var(--card);
+      }
+      code {
+        font: 13px ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      ul.keys {
+        columns: 2;
+        column-gap: 32px;
+        padding-left: 18px;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      ul.keys li {
+        margin-bottom: 4px;
+        break-inside: avoid;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Four Fazi layouts, each with vertical tabs</h1>
+      <p class="lede">
+        Every mockup runs on the same engine (<code>shared/core.js</code>): the same fake home folder, state,
+        commands, and keyboard map. Only the layout and styling change, so tabs, dual pane, search,
+        Get Info, auto-cleanup, Trash, the command palette, and Vim mode behave identically in all four.
+      </p>
+      <p class="lede">
+        Settings designs live in <a href="settings/index.html">settings/</a>.
+        Hover a screenshot to see dual pane. Open a design to click around; the bar above each window
+        switches designs, theme, and demo states.
+      </p>
+
+      <section class="designs">
+        <article class="design">
+          <a class="shots" href="a-rail.html" aria-label="Open A, Rail">
+            <img src="screens/a-rail.png" alt="Rail layout, single pane" />
+            <img class="split" src="screens/a-rail-split.png" alt="Rail layout, dual pane" />
+          </a>
+          <div class="design-body">
+            <h2>Rail <span>A</span></h2>
+            <p>
+              One column owns the window, as in Arc. Search sits at the top, system places become icon tiles,
+              and open tabs fill the rest. The file list floats as an inset card, and the toolbar disappears.
+            </p>
+            <dl>
+              <dt>Tabs</dt>
+              <dd>One list in the sidebar; dual pane splits it into Left and Right groups.</dd>
+              <dt>Path</dt>
+              <dd>Breadcrumbs in each card’s header.</dd>
+              <dt>Strength</dt>
+              <dd>Calmest window. The most room for long tab names.</dd>
+              <dt>Tradeoff</dt>
+              <dd>Hiding the sidebar (⌥⌘S) hides the tabs too. Opens in light theme.</dd>
+            </dl>
+            <a class="open" href="a-rail.html">Open Rail</a>
+          </div>
+        </article>
+
+        <article class="design">
+          <a class="shots" href="b-strip.html" aria-label="Open B, Strip">
+            <img src="screens/b-strip.png" alt="Strip layout, single pane" />
+            <img class="split" src="screens/b-strip-split.png" alt="Strip layout, dual pane" />
+          </a>
+          <div class="design-body">
+            <h2>Strip <span>B</span></h2>
+            <p>
+              Today’s Fazi with the tab strip turned on its side. Each pane owns a vertical tab column, and the
+              active tab breaks the column edge to flow into its list, as Finder’s tabs connect to their content.
+            </p>
+            <dl>
+              <dt>Tabs</dt>
+              <dd>Per pane, two lines each (name, then where it lives). Folds to monograms.</dd>
+              <dt>Path</dt>
+              <dd>Toolbar breadcrumbs follow the active pane, as now.</dd>
+              <dt>Strength</dt>
+              <dd>Smallest change for existing users. Tabs stay with their pane.</dd>
+              <dt>Tradeoff</dt>
+              <dd>Three vertical bands before the list. Dual pane gets tight on small screens.</dd>
+            </dl>
+            <a class="open" href="b-strip.html">Open Strip</a>
+          </div>
+        </article>
+
+        <article class="design">
+          <a class="shots" href="c-trail.html" aria-label="Open C, Trail">
+            <img src="screens/c-trail.png" alt="Trail layout, single pane" />
+            <img class="split" src="screens/c-trail-split.png" alt="Trail layout, dual pane" />
+          </a>
+          <div class="design-body">
+            <h2>Trail <span>C</span></h2>
+            <p>
+              Locations shrink to an icon rail so tabs get the room. The active tab unfolds into its own path,
+              drawn as a trail from Home down to the current folder, which replaces the breadcrumb bar.
+            </p>
+            <dl>
+              <dt>Tabs</dt>
+              <dd>Grouped by pane. Active tab expands; the others fold to one line.</dd>
+              <dt>Path</dt>
+              <dd>The trail inside the active tab. Double-click it to type a path.</dd>
+              <dt>Strength</dt>
+              <dd>Tab and location merge into one idea. Ancestors are easy click and drop targets.</dd>
+              <dt>Tradeoff</dt>
+              <dd>Icon-only locations rely on tooltips. Deep paths elide the top of the trail.</dd>
+            </dl>
+            <a class="open" href="c-trail.html">Open Trail</a>
+          </div>
+        </article>
+
+        <article class="design">
+          <a class="shots" href="d-console.html" aria-label="Open D, Console">
+            <img src="screens/d-console.png" alt="Console layout, single pane" />
+            <img class="split" src="screens/d-console-split.png" alt="Console layout, dual pane" />
+          </a>
+          <div class="design-body">
+            <h2>Console <span>D</span></h2>
+            <p>
+              Built for the keyboard. Dense rows, a Vim-style mode line, and a command line at the bottom where the
+              filter lives. Each pane has its own path header, and in dual pane the tab columns mirror on the outer edges.
+            </p>
+            <dl>
+              <dt>Tabs</dt>
+              <dd>Compact list per pane: left pane on the left, right pane on the right.</dd>
+              <dt>Path</dt>
+              <dd>Per-pane header (<code>~/Projects/…</code>), plus the mode line.</dd>
+              <dt>Strength</dt>
+              <dd>Most rows on screen. Shortcuts shown next to what they open.</dd>
+              <dt>Tradeoff</dt>
+              <dd>Feels technical for mouse-first users. The amber accent is the most opinionated.</dd>
+            </dl>
+            <a class="open" href="d-console.html">Open Console</a>
+          </div>
+        </article>
+      </section>
+
+      <h3>Where each surface lives</h3>
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>A · Rail</th>
+            <th>B · Strip</th>
+            <th>C · Trail</th>
+            <th>D · Console</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Tabs</td>
+            <td>Sidebar, grouped by pane</td>
+            <td>Column inside each pane</td>
+            <td>Column beside the rail, grouped by pane</td>
+            <td>Column on each pane’s outer edge</td>
+          </tr>
+          <tr>
+            <td>Locations</td>
+            <td>Icon tiles, pinned rows, then Trash and volumes at the bottom</td>
+            <td>Classic sidebar</td>
+            <td>Icon rail with hover labels</td>
+            <td>Compact list with shortcut hints</td>
+          </tr>
+          <tr>
+            <td>Path</td>
+            <td>Card header</td>
+            <td>Toolbar</td>
+            <td>Trail in the active tab</td>
+            <td>Pane header and mode line</td>
+          </tr>
+          <tr>
+            <td>Filter and search</td>
+            <td>Top of sidebar</td>
+            <td>Toolbar</td>
+            <td>Toolbar</td>
+            <td>Bottom command line</td>
+          </tr>
+          <tr>
+            <td>Status</td>
+            <td>Footer of the active card</td>
+            <td>Status bar</td>
+            <td>Status bar</td>
+            <td>Mode line</td>
+          </tr>
+          <tr>
+            <td>Active pane</td>
+            <td>Accent ring on the card</td>
+            <td>Accent mark on the active tab</td>
+            <td>Accent line above the pane, filled dot on its group</td>
+            <td>Accent underline on the pane header</td>
+          </tr>
+          <tr>
+            <td>Default theme</td>
+            <td>Light (cobalt)</td>
+            <td>Dark (current Fazi blue)</td>
+            <td>Dark (sea-glass)</td>
+            <td>Dark (amber)</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">
+        Each palette defines one accent, so Fazi’s custom accent setting would still apply in every design. Both
+        themes are available in all four.
+      </p>
+
+      <h3>Things to try in every design</h3>
+      <ul class="keys">
+        <li>Click tabs, middle-click to close, right-click for the tab menu</li>
+        <li><kbd>⌥T</kbd> new tab and <kbd>⌥W</kbd> close (stand-ins for ⌘T and ⌘W, which the browser keeps)</li>
+        <li><kbd>⌃⇥</kbd> next tab, or <kbd>gt</kbd> and <kbd>gT</kbd> in Vim mode</li>
+        <li><kbd>⌘⇧D</kbd> dual pane, <kbd>⇥</kbd> to switch panes</li>
+        <li>Double-click folders, <kbd>⌘[</kbd> and <kbd>⌘]</kbd> back and forward, <kbd>⌘↑</kbd> up</li>
+        <li>Type in the filter, then <kbd>⏎</kbd> to search everywhere and change scope</li>
+        <li><kbd>⌘K</kbd> command palette, <kbd>⌘P</kbd> go to file</li>
+        <li><kbd>⌘I</kbd> Get Info, <kbd>⌥⌘S</kbd> sidebar, <kbd>⌘1</kbd> and <kbd>⌘2</kbd> list and icons</li>
+        <li>Downloads shows the auto-cleanup banner, column, and badges</li>
+        <li>Trash shows its banner and Empty Trash confirmation</li>
+        <li>Double-click the path (or <kbd>⌘⇧G</kbd>) to type a location</li>
+        <li><kbd>j</kbd>/<kbd>k</kbd>, <kbd>v</kbd>, <kbd>/</kbd>, <kbd>:</kbd>, <kbd>g?</kbd> with Vim mode on</li>
+      </ul>
+      <p class="note">
+        Demo states also load from the URL, for example <code>c-trail.html#split&amp;info&amp;theme=light</code>,
+        <code>go=~/Downloads</code>, <code>search=notes</code>, <code>palette</code>, <code>op</code>, or <code>fda</code>.
+      </p>
+    </main>
+  </body>
+</html>

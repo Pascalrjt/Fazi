@@ -33,12 +33,13 @@ import type { KeyContext } from "../../keyboard";
 import { useApp } from "../../../stores/app";
 
 const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "selectAll"];
-const CONTEXTS: KeyContext[] = ["browse", "rename", "modal", "palette", "preview", "search"];
+const CONTEXTS: KeyContext[] = ["browse", "rename", "modal", "palette", "preview", "search", "settings"];
 
 function resetApp(): void {
   useApp.setState({
     renaming: null,
     settingsOpen: false,
+    settingsActive: false,
     batchRenameOpen: false,
     paletteOpen: false,
     previewOpen: false,
@@ -185,10 +186,19 @@ describe("runMenuCommand", () => {
   });
 
   it("does nothing behind a modal with no field focused", async () => {
-    useApp.setState({ settingsOpen: true });
+    useApp.setState({ batchRenameOpen: true });
     runMenuCommand("undo");
     await Promise.resolve();
     expect(mocks.undoLast).not.toHaveBeenCalled();
+  });
+
+  it("does nothing to the hidden panes while the Settings tab shows", async () => {
+    useApp.setState({ settingsOpen: true, settingsActive: true });
+    runMenuCommand("undo");
+    runMenuCommand("paste");
+    await Promise.resolve();
+    expect(mocks.undoLast).not.toHaveBeenCalled();
+    expect(mocks.pbReadFiles).not.toHaveBeenCalled();
   });
 
   it("still performs file operations in browse", async () => {

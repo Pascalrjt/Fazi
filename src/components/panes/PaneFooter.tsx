@@ -1,7 +1,11 @@
-/** "14 items, 3 selected — 2.4 GB" + hidden-files and Vim-mode indicators. */
+/**
+ * A pane card's footer: "14 items, 3 selected — 2.4 GB" for that pane, plus
+ * hidden-files and sorting notes. The focused pane also carries the
+ * app-wide Vim-mode and auto-cleanup indicators.
+ */
 import clsx from "clsx";
 import { Hourglass } from "lucide-react";
-import { useApp } from "../../stores/app";
+import { useApp, type PaneId } from "../../stores/app";
 import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVim } from "../../stores/vim";
@@ -57,19 +61,20 @@ function VimIndicator() {
   );
 }
 
-export function StatusBar() {
+export function PaneFooter({ paneId }: { paneId: PaneId }) {
   const activePaneId = useApp((s) => s.activePaneId);
   const searchActive = useApp((s) => s.globalSearch.active);
   const hitCount = useApp((s) => s.globalSearch.hits.length);
   const searchStatus = useApp((s) => s.globalSearch.status);
   const vimOn = useSettings((s) => s.vimMode);
 
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
+  const pane = usePanes((s) => s.panes.find((p) => p.id === paneId));
   const tab = pane ? activeTabOf(pane) : null;
+  const isActive = activePaneId === paneId;
 
   let text = "";
   let sizeText = "";
-  if (searchActive) {
+  if (searchActive && isActive) {
     text =
       searchStatus === "searching"
         ? `Searching… ${pluralize(hitCount, "result")}`
@@ -91,14 +96,19 @@ export function StatusBar() {
   }
 
   return (
-    <div className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-window px-3 text-[11px] text-secondary">
-      {vimOn && <VimIndicator />}
+    <div
+      className={clsx(
+        "flex h-[26px] shrink-0 items-center gap-3 border-t border-edge px-3 text-[11px]",
+        isActive ? "text-secondary" : "text-tertiary",
+      )}
+    >
+      {vimOn && isActive && <VimIndicator />}
       <span className="tnum">{text}</span>
-      {sizeText && <span className="tnum">— {sizeText}</span>}
+      {sizeText && <span className="tnum text-tertiary">{sizeText}</span>}
       <div className="flex-1" />
-      {tab?.showHidden && <span className="text-tertiary">hidden files shown</span>}
-      {tab?.sorting && <span className="text-tertiary">sorting…</span>}
-      <CleanupIndicator />
+      {tab?.showHidden && <span className="text-tertiary">Hidden files shown</span>}
+      {tab?.sorting && <span className="text-tertiary">Sorting…</span>}
+      {isActive && <CleanupIndicator />}
     </div>
   );
 }

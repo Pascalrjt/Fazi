@@ -1,11 +1,12 @@
 /**
- * Get Info slide-over (⌘I): icon, kind, sizes (lazy dir_size with live count),
+ * Get Info card (⌘I), beside the panes: icon, kind, sizes (lazy dir_size with live count),
  * dates, where-from, permissions, tag editor. Aggregates multi-selections.
  */
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { Entry, GetInfoResult } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
+import { isPlainFolder } from "../../lib/folderTint";
 import * as ipc from "../../lib/ipc";
 import { safeIpc } from "../../lib/safeIpc";
 import { useApp } from "../../stores/app";
@@ -123,7 +124,12 @@ function SingleInfo({ entry }: { entry: Entry }) {
   return (
     <>
       <div className="flex items-center gap-3 px-4 pb-3">
-        <img src={iconUrl(entry.icon, 128)} alt="" className="h-12 w-12" draggable={false} />
+        <img
+          src={iconUrl(entry.icon, 128)}
+          alt=""
+          className={clsx("h-12 w-12", isPlainFolder(entry) && "folder-tint")}
+          draggable={false}
+        />
         <div className="min-w-0">
           <div className="select-text break-words text-[14px] font-semibold text-primary">
             {entry.name}
@@ -221,11 +227,9 @@ export function GetInfoPanel() {
   if (!open || !tab) return null;
 
   return (
-    <div className="anim-slide-left flex w-[280px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-raised py-3">
+    <div className="anim-slide-left flex w-[270px] shrink-0 flex-col overflow-y-auto rounded-[10px] bg-pane py-3 shadow-[var(--shadow-card)]">
       <div className="flex items-center justify-between px-4 pb-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-tertiary">
-          Info
-        </span>
+        <span className="text-[12px] font-semibold text-secondary">Info</span>
         <button
           className="cursor-default rounded px-1 text-tertiary hover:text-primary"
           onClick={() => setOpen(false)}

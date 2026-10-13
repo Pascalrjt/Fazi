@@ -42,6 +42,9 @@ pub struct Entry {
     pub link_target: Option<String>,
     pub tags: Vec<FinderTag>,
     pub no_access: bool,
+    /// Finder's custom-icon flag; such folders keep their own look rather
+    /// than taking the accent tint.
+    pub custom_icon: bool,
 }
 
 /// Extensions treated as packages without asking NSWorkspace (fast path).
@@ -84,6 +87,7 @@ pub fn pass1_entry(id: u64, dir: &Path, file_name: &str, d_kind: EntryKind, toke
         link_target: None,
         tags: Vec::new(),
         no_access: false,
+        custom_icon: false,
     }
 }
 
@@ -145,6 +149,7 @@ pub fn hydrate(entry: &mut Entry) -> bool {
 
     // Finder aliases: regular files with the kIsAlias Finder flag.
     entry.is_alias = entry.kind == EntryKind::File && fflags & K_IS_ALIAS != 0;
+    entry.custom_icon = fflags & K_HAS_CUSTOM_ICON != 0;
 
     entry.tags = read_tags(&path);
 
