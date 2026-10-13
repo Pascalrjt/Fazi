@@ -112,7 +112,7 @@ function boot(): void {
           .getState()
           .pushToast(
             `${kind} interrupted — ${op.completed} of ${pluralize(op.total, "item")} completed`,
-            { sticky: true },
+            { danger: true },
           );
       }
     } catch {

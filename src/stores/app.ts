@@ -91,6 +91,9 @@ export interface Toast {
   message: string;
   action?: { label: string; run: () => void };
   danger?: boolean;
+  /** What the countdown ring shows: it drains from `from` (fraction of the
+   *  lifetime left) to empty over `ms`, or stays at `from` while held. */
+  countdown: { from: number; ms: number; held: boolean };
 }
 
 export interface RenameTarget {
@@ -192,8 +195,12 @@ interface AppState {
   setActivePane(id: PaneId): void;
   setPaletteOpen(open: boolean): void;
   setClipboard(clip: { mode: "copy" | "cut"; paths: string[] } | null): void;
-  pushToast(message: string, opts?: { action?: Toast["action"]; danger?: boolean; sticky?: boolean }): void;
+  /** Every toast dismisses itself; see `toastLifetime`. */
+  pushToast(message: string, opts?: { action?: Toast["action"]; danger?: boolean }): void;
   dismissToast(id: number): void;
+  /** Hold a toast while the pointer rests on it; release resumes its countdown. */
+  holdToast(id: number): void;
+  releaseToast(id: number): void;
   setPreviewOpen(open: boolean): void;
   setGetInfoOpen(open: boolean): void;
   /** Open (and show) the Settings tab, or close it. */
@@ -225,7 +232,27 @@ interface AppState {
 }
 
 let toastSeq = 0;
-const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** How long a toast stays up: longer when it offers a button or reports a
+ *  failure, so there's time to act on it or read it. */
+export function toastLifetime(t: Pick<Toast, "action" | "danger">): number {
+  if (t.action) return 10_000;
+  if (t.danger) return 8_000;
+  return 5_000;
+}
+
+/** Per-toast countdown. A run drains the ring from `from` to empty over `ms`
+ *  and ends at `deadline`; `timer` is unset while the toast is held. */
+const toastTimers = new Map<
+  number,
+  { timer?: ReturnType<typeof setTimeout>; deadline: number; from: number; ms: number }
+>();
+
+function clearToastTimer(id: number): void {
+  const t = toastTimers.get(id);
+  if (t?.timer) clearTimeout(t.timer);
+  toastTimers.delete(id);
+}
 
 export const useApp = create<AppState>()(
   immer((set, get) => ({
@@ -256,29 +283,38 @@ export const useApp = create<AppState>()(
 
     pushToast: (message, opts) => {
       const id = ++toastSeq;
+      const ms = toastLifetime(opts ?? {});
       set((s) => {
-        s.toasts.push({ id, message, action: opts?.action, danger: opts?.danger });
+        s.toasts.push({ id, message, action: opts?.action, danger: opts?.danger, countdown: { from: 1, ms, held: false } });
         while (s.toasts.length > 3) {
           const evicted = s.toasts.shift();
-          if (evicted) {
-            const t = toastTimers.get(evicted.id);
-            if (t) clearTimeout(t);
-            toastTimers.delete(evicted.id);
-          }
+          if (evicted) clearToastTimer(evicted.id);
         }
       });
-      if (!opts?.sticky) {
-        toastTimers.set(
-          id,
-          setTimeout(() => get().dismissToast(id), 5000),
-        );
-      }
+      runToast(id, 1, ms);
+    },
+
+    holdToast: (id) => {
+      const t = toastTimers.get(id);
+      if (!t?.timer) return;
+      clearTimeout(t.timer);
+      const left = Math.max(0, t.deadline - Date.now());
+      const from = t.ms > 0 ? (t.from * left) / t.ms : 0;
+      toastTimers.set(id, { deadline: t.deadline, from, ms: left });
+      setCountdown(id, { from, ms: left, held: true });
+    },
+
+    releaseToast: (id) => {
+      const t = toastTimers.get(id);
+      if (!t || t.timer) return;
+      // A short floor so a toast doesn't vanish the instant the pointer leaves.
+      const ms = Math.max(t.ms, 2_000);
+      runToast(id, t.from, ms);
+      setCountdown(id, { from: t.from, ms, held: false });
     },
 
     dismissToast: (id) => {
-      const t = toastTimers.get(id);
-      if (t) clearTimeout(t);
-      toastTimers.delete(id);
+      clearToastTimer(id);
       set((s) => {
         s.toasts = s.toasts.filter((toast) => toast.id !== id);
       });
@@ -483,4 +519,20 @@ export const useApp = create<AppState>()(
 /** Convenience for commands. */
 export function toast(message: string, opts?: Parameters<AppState["pushToast"]>[1]): void {
   useApp.getState().pushToast(message, opts);
+}
+
+/** Start (or resume) a toast's countdown run. */
+function runToast(id: number, from: number, ms: number): void {
+  toastTimers.set(id, {
+    timer: setTimeout(() => useApp.getState().dismissToast(id), ms),
+    deadline: Date.now() + ms,
+    from,
+    ms,
+  });
+}
+
+function setCountdown(id: number, countdown: Toast["countdown"]): void {
+  useApp.setState((s) => ({
+    toasts: s.toasts.map((t) => (t.id === id ? { ...t, countdown } : t)),
+  }));
 }
