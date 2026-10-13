@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { Entry, GetInfoResult } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
+import { isPlainFolder } from "../../lib/folderTint";
 import * as ipc from "../../lib/ipc";
 import { safeIpc } from "../../lib/safeIpc";
 import { useApp } from "../../stores/app";
@@ -123,7 +124,12 @@ function SingleInfo({ entry }: { entry: Entry }) {
   return (
     <>
       <div className="flex items-center gap-3 px-4 pb-3">
-        <img src={iconUrl(entry.icon, 128)} alt="" className="h-12 w-12" draggable={false} />
+        <img
+          src={iconUrl(entry.icon, 128)}
+          alt=""
+          className={clsx("h-12 w-12", isPlainFolder(entry) && "folder-tint")}
+          draggable={false}
+        />
         <div className="min-w-0">
           <div className="select-text break-words text-[14px] font-semibold text-primary">
             {entry.name}

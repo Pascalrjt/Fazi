@@ -295,6 +295,10 @@ in `npm run tauri dev`.
       accent swatches (the Default swatch keeps the built-in color), Row
       height, alternating rows, and Sidebar position (the sidebar jumps sides
       while you watch).
+- [ ] A custom accent recolors folder icons in list, icon view, search,
+      ⌘P, and Get Info, keeping their shading and glyphs (Downloads arrow).
+      Apps, packages, volumes in /Volumes, and folders with a custom icon
+      keep their own colors. Default restores the system folder color.
 - [ ] Changing a setting shows a dot, a restore arrow on hover, and a count
       on its section; the arrow restores the default.
 - [ ] Search finds settings by synonyms ("dotfiles", "node_modules") and

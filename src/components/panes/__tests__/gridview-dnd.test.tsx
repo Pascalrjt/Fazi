@@ -50,6 +50,7 @@ function entry(id: number, name: string, kind: "dir" | "file", isPackage = false
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   } as Entry;
 }
 

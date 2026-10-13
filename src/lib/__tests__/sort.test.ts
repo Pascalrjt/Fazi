@@ -20,6 +20,7 @@ function entry(partial: Partial<Entry> & { name: string }): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
     ...partial,
   };
 }

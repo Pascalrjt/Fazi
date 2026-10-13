@@ -8,12 +8,21 @@ import clsx from "clsx";
 import { useOps, type PendingConflict } from "../../stores/ops";
 import type { ConflictResponse, ConflictSide } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
+import { isPlainFolderHit } from "../../lib/folderTint";
 import { basename, formatBytes, formatDateFull } from "../../lib/format";
 
 function SideCard({ side, title }: { side: ConflictSide; title: string }) {
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg bg-pane p-3">
-      <img src={iconUrl(side.icon, 64)} alt="" className="h-10 w-10" draggable={false} />
+      <img
+        src={iconUrl(side.icon, 64)}
+        alt=""
+        className={clsx(
+          "h-10 w-10",
+          isPlainFolderHit({ isDir: side.isDir, name: basename(side.path), path: side.path }) && "folder-tint",
+        )}
+        draggable={false}
+      />
       <div className="text-[11px] font-medium uppercase tracking-wide text-tertiary">{title}</div>
       <div className="tnum text-xs text-secondary">
         {side.isDir ? "Folder" : formatBytes(side.size)}

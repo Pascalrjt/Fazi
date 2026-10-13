@@ -19,6 +19,7 @@ import { startCleanup } from "./stores/cleanup";
 import { restoreOrBoot } from "./stores/session";
 import { pluralize } from "./lib/format";
 import { Toasts } from "./components/chrome/Toasts";
+import { FolderTintFilter } from "./components/chrome/FolderTintFilter";
 import { FdaBanner } from "./components/chrome/FdaBanner";
 import { ConfirmDialog } from "./components/chrome/ConfirmDialog";
 import { Sidebar } from "./components/sidebar/Sidebar";
@@ -82,7 +83,9 @@ function applyAppearance(theme: string, accent: string): void {
     root.style.setProperty("--accent", accent);
     root.style.setProperty("--accent-dim", `color-mix(in srgb, ${accent} 26%, transparent)`);
     root.style.setProperty("--accent-faint", `color-mix(in srgb, ${accent} 12%, transparent)`);
+    root.dataset.folderTint = "";
   } else {
+    delete root.dataset.folderTint;
     root.style.removeProperty("--accent");
     root.style.removeProperty("--accent-dim");
     root.style.removeProperty("--accent-faint");
@@ -217,6 +220,7 @@ export default function App() {
       <ConfirmDialog />
       <OpCards />
       <Toasts />
+      <FolderTintFilter />
       <ContextMenuHost />
     </div>
   );

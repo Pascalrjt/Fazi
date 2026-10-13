@@ -9,6 +9,7 @@ import { Hourglass, Lock, Pin } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
+import { isPlainFolder } from "../../lib/folderTint";
 import { usePanes, visibleEntries, type GhostEntry, type Tab } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
 import { showMenu } from "../../stores/menu";
@@ -268,7 +269,7 @@ const FileRow = memo(function FileRow({
       <img
         src={iconUrl(entry.icon, 32)}
         alt=""
-        className="h-4 w-4 shrink-0"
+        className={clsx("h-4 w-4 shrink-0", isPlainFolder(entry) && "folder-tint")}
         draggable={false}
         loading="lazy"
       />

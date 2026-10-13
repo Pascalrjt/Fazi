@@ -146,6 +146,7 @@ function dirEntry(id: number, name: string, path: string): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   };
 }
 
