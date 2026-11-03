@@ -47,9 +47,25 @@ const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// A cache hit only if the file holds a PNG. Anything else (an empty or
 /// truncated file left by a crash, or by an older non-atomic writer) is
 /// deleted and treated as a miss so it can't become a permanent bad hit.
+/// IHDR must be the first chunk: length 13 + type.
+const IHDR_HEAD: &[u8] = b"\x00\x00\x00\x0dIHDR";
+/// The fixed final chunk: zero length, "IEND", its constant CRC.
+const IEND: &[u8] = b"\x00\x00\x00\x00IEND\xae\x42\x60\x82";
+
+/// Cheap structural check (no decode): signature, IHDR first, and the file
+/// ends with a complete IEND chunk — so a file truncated anywhere after the
+/// header is rejected.
+fn looks_like_complete_png(bytes: &[u8]) -> bool {
+    // signature + IHDR chunk (8 + 13 + 4) + IEND
+    bytes.len() >= PNG_MAGIC.len() + 25 + IEND.len()
+        && bytes.starts_with(PNG_MAGIC)
+        && bytes[PNG_MAGIC.len()..].starts_with(IHDR_HEAD)
+        && bytes.ends_with(IEND)
+}
+
 fn read_cached(cache_path: &Path) -> Option<Vec<u8>> {
     let bytes = std::fs::read(cache_path).ok()?;
-    if bytes.len() > PNG_MAGIC.len() && bytes.starts_with(PNG_MAGIC) {
+    if looks_like_complete_png(&bytes) {
         return Some(bytes);
     }
     let _ = std::fs::remove_file(cache_path);
@@ -241,17 +257,31 @@ fn cgimage_to_png(rep: &QLThumbnailRepresentation) -> Option<Vec<u8>> {
     Some(data.to_vec())
 }
 
-/// Prune the thumbnail cache to ~300 MB, oldest-modified first.
+/// Temp files older than this are leftovers of a crashed/killed write.
+const STALE_TMP: Duration = Duration::from_secs(3600);
+
+/// Prune the thumbnail cache to ~300 MB, oldest-modified first, and drop
+/// stale `.tmp` files left by interrupted publishes.
 pub fn prune_cache(cache_dir: &Path) {
     const LIMIT: u64 = 300 * 1024 * 1024;
     let Ok(rd) = std::fs::read_dir(cache_dir) else {
         return;
     };
+    let now = std::time::SystemTime::now();
     let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = rd
         .flatten()
         .filter_map(|e| {
             let m = e.metadata().ok()?;
-            Some((e.path(), m.len(), m.modified().ok()?))
+            let modified = m.modified().ok()?;
+            let is_tmp = e.file_name().to_string_lossy().ends_with(".tmp");
+            if is_tmp {
+                // Fresh ones may belong to an in-flight write: leave them.
+                if now.duration_since(modified).is_ok_and(|age| age > STALE_TMP) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+                return None;
+            }
+            Some((e.path(), m.len(), modified))
         })
         .collect();
     let total: u64 = files.iter().map(|(_, s, _)| s).sum();
@@ -275,9 +305,13 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    /// Structurally complete fake PNG (signature, IHDR, IEND).
     fn png(tag: u8) -> Vec<u8> {
         let mut v = PNG_MAGIC.to_vec();
-        v.push(tag);
+        v.extend_from_slice(IHDR_HEAD);
+        v.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, tag]);
+        v.extend_from_slice(&[0, 0, 0, 0]); // CRC (not checked)
+        v.extend_from_slice(IEND);
         v
     }
 
@@ -415,6 +449,50 @@ mod tests {
             .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(tmps, 0);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn truncated_after_header_is_not_a_hit() {
+        let d = tmp("trunc");
+        let cache = d.join("cache");
+        let f = d.join("pic.bin");
+        std::fs::write(&f, b"t").unwrap();
+        let meta = f.symlink_metadata().unwrap();
+        let final_path = cache_file_for(&cache, cache_hash(&f, &meta, 64));
+        std::fs::create_dir_all(&cache).unwrap();
+        // Signature + IHDR + part of IDAT, no IEND: an old torn write.
+        let mut torn = png(9);
+        torn.truncate(torn.len() - IEND.len());
+        torn.extend_from_slice(b"\x00\x00\x01\x00IDAT\x01\x02");
+        std::fs::write(&final_path, &torn).unwrap();
+        assert_eq!(cached_thumbnail_png(&cache, &f, 64), None);
+        assert!(!final_path.exists());
+        assert!(looks_like_complete_png(&png(1)));
+        assert!(!looks_like_complete_png(&png(1)[..20]));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn prune_removes_stale_tmp_files_only() {
+        let d = tmp("prunetmp");
+        let old = d.join(".x.png.1-1.tmp");
+        let fresh = d.join(".y.png.1-2.tmp");
+        let keep = d.join("0000000000000001.png");
+        for p in [&old, &fresh, &keep] {
+            std::fs::write(p, b"z").unwrap();
+        }
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(two_hours_ago)
+            .unwrap();
+        prune_cache(&d);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(keep.exists());
         std::fs::remove_dir_all(&d).ok();
     }
 }
