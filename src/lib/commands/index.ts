@@ -22,7 +22,7 @@ import {
 import * as actions from "../actions";
 import { isExtractableArchive } from "../fileTypes";
 import { useApp } from "../../stores/app";
-import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../../stores/panes";
+import { activePaneTab, selectedEntries, tabView, usePanes } from "../../stores/panes";
 import { useFuzzy } from "../../stores/fuzzy";
 import { useOps } from "../../stores/ops";
 import { useSettings } from "../../stores/settings";
@@ -45,10 +45,14 @@ function moveLead(delta: 1 | -1, extend: boolean, stride = 1): void {
   const at = activePaneTab();
   if (!at) return;
   const { pane, tab } = at;
-  const order = visibleEntries(tab).map((e) => e.id);
+  const view = tabView(tab);
+  const order = view.ids;
+  const index = view.indexById;
   let next = tab.selection;
   for (let i = 0; i < stride; i++) {
-    next = extend ? shiftArrowExtend(next, order, delta) : arrowMove(next, order, delta);
+    next = extend
+      ? shiftArrowExtend(next, order, delta, index)
+      : arrowMove(next, order, delta, index);
   }
   usePanes.getState().setSelection(pane.id, tab.id, next);
 }
@@ -71,11 +75,15 @@ export function moveLeadBy(dir: 1 | -1, extend: boolean, count = 1): void {
 export function moveLeadToEdge(edge: "first" | "last", extend: boolean): void {
   const at = activePaneTab();
   if (!at) return;
-  const order = visibleEntries(at.tab).map((e) => e.id);
+  const view = tabView(at.tab);
+  const order = view.ids;
   if (order.length === 0) return;
   const target = edge === "first" ? order[0] : order[order.length - 1];
   const sel = at.tab.selection;
-  const next = extend && sel.anchor != null ? shiftRange(sel, order, target) : clickSelect(target);
+  const next =
+    extend && sel.anchor != null
+      ? shiftRange(sel, order, target, view.indexById)
+      : clickSelect(target);
   usePanes.getState().setSelection(at.pane.id, at.tab.id, next);
 }
 
@@ -83,7 +91,7 @@ export function moveLeadToEdge(edge: "first" | "last", extend: boolean): void {
 export function ensureLead(): void {
   const at = activePaneTab();
   if (!at || at.tab.selection.lead != null) return;
-  const order = visibleEntries(at.tab).map((e) => e.id);
+  const order = tabView(at.tab).ids;
   if (order.length === 0) return;
   usePanes.getState().setSelection(at.pane.id, at.tab.id, clickSelect(order[0]));
 }

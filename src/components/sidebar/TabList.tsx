@@ -9,8 +9,9 @@
  * Like the favorites reorder, this is pointer-event based: HTML5 drag &
  * drop never fires inside the Tauri webview (see Sidebar.tsx).
  */
-import { Fragment, useRef } from "react";
+import { Fragment, useMemo, useRef } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
 import {
   Download,
@@ -109,7 +110,20 @@ export function TabList({
   /** Rendered after the tabs, above "New tab" (the Settings tab). */
   beforeNewTab?: React.ReactNode;
 }) {
-  const pane = usePanes((s) => s.panes.find((p) => p.id === paneId));
+  // Only ids, paths and the active id: listing, selection and scroll
+  // updates in the pane's tabs don't re-render the tab list.
+  const flat = usePanes(
+    useShallow((s) => {
+      const p = s.panes.find((pp) => pp.id === paneId);
+      return p ? [p.activeTabId, ...p.tabs.flatMap((t) => [t.id, t.path])] : null;
+    }),
+  );
+  const pane = useMemo(() => {
+    if (!flat) return null;
+    const tabs: Array<{ id: string; path: string }> = [];
+    for (let i = 1; i + 1 < flat.length; i += 2) tabs.push({ id: flat[i], path: flat[i + 1] });
+    return { activeTabId: flat[0], tabs };
+  }, [flat]);
   const activateTab = usePanes((s) => s.activateTab);
   const closeTab = usePanes((s) => s.closeTab);
   const openTab = usePanes((s) => s.openTab);

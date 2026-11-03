@@ -9,6 +9,7 @@ import { previewUrl, thumbUrl } from "../../types/ipc";
 import * as ipc from "../../lib/ipc";
 import { useApp } from "../../stores/app";
 import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
+import { visibleSelection } from "../../lib/paneSummary";
 import { previewModeFor } from "../../lib/fileTypes";
 import { entryKindLabel } from "../../lib/sort";
 import { formatBytes, formatDateFull } from "../../lib/format";
@@ -243,35 +244,42 @@ function PreviewContent({ entry }: { entry: Entry }) {
   }
 }
 
+/** Always mounted (App); subscribes to the listing only while open. */
 export function PreviewOverlay() {
   const open = useApp((s) => s.previewOpen);
+  return open ? <OpenPreview /> : null;
+}
+
+function OpenPreview() {
   const setOpen = useApp((s) => s.setPreviewOpen);
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  const tab = usePanes((s) => {
+    const pane = s.panes.find((p) => p.id === activePaneId) ?? s.panes[0];
+    return pane ? activeTabOf(pane) : null;
+  });
 
   // the list we walk: the selection if >1, else the whole visible dir
   const list = useMemo(() => {
     if (!tab) return [];
-    const vis = visibleEntries(tab);
-    const sel = vis.filter((e) => tab.selection.selected.has(e.id));
-    return sel.length > 1 ? sel : vis;
-  }, [tab]);
+    const sel = visibleSelection(tab);
+    return sel.length > 1 ? sel : visibleEntries(tab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab?.entries, tab?.filter, tab?.showHidden, tab?.selection]);
 
   const [index, setIndex] = useState(0);
 
+  // Start at the lead row (once per open: this component mounts on open).
   useEffect(() => {
-    if (!open || !tab) return;
+    if (!tab) return;
     const leadId = tab.selection.lead ?? [...tab.selection.selected][0];
     const idx = list.findIndex((e) => e.id === leadId);
     setIndex(idx >= 0 ? idx : 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
   const close = useCallback(() => setOpen(false), [setOpen]);
 
   useEffect(() => {
-    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return; // let ⌘Y etc. through
       switch (e.key) {
@@ -295,9 +303,8 @@ export function PreviewOverlay() {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, list.length, close]);
+  }, [list.length, close]);
 
-  if (!open) return null;
   const entry = list[index];
   if (!entry) {
     return null;

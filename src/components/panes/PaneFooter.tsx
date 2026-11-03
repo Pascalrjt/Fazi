@@ -3,9 +3,12 @@
  * hidden-files and sorting notes. The focused pane also carries the
  * app-wide Vim mode indicator and auto-cleanup pill.
  */
+import { useMemo } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
 import { useApp, type PaneId } from "../../stores/app";
-import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
+import { usePanes, activeTabOf } from "../../stores/panes";
+import { paneSummary } from "../../lib/paneSummary";
 import { useSettings } from "../../stores/settings";
 import { useVim } from "../../stores/vim";
 import { vimPendingLabel } from "../../lib/vim";
@@ -46,9 +49,27 @@ export function PaneFooter({ paneId }: { paneId: PaneId }) {
   const searchStatus = useApp((s) => s.globalSearch.status);
   const vimOn = useSettings((s) => s.vimMode);
 
-  const pane = usePanes((s) => s.panes.find((p) => p.id === paneId));
-  const tab = pane ? activeTabOf(pane) : null;
+  // Only the fields the footer shows: scroll, history and listing
+  // bookkeeping changes don't re-render it.
+  const tab = usePanes(
+    useShallow((s) => {
+      const pane = s.panes.find((p) => p.id === paneId);
+      if (!pane) return null;
+      const t = activeTabOf(pane);
+      return {
+        entries: t.entries,
+        filter: t.filter,
+        showHidden: t.showHidden,
+        selection: t.selection,
+        sorting: t.sorting,
+      };
+    }),
+  );
   const isActive = activePaneId === paneId;
+  const summary = useMemo(
+    () => (tab ? paneSummary(tab) : null),
+    [tab?.entries, tab?.filter, tab?.showHidden, tab?.selection], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   let text = "";
   let sizeText = "";
@@ -57,19 +78,11 @@ export function PaneFooter({ paneId }: { paneId: PaneId }) {
       searchStatus === "searching"
         ? `Searching… ${pluralize(hitCount, "result")}`
         : pluralize(hitCount, "result");
-  } else if (tab) {
-    const visible = visibleEntries(tab);
-    const selectedIds = tab.selection.selected;
-    text = pluralize(visible.length, "item");
-    if (selectedIds.size > 0) {
-      text = `${visible.length} items, ${selectedIds.size} selected`;
-      const bytes = tab.entries
-        .filter((e) => selectedIds.has(e.id))
-        .reduce<number | null>(
-          (acc, e) => (e.size == null ? acc : (acc ?? 0) + e.size),
-          null,
-        );
-      if (bytes != null) sizeText = formatBytes(bytes);
+  } else if (summary) {
+    text = pluralize(summary.visibleCount, "item");
+    if (summary.selectedCount > 0) {
+      text = `${summary.visibleCount} items, ${summary.selectedCount} selected`;
+      if (summary.selectedBytes != null) sizeText = formatBytes(summary.selectedBytes);
     }
   }
 
