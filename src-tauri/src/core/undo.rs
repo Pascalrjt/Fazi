@@ -115,10 +115,22 @@ pub struct UndoOutcome {
     pub inverse: UndoOp,
 }
 
+/// An undo-stack entry. `seq` is a stable, strictly increasing position:
+/// the stack is always sorted by it, so a record re-inserted after an
+/// unlocked inverse finds its slot even if concurrent pushes trimmed the
+/// front of the capped stack (numeric indices shift; sequence numbers don't).
+#[derive(Debug, Clone)]
+struct Record {
+    seq: u64,
+    op: UndoOp,
+}
+
 #[derive(Default)]
 pub struct UndoStack {
-    undo: Vec<UndoOp>,
+    undo: Vec<Record>,
     redo: Vec<UndoOp>,
+    /// Next `Record::seq` to hand out.
+    next_seq: u64,
     /// Bumped by every `push` — lets an inverse applied outside the stack
     /// lock (`undo_shared`/`redo_shared`) see that a new op landed meanwhile.
     push_epoch: u64,
@@ -164,17 +176,27 @@ fn run_shared(
     side: Side,
 ) -> io::Result<Option<(UndoOutcome, Vec<PathBuf>)>> {
     let _apply = APPLY.lock().unwrap_or_else(|e| e.into_inner());
-    let (op, undo_len, redo_len, epoch) = {
+    // `seq`: for an undo, the popped record's own sequence number (a failed
+    // inverse puts it back there); for a redo, a number reserved now so the
+    // inverse lands above every record present at pop time but below any op
+    // pushed while the inverse ran (sequentially, the redo came first).
+    let (op, seq, redo_len, epoch) = {
         let mut s = stack.lock().unwrap();
         let popped = match side {
-            Side::Undo => s.undo.pop(),
-            Side::Redo => s.redo.pop(),
+            Side::Undo => s.undo.pop().map(|r| (r.op, r.seq)),
+            Side::Redo => match s.redo.pop() {
+                Some(op) => {
+                    let seq = s.alloc_seq();
+                    Some((op, seq))
+                }
+                None => None,
+            },
         };
-        let Some(op) = popped else {
+        let Some((op, seq)) = popped else {
             return Ok(None);
         };
         s.in_flight = true;
-        (op, s.undo.len(), s.redo.len(), s.push_epoch)
+        (op, seq, s.redo.len(), s.push_epoch)
     };
     let touched = op.touched_paths();
 
@@ -194,15 +216,11 @@ fn run_shared(
         }
         (Side::Undo, Err(e)) => {
             // A failed undo must not silently drop the record.
-            let at = undo_len.min(s.undo.len());
-            s.undo.insert(at, op);
-            s.trim();
+            s.insert_by_seq(Record { seq, op });
             Err(e)
         }
         (Side::Redo, Ok(outcome)) => {
-            let at = undo_len.min(s.undo.len());
-            s.undo.insert(at, outcome.inverse.clone());
-            s.trim();
+            s.insert_by_seq(Record { seq, op: outcome.inverse.clone() });
             Ok(Some((outcome, touched)))
         }
         (Side::Redo, Err(e)) => {
@@ -225,7 +243,22 @@ impl UndoStack {
     pub fn push(&mut self, op: UndoOp) {
         self.push_epoch += 1;
         self.redo.clear();
-        self.undo.push(op);
+        let seq = self.alloc_seq();
+        self.undo.push(Record { seq, op });
+        self.trim();
+    }
+
+    fn alloc_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
+    }
+
+    /// Insert keeping the stack sorted by `seq` (before the first newer
+    /// record), then re-apply the cap.
+    fn insert_by_seq(&mut self, rec: Record) {
+        let at = self.undo.partition_point(|r| r.seq < rec.seq);
+        self.undo.insert(at, rec);
         self.trim();
     }
 
@@ -236,7 +269,7 @@ impl UndoStack {
     }
 
     pub fn undo_top(&self) -> Option<&UndoOp> {
-        self.undo.last()
+        self.undo.last().map(|r| &r.op)
     }
 
     pub fn redo_top(&self) -> Option<&UndoOp> {
@@ -244,10 +277,10 @@ impl UndoStack {
     }
 
     pub fn undo(&mut self, trasher: &dyn Trasher) -> io::Result<Option<UndoOutcome>> {
-        let Some(op) = self.undo.pop() else {
+        let Some(rec) = self.undo.pop() else {
             return Ok(None);
         };
-        match apply_inverse(&op, trasher) {
+        match apply_inverse(&rec.op, trasher) {
             Ok(outcome) => {
                 self.redo.push(outcome.inverse.clone());
                 Ok(Some(outcome))
@@ -255,7 +288,7 @@ impl UndoStack {
             Err(e) => {
                 // A failed undo must not silently drop the record — the user
                 // can fix the blocker (e.g. free the name) and retry.
-                self.undo.push(op);
+                self.undo.push(rec);
                 Err(e)
             }
         }
@@ -267,7 +300,8 @@ impl UndoStack {
         };
         match apply_inverse(&op, trasher) {
             Ok(outcome) => {
-                self.undo.push(outcome.inverse.clone());
+                let seq = self.alloc_seq();
+                self.undo.push(Record { seq, op: outcome.inverse.clone() });
                 Ok(Some(outcome))
             }
             Err(e) => {
@@ -302,7 +336,7 @@ impl UndoStack {
                 .iter()
                 .any(|(p, t)| references(p) || t.as_deref().is_some_and(references)),
         };
-        self.undo.retain(|op| !op_references(op));
+        self.undo.retain(|r| !op_references(&r.op));
         self.redo.retain(|op| !op_references(op));
     }
 }
@@ -680,7 +714,7 @@ mod tests {
 
         // Only the unrelated rename survives; the redo record is gone too.
         assert_eq!(stack.undo.len(), 1);
-        assert!(matches!(stack.undo[0], UndoOp::Rename { .. }));
+        assert!(matches!(stack.undo[0].op, UndoOp::Rename { .. }));
         assert!(stack.redo_top().is_none());
         fs::remove_dir_all(&d).ok();
     }
@@ -768,7 +802,7 @@ mod tests {
         }
         assert_eq!(stack.undo.len(), 50);
         // Oldest entries were dropped.
-        match stack.undo.first().unwrap() {
+        match &stack.undo.first().unwrap().op {
             UndoOp::NewFolder { path } => assert_eq!(path, &PathBuf::from("/x/10")),
             _ => panic!(),
         }
@@ -795,22 +829,35 @@ mod tests {
         inner: DirTrasher,
         entered: std::sync::mpsc::SyncSender<()>,
         release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        /// Fail after release instead of trashing (a slow inverse that errors).
+        fail: bool,
     }
     impl Trasher for GateTrasher {
         fn trash(&self, path: &Path) -> io::Result<PathBuf> {
             let _ = self.entered.send(());
             let _ = self.release.lock().unwrap().recv();
+            if self.fail {
+                return Err(io::Error::other("trash refused"));
+            }
             self.inner.trash(path)
         }
     }
 
     fn gate(d: &Path) -> (Arc<GateTrasher>, std::sync::mpsc::Receiver<()>, std::sync::mpsc::SyncSender<()>) {
+        gate_with(d, false)
+    }
+
+    fn gate_with(
+        d: &Path,
+        fail: bool,
+    ) -> (Arc<GateTrasher>, std::sync::mpsc::Receiver<()>, std::sync::mpsc::SyncSender<()>) {
         let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
         let t = Arc::new(GateTrasher {
             inner: DirTrasher(d.join("trash")),
             entered: entered_tx,
             release: std::sync::Mutex::new(release_rx),
+            fail,
         });
         (t, entered_rx, release_tx)
     }
@@ -884,6 +931,87 @@ mod tests {
         assert!(!s.in_flight);
         drop(s);
         assert!(redo_shared(&stack, &DirTrasher(d.join("trash"))).unwrap().is_none());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    fn kinds_tail(s: &UndoStack, n: usize) -> Vec<String> {
+        let start = s.undo.len().saturating_sub(n);
+        s.undo[start..]
+            .iter()
+            .map(|r| match &r.op {
+                UndoOp::NewFolder { path } => path.file_name().unwrap().to_string_lossy().into_owned(),
+                other => other.kind_wire().to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn failed_shared_undo_keeps_its_slot_when_pushes_trim_the_capped_stack() {
+        let d = tmp("failtrim");
+        let f = d.join("copy.txt");
+        fs::write(&f, b"x").unwrap();
+        let stack = Arc::new(Mutex::new(UndoStack::default()));
+        {
+            let mut s = stack.lock().unwrap();
+            for i in 0..CAP - 1 {
+                s.push(UndoOp::NewFolder { path: d.join(format!("old{i}")) });
+            }
+            s.push(UndoOp::Copy { produced: vec![f.clone()] });
+            assert_eq!(s.undo.len(), CAP);
+        }
+        let (trasher, entered, release) = gate_with(&d, true);
+        let worker = {
+            let (stack, trasher) = (stack.clone(), trasher.clone());
+            std::thread::spawn(move || undo_shared(&stack, trasher.as_ref()))
+        };
+        entered.recv().unwrap();
+        {
+            let mut s = stack.lock().unwrap();
+            s.push(UndoOp::NewFolder { path: d.join("newA") });
+            s.push(UndoOp::NewFolder { path: d.join("newB") });
+        }
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        let s = stack.lock().unwrap();
+        assert_eq!(s.undo.len(), CAP);
+        assert_eq!(kinds_tail(&s, 3), vec!["copy", "newA", "newB"]);
+        assert!(s.undo.windows(2).all(|w| w[0].seq < w[1].seq));
+        drop(s);
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn shared_redo_inverse_lands_below_pushes_made_while_it_ran() {
+        let d = tmp("redotrim");
+        let f = d.join("copy.txt");
+        fs::write(&f, b"x").unwrap();
+        let stack = Arc::new(Mutex::new(UndoStack::default()));
+        {
+            let mut s = stack.lock().unwrap();
+            for i in 0..CAP {
+                s.push(UndoOp::NewFolder { path: d.join(format!("old{i}")) });
+            }
+            // A redo record whose inverse trashes through the gate.
+            s.redo.push(UndoOp::Copy { produced: vec![f.clone()] });
+        }
+        let (trasher, entered, release) = gate(&d);
+        let worker = {
+            let (stack, trasher) = (stack.clone(), trasher.clone());
+            std::thread::spawn(move || redo_shared(&stack, trasher.as_ref()))
+        };
+        entered.recv().unwrap();
+        {
+            let mut s = stack.lock().unwrap();
+            s.push(UndoOp::NewFolder { path: d.join("newA") });
+            s.push(UndoOp::NewFolder { path: d.join("newB") });
+        }
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap().unwrap();
+        let s = stack.lock().unwrap();
+        assert_eq!(s.undo.len(), CAP);
+        assert_eq!(kinds_tail(&s, 3), vec!["trash", "newA", "newB"]);
+        assert!(s.undo.windows(2).all(|w| w[0].seq < w[1].seq));
+        drop(s);
         fs::remove_dir_all(&d).ok();
     }
 }
