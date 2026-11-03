@@ -36,12 +36,21 @@ pub fn watch(
     // and compare against the canonical root or deltas silently vanish.
     let root = std::fs::canonicalize(&root).unwrap_or(root);
     let watched = root.clone();
+    // Fixed per volume: decide once, not per batch.
+    let case_sensitive = is_case_sensitive(&root);
     let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
         Duration::from_millis(150),
         None,
         move |result: DebounceEventResult| match result {
             Ok(events) => {
-                if let Some(batch) = map_events(&watched, events.iter().flat_map(|e| e.paths.iter())) {
+                let changes = events.iter().flat_map(|e| {
+                    let renamed = matches!(
+                        e.kind,
+                        notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+                    );
+                    e.paths.iter().map(move |p| (p, renamed))
+                });
+                if let Some(batch) = map_changes(&watched, changes, case_sensitive, probe_child) {
                     send(batch);
                 }
             }
@@ -144,20 +153,49 @@ fn snapshot(root: &Path) -> std::io::Result<Spellings> {
     Ok(Spellings { exact: actual_names.into_iter().collect(), case_folded })
 }
 
-/// Classify affected paths by what's true *now*: existing paths in the root
-/// are upserts, missing ones are removals. Robust across rename semantics.
-///
-/// Cost scales with the batch, not the directory: event paths are filtered
-/// to direct children first and probed one syscall each; the root is read
-/// (once, lazily) only when a probe can't settle the exact spelling.
+/// Whether names on `root`'s volume are case-sensitive (pathconf; APFS and
+/// HFS+ default to insensitive). Unknown → assume sensitive, which only
+/// costs an occasional directory read on renames.
+pub fn is_case_sensitive(root: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(root.as_os_str().as_bytes()) else {
+        return true;
+    };
+    unsafe { libc::pathconf(c.as_ptr(), libc::_PC_CASE_SENSITIVE) != 0 }
+}
+
+/// [`map_changes`] for paths without event flags: every path is treated as
+/// possibly renamed, and the volume's case sensitivity is probed.
 pub fn map_events<'a>(
     root: &Path,
     paths: impl Iterator<Item = &'a PathBuf>,
 ) -> Option<WatchEvent> {
+    map_changes(root, paths.map(|p| (p, true)), is_case_sensitive(root), probe_child)
+}
+
+/// Classify affected paths by what's true *now*: existing paths in the root
+/// are upserts, missing ones are removals. Robust across rename semantics.
+///
+/// `changes` pairs each event path with whether its event was a rename.
+///
+/// Cost scales with the batch, not the directory: event paths are filtered
+/// to direct children first and probed one syscall each; the root is read
+/// (once, lazily) only when a probe can't settle the exact spelling — or, on
+/// case-sensitive volumes, when a renamed path is missing: a case-only
+/// rename foo → Foo may surface only the stale `foo`, which probes as gone
+/// there, so the dirents are consulted for its new spelling.
+pub fn map_changes<'a>(
+    root: &Path,
+    changes: impl Iterator<Item = (&'a PathBuf, bool)>,
+    case_sensitive: bool,
+    probe: impl Fn(&Path, &str) -> Probe,
+) -> Option<WatchEvent> {
     let mut root_gone = false;
     let mut seen = std::collections::HashSet::new();
-    let mut names: Vec<(&'a PathBuf, String)> = Vec::new();
-    for p in paths {
+    let mut names: Vec<(&'a PathBuf, String, bool)> = Vec::new();
+    // Rename flags of one path may arrive on another event of the batch.
+    let mut renamed_names = std::collections::HashSet::new();
+    for (p, renamed) in changes {
         if p == root {
             if p.symlink_metadata().is_err() {
                 root_gone = true;
@@ -170,9 +208,15 @@ pub fn map_events<'a>(
         let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             continue;
         };
-        if seen.insert(name.clone()) {
-            names.push((p, name));
+        if renamed {
+            renamed_names.insert(name.clone());
         }
+        if seen.insert(name.clone()) {
+            names.push((p, name, false));
+        }
+    }
+    for (_, name, renamed) in names.iter_mut() {
+        *renamed = renamed_names.contains(name.as_str());
     }
     if root_gone {
         return Some(WatchEvent::RootGone);
@@ -185,9 +229,12 @@ pub fn map_events<'a>(
     let mut removed = Vec::new();
     let mut spellings: Option<Spellings> = None;
     let mut checked_root = false;
-    for (p, name) in names {
-        match probe_child(p, &name) {
-            Probe::Exact => upserted.push(name),
+    for (p, name, renamed) in names {
+        let reconcile = match probe(p, &name) {
+            Probe::Exact => {
+                upserted.push(name);
+                continue;
+            }
             Probe::Missing => {
                 // Children vanishing can mean the root itself went away.
                 if !checked_root {
@@ -196,42 +243,53 @@ pub fn map_events<'a>(
                         return Some(WatchEvent::RootGone);
                     }
                 }
-                removed.push(name);
-            }
-            Probe::Unsure => {
-                // APFS commonly resolves a stale-cased path after foo -> Foo,
-                // so only the parent's actual dirent spellings can tell
-                // whether that exact entry still exists.
-                if spellings.is_none() {
-                    match snapshot(root) {
-                        Ok(s) => spellings = Some(s),
-                        Err(_) if root.symlink_metadata().is_err() => {
-                            return Some(WatchEvent::RootGone);
-                        }
-                        Err(_) => {
-                            return Some(WatchEvent::Batch {
-                                upserted: Vec::new(),
-                                removed: Vec::new(),
-                                rescan: true,
-                            });
-                        }
-                    }
-                }
-                let s = spellings.as_ref().expect("snapshot taken");
-                if s.exact.contains(name.as_str()) {
-                    upserted.push(name);
-                } else {
-                    // A stale-cased rename event may be the only path FSEvents
-                    // gives us. Reconcile it to the actual spelling so
-                    // external case-only renames still produce the row.
-                    if let Some(actual) = s.case_folded.get(&name.to_lowercase()) {
-                        if seen.insert(actual.clone()) {
-                            upserted.push(actual.clone());
-                        }
-                    }
+                if !(renamed && case_sensitive) {
+                    // Fast path: on case-insensitive volumes a stale-cased
+                    // name resolves (Unsure), so Missing is final.
                     removed.push(name);
+                    continue;
+                }
+                false
+            }
+            // APFS commonly resolves a stale-cased path after foo -> Foo,
+            // so only the parent's actual dirent spellings can tell
+            // whether that exact entry still exists.
+            Probe::Unsure => true,
+        };
+        if spellings.is_none() {
+            match snapshot(root) {
+                Ok(s) => spellings = Some(s),
+                Err(_) if root.symlink_metadata().is_err() => {
+                    return Some(WatchEvent::RootGone);
+                }
+                Err(_) if !reconcile => {
+                    // Only a best-effort case lookup failed: the probe
+                    // already settled the removal.
+                    removed.push(name);
+                    continue;
+                }
+                Err(_) => {
+                    return Some(WatchEvent::Batch {
+                        upserted: Vec::new(),
+                        removed: Vec::new(),
+                        rescan: true,
+                    });
                 }
             }
+        }
+        let s = spellings.as_ref().expect("snapshot taken");
+        if reconcile && s.exact.contains(name.as_str()) {
+            upserted.push(name);
+        } else {
+            // A stale-cased rename event may be the only path FSEvents
+            // gives us. Reconcile it to the actual spelling so
+            // external case-only renames still produce the row.
+            if let Some(actual) = s.case_folded.get(&name.to_lowercase()) {
+                if actual != &name && seen.insert(actual.clone()) {
+                    upserted.push(actual.clone());
+                }
+            }
+            removed.push(name);
         }
     }
 
@@ -270,6 +328,48 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[test]
+    fn case_sensitive_stale_only_rename_reconciles_to_the_new_spelling() {
+        let root = tmp_root("case-sens");
+        std::fs::write(root.join("Foo"), b"x").unwrap();
+        std::fs::write(root.join("bar"), b"x").unwrap();
+        let stale = root.join("foo");
+        let gone = root.join("gone.txt");
+        // A case-sensitive volume reports the stale spelling as ENOENT.
+        let probe = |p: &Path, name: &str| {
+            if name == "foo" { Probe::Missing } else { probe_child(p, name) }
+        };
+
+        let before = snapshot_fallbacks();
+        let event = map_changes(&root, [(&stale, true)].into_iter(), true, probe).unwrap();
+        assert_eq!(snapshot_fallbacks(), before + 1);
+        match event {
+            WatchEvent::Batch { upserted, removed, rescan } => {
+                assert!(!rescan);
+                assert_eq!(removed, vec!["foo"]);
+                assert_eq!(upserted, vec!["Foo"]);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Fast paths: plain deletes, and renames on case-insensitive
+        // volumes, never read the directory.
+        let before = snapshot_fallbacks();
+        for (renamed, sensitive) in [(false, true), (true, false)] {
+            let event =
+                map_changes(&root, [(&gone, renamed)].into_iter(), sensitive, probe).unwrap();
+            match event {
+                WatchEvent::Batch { upserted, removed, .. } => {
+                    assert!(upserted.is_empty());
+                    assert_eq!(removed, vec!["gone.txt"]);
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert_eq!(snapshot_fallbacks(), before);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     fn tmp_root(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("fazi-watch-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -303,7 +403,7 @@ mod tests {
         paths.push(sub.join("deep.txt")); // deeper path: ignored
         paths.push(root.join("f0")); // duplicate: ignored
         let before = snapshot_fallbacks();
-        let event = map_events(&root, paths.iter()).unwrap();
+        let event = map_changes(&root, paths.iter().map(|p| (p, true)), false, probe_child).unwrap();
         let after = snapshot_fallbacks();
         match event {
             WatchEvent::Batch { upserted, removed, rescan } => {
