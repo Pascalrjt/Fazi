@@ -190,6 +190,9 @@ struct ArchiveSink {
     errors: Vec<OpError>,
     /// Set on the first item error — an error abort, distinct from user cancel.
     aborted: bool,
+    /// Record errors without emitting them: a source-side staging attempt
+    /// that fails falls back to the destination, so its errors aren't final.
+    quiet: bool,
 }
 
 impl ArchiveSink {
@@ -202,6 +205,7 @@ impl ArchiveSink {
             last_emit: Instant::now(),
             errors: Vec::new(),
             aborted: false,
+            quiet: false,
         }
     }
 
@@ -235,10 +239,12 @@ impl WalkSink for ArchiveSink {
             path: path.to_string_lossy().into_owned(),
             message: err.to_string(),
         };
-        self.emitter.emit(OpEvent::ItemError {
-            path: e.path.clone(),
-            message: e.message.clone(),
-        });
+        if !self.quiet {
+            self.emitter.emit(OpEvent::ItemError {
+                path: e.path.clone(),
+                message: e.message.clone(),
+            });
+        }
         self.errors.push(e);
         // Fail fast: an incomplete zip is data loss, so stop staging now.
         self.aborted = true;
@@ -278,10 +284,60 @@ fn journal_write_fail_fast(
     true
 }
 
+/// Whether the volume holding `path` supports clonefile(2)
+/// (VOL_CAP_INT_CLONE, as reported for its mount point).
+pub fn volume_supports_clone(path: &Path) -> bool {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut sfs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: valid path, out-pointer to a zeroed statfs.
+    if unsafe { libc::statfs(c.as_ptr(), &mut sfs) } != 0 {
+        return false;
+    }
+    let mnt: Vec<u8> = sfs
+        .f_mntonname
+        .iter()
+        .take_while(|&&b| b != 0)
+        .map(|&b| b as u8)
+        .collect();
+    let Ok(mnt) = std::ffi::CString::new(std::ffi::OsString::from_vec(mnt).into_vec()) else {
+        return false;
+    };
+    let mut req: libc::attrlist = unsafe { std::mem::zeroed() };
+    req.bitmapcount = libc::ATTR_BIT_MAP_COUNT;
+    req.volattr = libc::ATTR_VOL_INFO | libc::ATTR_VOL_CAPABILITIES;
+    #[repr(C, packed(4))]
+    struct Buf {
+        len: u32,
+        caps: libc::vol_capabilities_attr_t,
+    }
+    let mut buf: Buf = unsafe { std::mem::zeroed() };
+    // SAFETY: valid mount path, attrlist and buffer of the declared size.
+    let rc = unsafe {
+        libc::getattrlist(
+            mnt.as_ptr(),
+            (&mut req as *mut libc::attrlist).cast(),
+            (&mut buf as *mut Buf).cast(),
+            std::mem::size_of::<Buf>(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return false;
+    }
+    let caps = buf.caps;
+    let i = libc::VOL_CAPABILITIES_INTERFACES;
+    caps.valid[i] & libc::VOL_CAP_INT_CLONE != 0 && caps.capabilities[i] & libc::VOL_CAP_INT_CLONE != 0
+}
+
 /// Where a multi-item compress should materialize its contents dir: beside
-/// the first source when every source lives on one volume that differs from
-/// the destination's, so staging is per-entry clones instead of a full byte
-/// copy onto the destination volume. None = stage on the destination.
+/// the first source when every source lives on one clone-capable volume that
+/// differs from the destination's, so staging is per-entry clones instead of
+/// a full byte copy onto the destination volume. Without clone support the
+/// source side would byte-copy too (and may lack the space: exFAT, a nearly
+/// full stick), so None = stage on the destination.
 fn source_side_staging_dir(sources: &[PathBuf], dest_dir: &Path) -> Option<PathBuf> {
     let dev = copier::device_of(sources.first()?)?;
     if copier::device_of(dest_dir) == Some(dev) {
@@ -302,7 +358,105 @@ fn source_side_staging_dir(sources: &[PathBuf], dest_dir: &Path) -> Option<PathB
     if unsafe { libc::access(c.as_ptr(), libc::W_OK) } != 0 {
         return None;
     }
+    if !volume_supports_clone(parent) {
+        return None;
+    }
     Some(parent.to_path_buf())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Staged {
+    Done,
+    Cancelled,
+    Failed,
+    /// Re-journaling the fallback spot failed (Done already emitted).
+    JournalFailed,
+}
+
+/// Run the staging copy into `stage_contents`; if that is a source-side
+/// spot and it fails for any reason (no space, permissions, clone refused),
+/// discard it, journal the destination-side spot FIRST, and stage there.
+/// `stage(dir, is_final)` performs one attempt; only the final attempt's
+/// errors are user-facing.
+fn stage_with_fallback(
+    stage_contents: &mut PathBuf,
+    dest_side: &Path,
+    mut stage: impl FnMut(&Path, bool) -> Staged,
+    mut rejournal: impl FnMut(&Path, &Path) -> bool,
+    mut discard: impl FnMut(&Path),
+) -> Staged {
+    let source_side = stage_contents.as_path() != dest_side;
+    let first = stage(stage_contents, !source_side);
+    if first != Staged::Failed || !source_side {
+        return first;
+    }
+    discard(stage_contents);
+    if !rejournal(stage_contents, dest_side) {
+        return Staged::JournalFailed;
+    }
+    *stage_contents = dest_side.to_path_buf();
+    discard(stage_contents);
+    stage(stage_contents, true)
+}
+
+/// One staging attempt: create the contents dir and materialize every
+/// source into it (keep-both names for duplicate basenames).
+fn stage_sources(
+    sources: &[PathBuf],
+    stage_contents: &Path,
+    sink: &mut ArchiveSink,
+    handle: &OpHandle,
+) -> Staged {
+    if let Err(e) = std::fs::create_dir(stage_contents) {
+        sink.item_error(stage_contents, &e);
+        return Staged::Failed;
+    }
+    // Inside-archive keep-both naming: one cached name set.
+    let mut staged_names = walker::DirNames::new(stage_contents);
+    for source in sources {
+        if handle.cancel.load(Ordering::SeqCst) {
+            return Staged::Cancelled;
+        }
+        let Some(name_os) = source.file_name() else {
+            sink.item_error(source, &io::Error::new(io::ErrorKind::InvalidInput, "invalid source"));
+            return Staged::Failed;
+        };
+        let name = name_os.to_string_lossy().into_owned();
+        // Duplicate top-level basenames from different parents get
+        // keep-both names inside the archive (Finder behavior).
+        let target_name = if staged_names.contains(&name) {
+            walker::keep_both_name_in(&mut staged_names, &name)
+        } else {
+            name
+        };
+        staged_names.insert(&target_name);
+        // All-or-nothing backstop: `copy_fresh` records child failures
+        // via the sink but still returns Done for a directory with
+        // failed children — snapshot the error count around each copy.
+        let errors_before = sink.errors.len();
+        // Dataless sources surface as item errors via the sink's
+        // fail-fast abort — an incomplete zip is never produced.
+        match walker::copy_fresh(source, &stage_contents.join(&target_name), sink) {
+            Ok(Outcome::Done) => {
+                if sink.errors.len() > errors_before {
+                    return Staged::Failed;
+                }
+            }
+            Ok(Outcome::Cancelled) => {
+                // Either user cancel or the sink's fail-fast abort.
+                return if handle.cancel.load(Ordering::SeqCst) {
+                    Staged::Cancelled
+                } else {
+                    Staged::Failed
+                };
+            }
+            Err(e) => {
+                sink.item_error(source, &e);
+                return Staged::Failed;
+            }
+        }
+    }
+    Staged::Done
 }
 
 fn pop_staging(journal_entry: &mut OpJournalEntry, stage: &Path) {
@@ -504,32 +658,43 @@ fn run_compress_thread(
         });
     }
 
-    // Create the contents dir. If the source-side spot refuses (read-only
-    // folder, race), journal the destination-side spot FIRST, then use it.
-    let mut contents_error: Option<io::Error> = None;
+    let ratchet = Arc::new(AtomicU64::new(0));
+    let mut sink = ArchiveSink::new(emitter.clone(), handle.clone(), ratchet.clone());
+
+    // Staging phase (multi-item only): materializing copy into a contents dir
+    // whose layout becomes the zip root. A failed source-side attempt falls
+    // back to journaled destination-side staging.
+    let mut cancelled = false;
+    let mut staging_failed = false;
     if multi {
-        if let Err(e) = std::fs::create_dir(&stage_contents) {
-            if stage_contents != dest_side_contents {
-                pop_staging(&mut journal_entry, &stage_contents);
-                journal_entry.staging.push(dest_side_contents.to_string_lossy().into_owned());
-                if !journal_write_fail_fast(&engine, &journal_entry, &op_id, &emitter) {
-                    engine.journal.remove(&op_id);
-                    return;
-                }
-                stage_contents = dest_side_contents.clone();
-                walker::remove_tree_best_effort(&stage_contents);
-                if let Err(e) = std::fs::create_dir(&stage_contents) {
-                    contents_error = Some(e);
-                }
-            } else {
-                contents_error = Some(e);
+        let staged = stage_with_fallback(
+            &mut stage_contents,
+            &dest_side_contents,
+            |dir, is_final| {
+                sink.errors.clear();
+                sink.aborted = false;
+                sink.quiet = !is_final;
+                stage_sources(&sources, dir, &mut sink, &handle)
+            },
+            |from, to| {
+                pop_staging(&mut journal_entry, from);
+                journal_entry.staging.push(to.to_string_lossy().into_owned());
+                journal_write_fail_fast(&engine, &journal_entry, &op_id, &emitter)
+            },
+            walker::remove_tree_best_effort,
+        );
+        match staged {
+            Staged::Done => {}
+            Staged::Cancelled => cancelled = true,
+            Staged::Failed => staging_failed = true,
+            Staged::JournalFailed => {
+                walker::remove_tree_best_effort(&stage_zip);
+                engine.journal.remove(&op_id);
+                return;
             }
         }
     }
     let stage_contents = stage_contents;
-
-    let ratchet = Arc::new(AtomicU64::new(0));
-    let mut sink = ArchiveSink::new(emitter.clone(), handle.clone(), ratchet.clone());
 
     let cleanup_staging = |journal_entry: &mut OpJournalEntry| {
         walker::remove_tree_best_effort(&stage_zip);
@@ -540,71 +705,6 @@ fn run_compress_thread(
         pop_staging(journal_entry, &stage_contents);
         let _ = engine.journal.write(journal_entry);
     };
-
-    // Staging phase (multi-item only): materializing copy into a contents dir
-    // whose layout becomes the zip root.
-    let mut cancelled = false;
-    let mut staging_failed = false;
-    if multi {
-        if let Some(e) = contents_error {
-            sink.item_error(&stage_contents, &e);
-            staging_failed = true;
-        } else {
-            // Inside-archive keep-both naming: one cached name set.
-            let mut staged_names = walker::DirNames::new(&stage_contents);
-            for source in &sources {
-                if handle.cancel.load(Ordering::SeqCst) {
-                    cancelled = true;
-                    break;
-                }
-                let Some(name_os) = source.file_name() else {
-                    sink.item_error(
-                        source,
-                        &io::Error::new(io::ErrorKind::InvalidInput, "invalid source"),
-                    );
-                    staging_failed = true;
-                    break;
-                };
-                let name = name_os.to_string_lossy().into_owned();
-                // Duplicate top-level basenames from different parents get
-                // keep-both names inside the archive (Finder behavior).
-                let target_name = if staged_names.contains(&name) {
-                    walker::keep_both_name_in(&mut staged_names, &name)
-                } else {
-                    name
-                };
-                staged_names.insert(&target_name);
-                // All-or-nothing backstop: `copy_fresh` records child failures
-                // via the sink but still returns Done for a directory with
-                // failed children — snapshot the error count around each copy.
-                let errors_before = sink.errors.len();
-                // Dataless sources surface as item errors via the sink's
-                // fail-fast abort — an incomplete zip is never produced.
-                match walker::copy_fresh(source, &stage_contents.join(&target_name), &mut sink) {
-                    Ok(Outcome::Done) => {
-                        if sink.errors.len() > errors_before {
-                            staging_failed = true;
-                            break;
-                        }
-                    }
-                    Ok(Outcome::Cancelled) => {
-                        // Either user cancel or the sink's fail-fast abort.
-                        if handle.cancel.load(Ordering::SeqCst) {
-                            cancelled = true;
-                        } else {
-                            staging_failed = true;
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        sink.item_error(source, &e);
-                        staging_failed = true;
-                        break;
-                    }
-                }
-            }
-        }
-    }
 
     if cancelled || staging_failed {
         cleanup_staging(&mut journal_entry);
@@ -1371,6 +1471,116 @@ mod tests {
         // Nested .DS_Store inside payload dirs is left alone (Finder parity).
         assert!(d.join("Photos/.DS_Store").exists());
         assert!(d.join("Photos/pic.jpg").exists());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn apfs_temp_volume_reports_clone_support() {
+        assert!(volume_supports_clone(&std::env::temp_dir()));
+        assert!(!volume_supports_clone(Path::new("/definitely/not/here")));
+        assert!(!volume_supports_clone(Path::new("/dev")), "devfs has no clones");
+    }
+
+    #[test]
+    fn failed_source_side_staging_falls_back_to_the_destination() {
+        let src = PathBuf::from("/src/.stage");
+        let dst = PathBuf::from("/dst/.stage");
+        let attempts = std::cell::RefCell::new(Vec::new());
+        let discarded = std::cell::RefCell::new(Vec::new());
+        let journaled = std::cell::RefCell::new(Vec::new());
+        let mut at = src.clone();
+        let r = stage_with_fallback(
+            &mut at,
+            &dst,
+            |d, fin| {
+                attempts.borrow_mut().push((d.to_path_buf(), fin));
+                if d == src { Staged::Failed } else { Staged::Done }
+            },
+            |from, to| {
+                journaled.borrow_mut().push((from.to_path_buf(), to.to_path_buf()));
+                true
+            },
+            |d| discarded.borrow_mut().push(d.to_path_buf()),
+        );
+        assert_eq!(r, Staged::Done);
+        assert_eq!(at, dst);
+        assert_eq!(*attempts.borrow(), vec![(src.clone(), false), (dst.clone(), true)]);
+        assert_eq!(*journaled.borrow(), vec![(src.clone(), dst.clone())]);
+        assert_eq!(*discarded.borrow(), vec![src.clone(), dst.clone()]);
+
+        // No retry for cancel, for destination-side failures, or when the
+        // fallback can't be journaled.
+        let mut at = src.clone();
+        assert_eq!(
+            stage_with_fallback(&mut at, &dst, |_, _| Staged::Cancelled, |_, _| true, |_| {}),
+            Staged::Cancelled
+        );
+        let mut at = dst.clone();
+        let mut n = 0;
+        assert_eq!(
+            stage_with_fallback(&mut at, &dst, |_, fin| { n += 1; assert!(fin); Staged::Failed }, |_, _| true, |_| {}),
+            Staged::Failed
+        );
+        assert_eq!(n, 1);
+        let mut at = src.clone();
+        assert_eq!(
+            stage_with_fallback(&mut at, &dst, |_, _| Staged::Failed, |_, _| false, |_| {}),
+            Staged::JournalFailed
+        );
+    }
+
+    struct Recorder(std::sync::Mutex<Vec<String>>);
+    impl OpEmitter for Recorder {
+        fn emit(&self, e: OpEvent) {
+            if let OpEvent::ItemError { path, .. } = e {
+                self.0.lock().unwrap().push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn real_source_side_failure_is_quiet_and_the_destination_attempt_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("fallback");
+        let a = d.join("a.txt");
+        let b = d.join("b");
+        fs::write(&a, b"a").unwrap();
+        fs::create_dir(&b).unwrap();
+        fs::write(b.join("inner.txt"), b"i").unwrap();
+        // Source-side spot: its parent refuses writes (stand-in for ENOSPC).
+        let locked = d.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let dest = d.join("dest");
+        fs::create_dir(&dest).unwrap();
+        let dest_side = dest.join(".stage.contents");
+
+        let rec = Arc::new(Recorder(std::sync::Mutex::new(Vec::new())));
+        let handle = OpHandle::new();
+        let mut sink =
+            ArchiveSink::new(rec.clone(), handle.clone(), Arc::new(AtomicU64::new(0)));
+        let sources = vec![a.clone(), b.clone()];
+        let mut at = locked.join(".stage.contents");
+        let r = stage_with_fallback(
+            &mut at,
+            &dest_side,
+            |dir, fin| {
+                sink.errors.clear();
+                sink.aborted = false;
+                sink.quiet = !fin;
+                stage_sources(&sources, dir, &mut sink, &handle)
+            },
+            |_, _| true,
+            walker::remove_tree_best_effort,
+        );
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(r, Staged::Done);
+        assert_eq!(at, dest_side);
+        assert!(sink.errors.is_empty());
+        assert!(rec.0.lock().unwrap().is_empty(), "the discarded attempt emits no errors");
+        assert_eq!(fs::read(dest_side.join("a.txt")).unwrap(), b"a");
+        assert_eq!(fs::read(dest_side.join("b/inner.txt")).unwrap(), b"i");
+        assert_eq!(fs::read_dir(&locked).unwrap().count(), 0);
         fs::remove_dir_all(&d).ok();
     }
 }
