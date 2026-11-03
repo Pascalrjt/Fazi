@@ -17,6 +17,9 @@ pub enum WatchEvent {
         upserted: Vec<String>,
         removed: Vec<String>,
         rescan: bool,
+        /// The watched volume distinguishes `foo` from `Foo`: the frontend
+        /// must not merge case variants into one row.
+        case_sensitive: bool,
     },
     RootGone,
 }
@@ -60,6 +63,7 @@ pub fn watch(
                     upserted: Vec::new(),
                     removed: Vec::new(),
                     rescan: true,
+                    case_sensitive,
                 });
             }
         },
@@ -127,7 +131,9 @@ pub fn probe_child(path: &Path, name: &str) -> Probe {
 /// Real dirent spellings of the root, read only when a probe is unsure.
 struct Spellings {
     exact: std::collections::HashSet<String>,
-    case_folded: std::collections::HashMap<String, String>,
+    /// Lower-cased name → every spelling present (several on case-sensitive
+    /// volumes: `foo` and `FOO` may coexist).
+    case_folded: std::collections::HashMap<String, Vec<String>>,
 }
 
 thread_local! {
@@ -140,15 +146,22 @@ pub fn snapshot_fallbacks() -> usize {
     SNAPSHOT_FALLBACKS.with(|c| c.get())
 }
 
-fn snapshot(root: &Path) -> std::io::Result<Spellings> {
-    SNAPSHOT_FALLBACKS.with(|c| c.set(c.get() + 1));
-    let actual_names: Vec<String> = std::fs::read_dir(root)?
+fn read_names(root: &Path) -> std::io::Result<Vec<String>> {
+    Ok(std::fs::read_dir(root)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
+        .collect())
+}
+
+fn snapshot(
+    root: &Path,
+    read_names: &impl Fn(&Path) -> std::io::Result<Vec<String>>,
+) -> std::io::Result<Spellings> {
+    SNAPSHOT_FALLBACKS.with(|c| c.set(c.get() + 1));
+    let actual_names = read_names(root)?;
     let mut case_folded = std::collections::HashMap::new();
     for actual in &actual_names {
-        case_folded.entry(actual.to_lowercase()).or_insert_with(|| actual.clone());
+        case_folded.entry(actual.to_lowercase()).or_insert_with(Vec::new).push(actual.clone());
     }
     Ok(Spellings { exact: actual_names.into_iter().collect(), case_folded })
 }
@@ -189,6 +202,18 @@ pub fn map_changes<'a>(
     changes: impl Iterator<Item = (&'a PathBuf, bool)>,
     case_sensitive: bool,
     probe: impl Fn(&Path, &str) -> Probe,
+) -> Option<WatchEvent> {
+    map_changes_with(root, changes, case_sensitive, probe, read_names)
+}
+
+/// [`map_changes`] with the directory listing injected (tests can present
+/// case-variant siblings a case-insensitive test volume can't hold).
+fn map_changes_with<'a>(
+    root: &Path,
+    changes: impl Iterator<Item = (&'a PathBuf, bool)>,
+    case_sensitive: bool,
+    probe: impl Fn(&Path, &str) -> Probe,
+    read_names: impl Fn(&Path) -> std::io::Result<Vec<String>>,
 ) -> Option<WatchEvent> {
     let mut root_gone = false;
     let mut seen = std::collections::HashSet::new();
@@ -257,7 +282,7 @@ pub fn map_changes<'a>(
             Probe::Unsure => true,
         };
         if spellings.is_none() {
-            match snapshot(root) {
+            match snapshot(root, &read_names) {
                 Ok(s) => spellings = Some(s),
                 Err(_) if root.symlink_metadata().is_err() => {
                     return Some(WatchEvent::RootGone);
@@ -273,6 +298,7 @@ pub fn map_changes<'a>(
                         upserted: Vec::new(),
                         removed: Vec::new(),
                         rescan: true,
+                        case_sensitive,
                     });
                 }
             }
@@ -284,7 +310,10 @@ pub fn map_changes<'a>(
             // A stale-cased rename event may be the only path FSEvents
             // gives us. Reconcile it to the actual spelling so
             // external case-only renames still produce the row.
-            if let Some(actual) = s.case_folded.get(&name.to_lowercase()) {
+            // Which variant is the renamed one is unknowable when several
+            // exist: upsert them all (each re-stat is idempotent), so none
+            // is lost.
+            for actual in s.case_folded.get(&name.to_lowercase()).into_iter().flatten() {
                 if actual != &name && seen.insert(actual.clone()) {
                     upserted.push(actual.clone());
                 }
@@ -296,7 +325,7 @@ pub fn map_changes<'a>(
     if upserted.is_empty() && removed.is_empty() {
         return None;
     }
-    Some(WatchEvent::Batch { upserted, removed, rescan: false })
+    Some(WatchEvent::Batch { upserted, removed, rescan: false, case_sensitive })
 }
 
 #[cfg(test)]
@@ -318,7 +347,7 @@ mod tests {
 
         let event = map_events(&root, std::iter::once(&stale)).unwrap();
         match event {
-            WatchEvent::Batch { upserted, removed, rescan } => {
+            WatchEvent::Batch { upserted, removed, rescan, .. } => {
                 assert!(!rescan);
                 assert_eq!(removed, vec!["foo"]);
                 assert_eq!(upserted, vec!["Foo"]);
@@ -344,7 +373,7 @@ mod tests {
         let event = map_changes(&root, [(&stale, true)].into_iter(), true, probe).unwrap();
         assert_eq!(snapshot_fallbacks(), before + 1);
         match event {
-            WatchEvent::Batch { upserted, removed, rescan } => {
+            WatchEvent::Batch { upserted, removed, rescan, .. } => {
                 assert!(!rescan);
                 assert_eq!(removed, vec!["foo"]);
                 assert_eq!(upserted, vec!["Foo"]);
@@ -367,6 +396,33 @@ mod tests {
             }
         }
         assert_eq!(snapshot_fallbacks(), before);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn ambiguous_case_variants_are_all_upserted() {
+        let root = tmp_root("case-variants");
+        let stale = root.join("foo");
+        // Case-sensitive volume holding FOO and (after foo -> Foo) Foo.
+        let listing = |_: &Path| Ok(vec!["FOO".to_string(), "Foo".to_string(), "bar".to_string()]);
+        let event = map_changes_with(
+            &root,
+            [(&stale, true)].into_iter(),
+            true,
+            |_: &Path, _: &str| Probe::Missing,
+            listing,
+        )
+        .unwrap();
+        match event {
+            WatchEvent::Batch { mut upserted, removed, rescan, case_sensitive } => {
+                assert!(!rescan);
+                assert!(case_sensitive);
+                assert_eq!(removed, vec!["foo"]);
+                upserted.sort();
+                assert_eq!(upserted, vec!["FOO", "Foo"], "the renamed variant is never lost");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -406,7 +462,7 @@ mod tests {
         let event = map_changes(&root, paths.iter().map(|p| (p, true)), false, probe_child).unwrap();
         let after = snapshot_fallbacks();
         match event {
-            WatchEvent::Batch { upserted, removed, rescan } => {
+            WatchEvent::Batch { upserted, removed, rescan, .. } => {
                 assert!(!rescan);
                 assert_eq!(upserted, vec!["f0", "f1", "f2", "f3", "f4"]);
                 assert_eq!(removed, vec!["gone.txt"]);

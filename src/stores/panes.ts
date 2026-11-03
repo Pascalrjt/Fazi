@@ -78,6 +78,9 @@ export interface Tab {
   scrollTop: number;
   pendingRestore: PendingRestore | null;
   ghosts: GhostEntry[];
+  /** Set from watcher batches: the volume tells `foo` and `Foo` apart, so
+   *  upserts never merge case variants. Unknown → case-insensitive (APFS). */
+  caseSensitive?: boolean;
 }
 
 export interface Pane {
@@ -353,15 +356,18 @@ const MERGE_MAX_FRACTION = 0.125;
 
 /**
  * Apply one watcher delta to a PLAIN tab, returning a new tab (or the same
- * tab when nothing changed). Removals match names exactly; upserts match
- * case-insensitively (APFS) and replace in place keeping the row id, so
- * selection survives; new names are merged into sort order in one pass.
+ * tab when nothing changed). Removals match names exactly; upserts replace
+ * the row with the exact name, else (case-insensitive volumes only) the row
+ * whose name differs only by case — keeping the row id, so selection
+ * survives; new names are merged into sort order in one pass. On
+ * case-sensitive volumes `foo` and `FOO` are distinct rows, never merged.
  * Exported for tests and benchmarks.
  */
 export function applyWatchDelta(
   tab: Tab,
   removedNames: readonly string[],
   upserts: readonly Entry[],
+  caseSensitive = tab.caseSensitive ?? false,
 ): Tab {
   let entries = tab.entries;
   let ghosts = tab.ghosts;
@@ -385,10 +391,16 @@ export function applyWatchDelta(
   }
 
   if (upserts.length > 0) {
-    // folded name → index, built once per batch
+    // name → index and folded name → index, built once per batch. Exact
+    // matches always win; the folded map serves stale-cased upserts on
+    // case-insensitive volumes only.
+    const fold = (name: string) => (caseSensitive ? name : name.toLocaleLowerCase());
+    const byExact = new Map<string, number>();
     const byFolded = new Map<string, number>();
     for (let i = 0; i < entries.length; i++) {
-      const folded = entries[i].name.toLocaleLowerCase();
+      const name = entries[i].name;
+      byExact.set(name, i);
+      const folded = fold(name);
       if (!byFolded.has(folded)) byFolded.set(folded, i); // first match wins
     }
     let patched: Entry[] | null = null;
@@ -399,9 +411,9 @@ export function applyWatchDelta(
     const addedAt = new Map<string, number>();
     const foldedUpserts = new Set<string>();
     for (const entry of upserts) {
-      const folded = entry.name.toLocaleLowerCase();
+      const folded = fold(entry.name);
       foldedUpserts.add(folded);
-      const idx = byFolded.get(folded);
+      const idx = byExact.get(entry.name) ?? byFolded.get(folded);
       if (idx != null) {
         patched ??= entries.slice();
         // keep the row's id stable so selection survives the update
@@ -439,8 +451,8 @@ export function applyWatchDelta(
           : mergeSorted(entries, additions, tab.sort);
       if (total != null) total += added;
     }
-    if (ghosts.some((g) => foldedUpserts.has(g.name.toLocaleLowerCase()))) {
-      ghosts = ghosts.filter((g) => !foldedUpserts.has(g.name.toLocaleLowerCase()));
+    if (ghosts.some((g) => foldedUpserts.has(fold(g.name)))) {
+      ghosts = ghosts.filter((g) => !foldedUpserts.has(fold(g.name)));
     }
   }
 
@@ -462,10 +474,15 @@ function applyWatchDeltaPlain(
   listingId: string,
   removedNames: readonly string[],
   upserts: readonly Entry[],
+  caseSensitive: boolean,
 ): void {
-  const next = replaceTabPlain(paneId, tabId, listingId, (tab) =>
-    applyWatchDelta(tab, removedNames, upserts),
-  );
+  const next = replaceTabPlain(paneId, tabId, listingId, (tab) => {
+    const applied = applyWatchDelta(tab, removedNames, upserts, caseSensitive);
+    // Remember it for in-app upserts (upsertEntryNow) on this tab.
+    return (applied.caseSensitive ?? false) === caseSensitive
+      ? applied
+      : { ...applied, caseSensitive };
+  });
   if (next) invalidateIndex(listingId);
 }
 
@@ -1069,8 +1086,9 @@ export const usePanes = create<PanesState>()(
           if (changed.length > 0) useDirSizes.getState().invalidate(changed);
           const key = tab.listingId;
           const removed = event.removed;
+          const caseSensitive = event.caseSensitive ?? false;
           const apply = (upserts: readonly Entry[]) =>
-            applyWatchDeltaPlain(paneId, tabId, key, removed, upserts);
+            applyWatchDeltaPlain(paneId, tabId, key, removed, upserts, caseSensitive);
           if (event.upserted.length === 0) {
             if (removed.length === 0) return;
             // Nothing ahead in the chain: remove now.

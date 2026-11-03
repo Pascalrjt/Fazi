@@ -216,4 +216,41 @@ describe("batched watcher apply", () => {
       expect(next.entries.length).toBe(next.total);
     }
   });
+
+  it("case-sensitive volumes keep case variants as distinct rows; exact names win", async () => {
+    const t0 = tab();
+    const rows = [entry(1, "foo", { size: 1 }), entry(2, "FOO", { size: 2 })];
+    const t: Tab = { ...t0, entries: sortEntries(rows, t0.sort), total: 2 };
+    // An exact match always wins over the first case-folded row.
+    const exact = applyWatchDelta(t, [], [entry(10, "FOO", { size: 20 })], true);
+    expect(exact.entries.map((e) => [e.id, e.name, e.size])).toEqual(
+      expect.arrayContaining([[1, "foo", 1], [2, "FOO", 20]]),
+    );
+    expect(exact.entries).toHaveLength(2);
+    // A new case variant is a new file, not a rename of `foo`.
+    const added = applyWatchDelta(t, [], [entry(11, "Foo")], true);
+    expect(added.entries.map((e) => e.name).sort()).toEqual(["FOO", "Foo", "foo"]);
+    expect(added.total).toBe(3);
+    // Case-insensitive volumes still fold a stale-cased upsert onto its row.
+    const single: Tab = { ...t0, entries: [entry(1, "foo")], total: 1 };
+    const folded = applyWatchDelta(single, [], [entry(12, "Foo")], false);
+    expect(folded.entries.map((e) => [e.id, e.name])).toEqual([[1, "Foo"]]);
+  });
+
+  it("watch batches record case sensitivity for later in-app upserts", async () => {
+    const t = tab();
+    usePanes.getState().applyWatchBatch("left", t.id, t.watchId as string, {
+      event: "batch",
+      upserted: ["File2"],
+      removed: [],
+      rescan: false,
+      caseSensitive: true,
+    });
+    mocks.stats[0].resolve([entry(80, "File2")]);
+    await flush();
+    expect(tab().caseSensitive).toBe(true);
+    expect(names()).toEqual(expect.arrayContaining(["file2", "File2"]));
+    usePanes.getState().upsertEntryNow("left", tab().id, entry(81, "FILE2"));
+    expect(names().filter((n) => n.toLowerCase() === "file2")).toHaveLength(3);
+  });
 });

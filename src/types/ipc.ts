@@ -97,6 +97,8 @@ export type WatchEvent =
       removed: string[];
       /** True when the batch overflowed and the frontend should re-list. */
       rescan: boolean;
+      /** The watched volume is case-sensitive (`foo` ≠ `Foo`). */
+      caseSensitive?: boolean;
     }
   | { event: "rootGone" };
 
