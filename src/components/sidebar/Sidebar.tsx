@@ -28,6 +28,7 @@ import {
   HardDrive,
   House,
   LayoutGrid,
+  LoaderCircle,
   Monitor,
   Trash2,
   Usb,
@@ -128,6 +129,7 @@ function SidebarRow({
   const removeFavorite = useSettings((s) => s.removeFavorite);
   const [dropping, setDropping] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
+  const ejecting = useVolumes((s) => row.volume != null && s.ejecting.includes(row.path));
 
   // Finder drag-in onto the Trash row trashes the dragged files.
   useEffect(() => {
@@ -281,7 +283,8 @@ function SidebarRow({
                 { type: "separator" as const },
                 {
                   type: "item" as const,
-                  label: `Eject “${row.label}”`,
+                  label: ejecting ? `Ejecting “${row.label}”…` : `Eject “${row.label}”`,
+                  disabled: ejecting,
                   action: () => ejectVolume(row.path, row.label),
                 },
               ]
@@ -307,7 +310,7 @@ function SidebarRow({
           <row.icon size={15} strokeWidth={1.75} className="w-4 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate">{row.label}</span>
           <CleanupBadge folder={row.path} />
-          {row.volume && (
+          {row.volume && !ejecting && (
             <span
               className={clsx(
                 "tnum shrink-0 text-[11px] text-tertiary",
@@ -317,7 +320,17 @@ function SidebarRow({
               {formatBytes(row.volume.availableBytes)}
             </span>
           )}
-          {row.volume?.isEjectable && (
+          {ejecting && (
+            <span
+              role="status"
+              aria-label={`Ejecting ${row.label}`}
+              title={`Ejecting ${row.label}…`}
+              className="shrink-0 px-1 text-tertiary"
+            >
+              <LoaderCircle size={12} className="animate-spin" aria-hidden />
+            </span>
+          )}
+          {row.volume?.isEjectable && !ejecting && (
             <button
               className="hidden shrink-0 cursor-default rounded px-1 text-[11px] text-tertiary hover:text-primary group-hover:block"
               title={`Eject ${row.label}`}

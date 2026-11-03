@@ -73,6 +73,24 @@
 - Batches are name-level upsert/remove deltas classified by what exists *now*
   (robust across rename-semantics differences).
 
+## Eject
+- `eject` is an async command running `diskutil eject <mount>` (never the
+  AppKit main thread). diskutil goes through Disk Arbitration like Finder:
+  it unmounts every volume on the device (APFS containers included) and,
+  when refused, names the dissenting PID, which the toast reports.
+- A refused unmount can take Disk Arbitration anywhere from ~0.2 s to ~10 s.
+  One retry after 1.5 s happens only for transient dissenters (Spotlight,
+  Quick Look, Fazi itself); refused attempts are logged to stderr as
+  `[eject] …`.
+- Fazi's own handles: background readers (folder-size walks, ⌘P index
+  walks) register with `VolumeGate`. Ejecting closes the gate on the mount:
+  readers are cancelled, new ones refused, thumbnails serve cache only,
+  previews 404, and the eject waits ≤3 s for in-flight readers to drain.
+- FSEvents reports an unmount only to a watcher rooted at the mount point;
+  tabs in subfolders walk up when the volume drops out of the volume list.
+- `cargo test --test eject -- --ignored --test-threads=1` exercises all of
+  this against real disk images (hdiutil).
+
 ## mtime tolerance in verification (cross-volume moves)
 | Destination fs | Tolerance |
 |---|---|

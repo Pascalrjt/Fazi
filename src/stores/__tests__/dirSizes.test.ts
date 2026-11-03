@@ -1,7 +1,8 @@
 /**
  * dirSizes: streamed dir_size results land in the cache, concurrency is
  * capped at 2, and ancestor-directed invalidation drops exactly the cached
- * dirs containing a changed path.
+ * dirs containing a changed path. Ejecting a volume drops its entries and
+ * cancelled (partial) walks are never cached.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirSizeEvent } from "../../types/ipc";
@@ -25,13 +26,60 @@ describe("dirSizes store", () => {
     useDirSizes.getState().clear();
   });
 
+  // These two run first: they leave no walk in flight (the module-level
+  // concurrency counter isn't reset by clear()).
+  it("a cancelled walk (volume ejecting) is never cached and frees its slot", () => {
+    const s = useDirSizes.getState();
+    s.request("/Volumes/USB/a");
+    s.request("/Volumes/USB/b");
+    s.request("/Users/me/c"); // queued behind the cap
+    mocks.calls[0].onEvent({ bytes: 40, entries: 3, done: true, cancelled: true });
+    expect(useDirSizes.getState().sizes["/Volumes/USB/a"]).toBeUndefined();
+    expect(mocks.calls.map((c) => c.path)).toEqual([
+      "/Volumes/USB/a",
+      "/Volumes/USB/b",
+      "/Users/me/c",
+    ]);
+    mocks.calls[1].onEvent({ bytes: 1, entries: 1, done: true, cancelled: true });
+    mocks.calls[2].onEvent({ bytes: 5, entries: 1, done: true, cancelled: false });
+    expect(useDirSizes.getState().sizes["/Volumes/USB/b"]).toBeUndefined();
+    expect(useDirSizes.getState().sizes["/Users/me/c"]).toMatchObject({
+      bytes: 5,
+      computing: false,
+    });
+  });
+
+  it("dropUnder forgets a volume's entries and skips their queued walks", () => {
+    const s = useDirSizes.getState();
+    s.request("/Volumes/USB/a");
+    s.request("/Volumes/USB 2/b"); // a different volume, prefix-alike
+    s.request("/Volumes/USB/c"); // queued
+    s.request("/Users/me/d"); // queued
+    s.dropUnder("/Volumes/USB");
+    expect(Object.keys(useDirSizes.getState().sizes).sort()).toEqual([
+      "/Users/me/d",
+      "/Volumes/USB 2/b",
+    ]);
+    // The walk for /Volumes/USB/a ends (cancelled by the backend): the
+    // freed slot goes to /Users/me/d, never to the dropped /Volumes/USB/c.
+    mocks.calls[0].onEvent({ bytes: 0, entries: 0, done: true, cancelled: true });
+    expect(mocks.calls.map((c) => c.path)).toEqual([
+      "/Volumes/USB/a",
+      "/Volumes/USB 2/b",
+      "/Users/me/d",
+    ]);
+    mocks.calls[1].onEvent({ bytes: 2, entries: 1, done: true, cancelled: false });
+    mocks.calls[2].onEvent({ bytes: 3, entries: 1, done: true, cancelled: false });
+    expect(useDirSizes.getState().sizes["/Volumes/USB 2/b"].bytes).toBe(2);
+  });
+
   it("computes via the dir_size channel and caches the final value", () => {
     useDirSizes.getState().request("/a");
     expect(mocks.calls.map((c) => c.path)).toEqual(["/a"]);
-    mocks.calls[0].onEvent({ bytes: 100, entries: 5, done: false });
+    mocks.calls[0].onEvent({ bytes: 100, entries: 5, done: false, cancelled: false });
     expect(useDirSizes.getState().sizes["/a"].bytes).toBe(100);
     expect(useDirSizes.getState().sizes["/a"].computing).toBe(true);
-    mocks.calls[0].onEvent({ bytes: 250, entries: 12, done: true });
+    mocks.calls[0].onEvent({ bytes: 250, entries: 12, done: true, cancelled: false });
     const entry = useDirSizes.getState().sizes["/a"];
     expect(entry.bytes).toBe(250);
     expect(entry.computing).toBe(false);
@@ -47,10 +95,10 @@ describe("dirSizes store", () => {
     s.request("/c");
     s.request("/d");
     expect(mocks.calls.map((c) => c.path)).toEqual(["/a", "/b"]);
-    mocks.calls[0].onEvent({ bytes: 1, entries: 1, done: true });
+    mocks.calls[0].onEvent({ bytes: 1, entries: 1, done: true, cancelled: false });
     expect(mocks.calls.map((c) => c.path)).toEqual(["/a", "/b", "/c"]);
-    mocks.calls[1].onEvent({ bytes: 2, entries: 1, done: true });
-    mocks.calls[2].onEvent({ bytes: 3, entries: 1, done: true });
+    mocks.calls[1].onEvent({ bytes: 2, entries: 1, done: true, cancelled: false });
+    mocks.calls[2].onEvent({ bytes: 3, entries: 1, done: true, cancelled: false });
     expect(mocks.calls.map((c) => c.path)).toEqual(["/a", "/b", "/c", "/d"]);
   });
 
@@ -60,12 +108,12 @@ describe("dirSizes store", () => {
       s.request(p);
       const call = mocks.calls[mocks.calls.length - 1];
       // /other queues past the cap; flush in order.
-      if (call && call.path === p) call.onEvent({ bytes: 9, entries: 1, done: true });
+      if (call && call.path === p) call.onEvent({ bytes: 9, entries: 1, done: true, cancelled: false });
     }
     // Ensure all three completed (drain any queued call).
     for (const c of mocks.calls) {
       if (useDirSizes.getState().sizes[c.path]?.computing) {
-        c.onEvent({ bytes: 9, entries: 1, done: true });
+        c.onEvent({ bytes: 9, entries: 1, done: true, cancelled: false });
       }
     }
     expect(Object.keys(useDirSizes.getState().sizes).sort()).toEqual([
@@ -86,7 +134,7 @@ describe("dirSizes store", () => {
     expect(Object.keys(useDirSizes.getState().sizes)).toHaveLength(512);
 
     // Complete /p0 so it's TTL-fresh, then re-request it — an LRU "use".
-    mocks.calls[0].onEvent({ bytes: 1, entries: 1, done: true });
+    mocks.calls[0].onEvent({ bytes: 1, entries: 1, done: true, cancelled: false });
     s.request("/p0");
 
     // One past capacity: the least recently used is now /p1, not /p0.

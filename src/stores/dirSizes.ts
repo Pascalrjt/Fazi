@@ -32,6 +32,9 @@ interface DirSizesState {
   /** Drop every cached entry that is an ancestor of `changed` (or `changed`
    *  itself) — the cached dir contains the changed path. */
   invalidate(changedPaths: string[]): void;
+  /** Forget every entry at or under `root` and skip their queued walks
+   *  (the volume is about to be ejected). */
+  dropUnder(root: string): void;
   clear(): void;
 }
 
@@ -66,6 +69,10 @@ export const useDirSizes = create<DirSizesState>()(
             set((s) => {
               const cur = s.sizes[path];
               if (!cur) return; // invalidated mid-stream
+              if (e.cancelled) {
+                delete s.sizes[path]; // partial total: never cache it
+                return;
+              }
               cur.bytes = e.bytes;
               if (e.done) {
                 cur.computing = false;
@@ -124,6 +131,19 @@ export const useDirSizes = create<DirSizesState>()(
               queued.delete(dir);
               // Keep `order` in sync — stale keys would shrink the
               // effective LRU capacity.
+              const i = order.indexOf(dir);
+              if (i !== -1) order.splice(i, 1);
+            }
+          }
+        });
+      },
+
+      dropUnder: (root) => {
+        set((s) => {
+          for (const dir of Object.keys(s.sizes)) {
+            if (isAncestorOrSelf(root, dir)) {
+              delete s.sizes[dir];
+              queued.delete(dir);
               const i = order.indexOf(dir);
               if (i !== -1) order.splice(i, 1);
             }

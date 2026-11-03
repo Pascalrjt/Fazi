@@ -1,3 +1,4 @@
+pub mod eject;
 pub mod icons;
 pub mod main_thread;
 pub mod menu;

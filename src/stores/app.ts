@@ -196,7 +196,8 @@ interface AppState {
   setPaletteOpen(open: boolean): void;
   setClipboard(clip: { mode: "copy" | "cut"; paths: string[] } | null): void;
   /** Every toast dismisses itself; see `toastLifetime`. */
-  pushToast(message: string, opts?: { action?: Toast["action"]; danger?: boolean }): void;
+  /** Returns the toast id (for an early `dismissToast`). */
+  pushToast(message: string, opts?: { action?: Toast["action"]; danger?: boolean }): number;
   dismissToast(id: number): void;
   /** Hold a toast while the pointer rests on it; release resumes its countdown. */
   holdToast(id: number): void;
@@ -292,6 +293,7 @@ export const useApp = create<AppState>()(
         }
       });
       runToast(id, 1, ms);
+      return id;
     },
 
     holdToast: (id) => {

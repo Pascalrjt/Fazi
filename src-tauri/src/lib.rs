@@ -84,6 +84,7 @@ pub fn run() {
                 fuzzy_lru: Mutex::new(Vec::new()),
                 fuzzy_queries: DashMap::new(),
                 fuzzy_pending: Arc::new(DashMap::new()),
+                volume_gate: Arc::new(core::volume_gate::VolumeGate::default()),
                 fuzzy_cache_dir,
                 engine,
                 native_menu,

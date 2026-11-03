@@ -18,6 +18,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::core::op_queue::{now_ms, IconTokenFn};
+use crate::core::volume_gate::VolumeGate;
 use crate::error::{Error, Result};
 use crate::search::fuzzy::{
     build_index, config_hash, execute_query, trace_enabled, Excludes, FuzzyEvent, FuzzyFilters,
@@ -58,8 +59,9 @@ fn persist_completed(index: &FuzzyIndex, snapshot: &Path) {
 #[allow(clippy::too_many_arguments)] // one-shot spawn helper, not an API
 fn spawn_refresh(
     fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
-    pending: Arc<DashMap<PathBuf, u64>>,
+    pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
     tokens: Arc<TokenTable>,
+    gate: Arc<VolumeGate>,
     old: Arc<FuzzyIndex>,
     root: PathBuf,
     excludes: Vec<String>,
@@ -67,11 +69,17 @@ fn spawn_refresh(
     hash: u64,
     snapshot: PathBuf,
 ) {
-    if pending.insert(root.clone(), hash).is_some() {
+    let fresh = FuzzyIndex::new(root.clone(), hash, now_ms());
+    if pending.insert(root.clone(), fresh.clone()).is_some() {
         return; // a refresh for this root is already walking
     }
     std::thread::spawn(move || {
-        let fresh = FuzzyIndex::new(root.clone(), hash, now_ms());
+        // Registered for the walk's lifetime so an eject waits for it; the
+        // eject aborts it by bumping `fresh`'s generation.
+        let Some(_reader) = gate.track(&root) else {
+            pending.remove(&root); // the volume is being ejected
+            return;
+        };
         build_index(fresh.clone(), Excludes::parse(&excludes), cap, now_ms());
         if !fresh.indexing.load(Ordering::SeqCst) {
             let mut swapped = false;
@@ -151,6 +159,9 @@ pub fn fuzzy_warm(
     force: Option<bool>,
 ) -> Result<FuzzyIndexStatus> {
     let root = PathBuf::from(&root);
+    if state.volume_gate.is_blocked(&root) {
+        return Err(Error::msg("this volume is being ejected"));
+    }
     if !root.is_dir() {
         return Err(Error::msg("not a directory"));
     }
@@ -165,6 +176,7 @@ pub fn fuzzy_warm(
                     state.fuzzy.clone(),
                     state.fuzzy_pending.clone(),
                     state.tokens.clone(),
+                    state.volume_gate.clone(),
                     existing.clone(),
                     root.clone(),
                     excludes,
@@ -205,6 +217,7 @@ pub fn fuzzy_warm(
             state.fuzzy.clone(),
             state.fuzzy_pending.clone(),
             state.tokens.clone(),
+            state.volume_gate.clone(),
             index.clone(),
             root,
             excludes,
@@ -214,7 +227,16 @@ pub fn fuzzy_warm(
         );
     } else {
         let idx = index.clone();
+        let gate = state.volume_gate.clone();
+        let fuzzy = state.fuzzy.clone();
         std::thread::spawn(move || {
+            // An eject closed the gate since the check above: never walk,
+            // and don't leave a forever-"indexing" entry behind.
+            let Some(_reader) = gate.track(&idx.root) else {
+                fuzzy.remove_if(&idx.root, |_, v| Arc::ptr_eq(v, &idx));
+                idx.generation.fetch_add(1, Ordering::SeqCst);
+                return;
+            };
             build_index(idx.clone(), Excludes::parse(&excludes), cap, now_ms());
             persist_completed(&idx, &snapshot);
         });
@@ -299,10 +321,30 @@ pub fn fuzzy_cancel(state: State<'_, AppState>, query_id: String) {
 #[tauri::command]
 pub fn fuzzy_drop(state: State<'_, AppState>, root: String) {
     let root = PathBuf::from(&root);
-    state.fuzzy_lru.lock().unwrap().retain(|p| p != &root);
-    if let Some((_, index)) = state.fuzzy.remove(&root) {
-        index.generation.fetch_add(1, Ordering::SeqCst);
-        revoke_index_owners(&state, &index);
+    drop_where(&state, |r| r == root.as_path());
+}
+
+/// Drop every warm index whose walk covers any part of `volume` (rooted on
+/// it, or above it — a walk of `/` descends into `/Volumes/X`) and abort
+/// their in-flight refresh walks. Called before an eject.
+pub fn release_volume(state: &AppState, volume: &Path) {
+    drop_where(state, |r| r.starts_with(volume) || volume.starts_with(r));
+}
+
+fn drop_where(state: &AppState, matches: impl Fn(&Path) -> bool) {
+    state.fuzzy_lru.lock().unwrap().retain(|p| !matches(p));
+    let roots: Vec<PathBuf> =
+        state.fuzzy.iter().map(|e| e.key().clone()).filter(|r| matches(r)).collect();
+    for root in roots {
+        if let Some((_, index)) = state.fuzzy.remove(&root) {
+            index.generation.fetch_add(1, Ordering::SeqCst); // aborts walk + queries
+            revoke_index_owners(state, &index);
+        }
+    }
+    for pending in state.fuzzy_pending.iter() {
+        if matches(pending.key()) {
+            pending.value().generation.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -318,7 +360,7 @@ mod tests {
         d
     }
 
-    fn wait_idle(pending: &DashMap<PathBuf, u64>) {
+    fn wait_idle(pending: &DashMap<PathBuf, Arc<FuzzyIndex>>) {
         for _ in 0..500 {
             if pending.is_empty() {
                 return;
@@ -343,13 +385,14 @@ mod tests {
 
         let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
         fuzzy.insert(d.clone(), old.clone());
-        let pending: Arc<DashMap<PathBuf, u64>> = Arc::new(DashMap::new());
+        let pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
         let snapshot = d.join("snap.fzidx");
 
         spawn_refresh(
             fuzzy.clone(),
             pending.clone(),
             tokens.clone(),
+            Arc::new(VolumeGate::default()),
             old.clone(),
             d.clone(),
             vec![],
@@ -381,13 +424,14 @@ mod tests {
         let winner = FuzzyIndex::restore(d.clone(), hash.wrapping_add(1), vec![], false, 0);
         let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
         fuzzy.insert(d.clone(), winner.clone()); // `old` is no longer installed
-        let pending: Arc<DashMap<PathBuf, u64>> = Arc::new(DashMap::new());
+        let pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
         let snapshot = d.join("snap.fzidx");
 
         spawn_refresh(
             fuzzy.clone(),
             pending.clone(),
             Arc::new(TokenTable::default()),
+            Arc::new(VolumeGate::default()),
             old,
             d.clone(),
             vec![],
