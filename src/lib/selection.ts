@@ -18,8 +18,13 @@ export function emptySelection(): SelectionState {
   return { selected: new Set(), anchor: null, lead: null };
 }
 
-function indexOf(order: readonly number[], id: number | null): number {
-  return id == null ? -1 : order.indexOf(id);
+/** Optional id → index lookup for `order` (avoids an O(n) indexOf per call). */
+export type OrderIndex = { get(id: number): number | undefined };
+
+function indexOf(order: readonly number[], id: number | null, index?: OrderIndex): number {
+  if (id == null) return -1;
+  if (index) return index.get(id) ?? -1;
+  return order.indexOf(id);
 }
 
 /** Plain click: replace selection with the clicked row. */
@@ -49,9 +54,10 @@ export function shiftRange(
   state: SelectionState,
   order: readonly number[],
   id: number,
+  index?: OrderIndex,
 ): SelectionState {
-  const anchorIdx = indexOf(order, state.anchor);
-  const targetIdx = indexOf(order, id);
+  const anchorIdx = indexOf(order, state.anchor, index);
+  const targetIdx = indexOf(order, id, index);
   if (targetIdx === -1) return state;
   if (anchorIdx === -1) return clickSelect(id);
   const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
@@ -68,9 +74,10 @@ export function arrowMove(
   state: SelectionState,
   order: readonly number[],
   dir: 1 | -1,
+  index?: OrderIndex,
 ): SelectionState {
   if (order.length === 0) return emptySelection();
-  const leadIdx = indexOf(order, state.lead);
+  const leadIdx = indexOf(order, state.lead, index);
   let next: number;
   if (leadIdx === -1) {
     next = dir === 1 ? 0 : order.length - 1;
@@ -85,12 +92,13 @@ export function shiftArrowExtend(
   state: SelectionState,
   order: readonly number[],
   dir: 1 | -1,
+  index?: OrderIndex,
 ): SelectionState {
   if (order.length === 0) return emptySelection();
-  const leadIdx = indexOf(order, state.lead);
-  if (leadIdx === -1 || state.anchor == null) return arrowMove(state, order, dir);
+  const leadIdx = indexOf(order, state.lead, index);
+  if (leadIdx === -1 || state.anchor == null) return arrowMove(state, order, dir, index);
   const nextIdx = Math.min(order.length - 1, Math.max(0, leadIdx + dir));
-  return shiftRange(state, order, order[nextIdx]);
+  return shiftRange(state, order, order[nextIdx], index);
 }
 
 export function selectAll(order: readonly number[]): SelectionState {
@@ -109,7 +117,7 @@ export function clearSelection(): SelectionState {
 /** Drop ids that no longer exist in the listing (watcher removals, filters do NOT prune). */
 export function pruneSelection(
   state: SelectionState,
-  existing: ReadonlySet<number>,
+  existing: { has(id: number): boolean },
 ): SelectionState {
   let changed = false;
   const selected = new Set<number>();
@@ -151,12 +159,14 @@ export function typeAheadPush(state: TypeAheadState, char: string, now: number):
 export function typeAheadTarget(
   names: readonly string[],
   prefix: string,
+  /** `names` are already lowercased (e.g. VisibleView.lowerNames). */
+  lowered = false,
 ): number {
   if (prefix === "") return -1;
   const p = prefix.toLowerCase();
   let fallback = -1;
   for (let i = 0; i < names.length; i++) {
-    const n = names[i].toLowerCase();
+    const n = lowered ? names[i] : names[i].toLowerCase();
     if (n.startsWith(p)) return i;
     if (fallback === -1 && n > p) fallback = i;
   }
@@ -212,6 +222,44 @@ export function marqueeSelect(
   for (const item of items) {
     if (intersects(rect, item.rect)) hit.add(item.id);
   }
+  return marqueeFromHits(hit, base);
+}
+
+/**
+ * Fixed-height rows spanning `[0, width)` horizontally, row i at
+ * `[i * rowH, (i + 1) * rowH)`: the inclusive index range `[lo, hi]` the
+ * marquee intersects (same strict-overlap rule as `marqueeSelect`), or null.
+ * O(1) instead of one rect per row.
+ */
+export function rowRangeInRect(
+  rect: Rect,
+  count: number,
+  rowH: number,
+  width: number,
+): [number, number] | null {
+  if (count <= 0 || rowH <= 0) return null;
+  if (!(rect.x < width && rect.x + rect.width > 0)) return null;
+  // row i overlaps iff  i*rowH < y+h  &&  (i+1)*rowH > y
+  const lo = Math.max(0, Math.floor(rect.y / rowH));
+  const hi = Math.min(count - 1, Math.ceil((rect.y + rect.height) / rowH) - 1);
+  return lo <= hi ? [lo, hi] : null;
+}
+
+/** Marquee over fixed-height list rows: hits found by arithmetic, in display order. */
+export function marqueeSelectRows(
+  rect: Rect,
+  ids: readonly number[],
+  rowH: number,
+  width: number,
+  base: ReadonlySet<number> | null = null,
+): SelectionState {
+  const hit = new Set<number>();
+  const range = rowRangeInRect(rect, ids.length, rowH, width);
+  if (range) for (let i = range[0]; i <= range[1]; i++) hit.add(ids[i]);
+  return marqueeFromHits(hit, base);
+}
+
+function marqueeFromHits(hit: Set<number>, base: ReadonlySet<number> | null): SelectionState {
   let selected: Set<number>;
   if (base) {
     selected = new Set(base);
@@ -222,7 +270,11 @@ export function marqueeSelect(
   } else {
     selected = hit;
   }
-  const arr = [...selected];
-  const last = arr.length > 0 ? arr[arr.length - 1] : null;
-  return { selected, anchor: arr.length > 0 ? arr[0] : null, lead: last };
+  let first: number | null = null;
+  let last: number | null = null;
+  for (const id of selected) {
+    if (first === null) first = id;
+    last = id;
+  }
+  return { selected, anchor: first, lead: last };
 }
