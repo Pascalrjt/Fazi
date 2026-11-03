@@ -176,7 +176,9 @@ function compareNullableNumber(a: number | null, b: number | null): number {
 interface Decorated {
   e: Entry;
   dir: boolean;
-  name: string | null;
+  /** Name key; `undefined` = not computed yet (lazy for non-name sorts,
+   *  where the name only breaks primary ties). */
+  name: string | null | undefined;
   label: string;
   labelKey: string | null;
 }
@@ -186,10 +188,15 @@ function decorate(e: Entry, key: SortKey): Decorated {
   return {
     e,
     dir: isDirLike(e),
-    name: asciiSortKey(e.name),
+    name: key === "name" ? asciiSortKey(e.name) : undefined,
     label,
     labelKey: key === "kind" ? labelKeyOf(label) : null,
   };
+}
+
+function nameKey(d: Decorated): string | null {
+  if (d.name === undefined) d.name = asciiSortKey(d.e.name);
+  return d.name;
 }
 
 function decoratedComparator(
@@ -204,7 +211,7 @@ function decoratedComparator(
       if (dirsFirst && a.dir !== b.dir) return a.dir ? -1 : 1;
       const ka = a.name;
       const kb = b.name;
-      if (ka !== null && kb !== null) {
+      if (ka != null && kb != null) {
         if (ka < kb) return -sign;
         if (ka > kb) return sign;
       } else {
@@ -231,7 +238,7 @@ function decoratedComparator(
     }
     if (primary !== 0) return sign * primary;
     // name is the (unsigned) tiebreaker
-    const byName = compareKeyed(a.name, b.name, a.e.name, b.e.name);
+    const byName = compareKeyed(nameKey(a), nameKey(b), a.e.name, b.e.name);
     if (byName !== 0) return byName;
     return a.e.id - b.e.id; // stable, deterministic
   };
