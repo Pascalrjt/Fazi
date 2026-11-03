@@ -52,6 +52,9 @@ export interface Entry {
   noAccess: boolean;
   /** Finder's custom-icon flag; such folders skip the accent tint. */
   customIcon: boolean;
+  /** Opaque content revision (inode, size, mtime/ctime in ns) set by
+   *  hydration; image URLs carry it as `v=`. */
+  rev?: string;
 }
 
 /** Streamed over the Channel passed to `list_dir`. */

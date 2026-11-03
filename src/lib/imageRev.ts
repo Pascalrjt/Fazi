@@ -4,13 +4,14 @@ import { iconUrl, thumbUrl, type Entry } from "../types/ipc";
  * Content revision for icon:// / thumb:// URLs.
  *
  * Icon tokens are reused per (owner, path) and protocol responses are
- * cacheable, so a file edited in place must get a different URL to re-fetch.
- * Once an entry is hydrated its URL carries `v=<mtimeMs>-<size>`; rows that
- * render before hydration load once more when it lands (extension-shared
- * icons are cheap backend cache hits). Backend caches validate against the
- * file itself and ignore this param.
+ * cacheable, so a file changed in place must get a different URL to re-fetch.
+ * Hydration supplies `rev` (inode, size, mtime/ctime in ns — ctime covers
+ * FinderInfo / xattr changes); the backend icon memo also uses it to answer
+ * without a stat. Entries from older payloads without `rev` fall back to
+ * mtime+size. Unhydrated rows carry no revision.
  */
-export function imageRev(entry: Pick<Entry, "mtime" | "size">): string {
+export function imageRev(entry: Pick<Entry, "mtime" | "size" | "rev">): string {
+  if (entry.rev) return entry.rev;
   if (entry.mtime == null) return "";
   return `${Math.trunc(entry.mtime)}-${entry.size ?? 0}`;
 }

@@ -7,8 +7,8 @@
 
 use std::borrow::Cow;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, Runtime};
@@ -23,6 +23,89 @@ use crate::state::AppState;
 pub fn icon_pool() -> &'static WorkerPool {
     static POOL: OnceLock<WorkerPool> = OnceLock::new();
     POOL.get_or_init(|| WorkerPool::new("fazi-icon", 4))
+}
+
+/// Icon/thumbnail requests for items on non-local volumes (SMB/AFP/NFS,
+/// WebDAV…): a stalled mount can block their stat/render for seconds, so
+/// they get their own small pool and can never occupy the local workers.
+pub fn remote_image_pool() -> &'static WorkerPool {
+    static POOL: OnceLock<WorkerPool> = OnceLock::new();
+    POOL.get_or_init(|| WorkerPool::new("fazi-remote-img", 2))
+}
+
+/// Mount points with their MNT_LOCAL flag, from `getmntinfo(MNT_NOWAIT)`
+/// (the kernel's cached table — never touches a mount, so a dead server
+/// can't block it). Locality lookup is then a pure longest-prefix match.
+pub struct MountTable {
+    /// (mount point, is_local), longest mount point first.
+    mounts: Vec<(PathBuf, bool)>,
+}
+
+impl MountTable {
+    pub fn new(mut mounts: Vec<(PathBuf, bool)>) -> Self {
+        mounts.sort_by_key(|(m, _)| std::cmp::Reverse(m.as_os_str().len()));
+        MountTable { mounts }
+    }
+
+    pub fn current() -> Self {
+        let mut buf: *mut libc::statfs = std::ptr::null_mut();
+        // SAFETY: getmntinfo hands back a libc-owned array of `n` entries.
+        let n = unsafe { libc::getmntinfo(&mut buf, libc::MNT_NOWAIT) };
+        let mut mounts = Vec::new();
+        if n > 0 && !buf.is_null() {
+            let all = unsafe { std::slice::from_raw_parts(buf, n as usize) };
+            for m in all {
+                let bytes: Vec<u8> =
+                    m.f_mntonname.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
+                use std::os::unix::ffi::OsStringExt;
+                let point = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+                mounts.push((point, m.f_flags & libc::MNT_LOCAL as u32 != 0));
+            }
+        }
+        MountTable::new(mounts)
+    }
+
+    /// Unknown paths count as local (the root volume always matches "/").
+    pub fn is_local(&self, path: &Path) -> bool {
+        self.mounts
+            .iter()
+            .find(|(m, _)| path.starts_with(m))
+            .map(|(_, local)| *local)
+            .unwrap_or(true)
+    }
+}
+
+/// Cached [`MountTable`], refreshed every few seconds (mounts come and go).
+pub fn path_is_local(path: &Path) -> bool {
+    static TABLE: std::sync::Mutex<Option<(std::time::Instant, Arc<MountTable>)>> =
+        std::sync::Mutex::new(None);
+    let table = {
+        let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        match &*t {
+            Some((at, table)) if at.elapsed() < std::time::Duration::from_secs(5) => table.clone(),
+            _ => {
+                let table = Arc::new(MountTable::current());
+                *t = Some((std::time::Instant::now(), table.clone()));
+                table
+            }
+        }
+    };
+    table.is_local(path)
+}
+
+/// Pick the worker pool for an icon/thumb request: the remote pool when the
+/// token's item lives on a non-local volume. Token resolution is in-memory.
+pub fn image_pool_for<R: Runtime>(
+    app: &AppHandle<R>,
+    request: &Request<Vec<u8>>,
+    local: &'static WorkerPool,
+) -> &'static WorkerPool {
+    let state = app.state::<AppState>();
+    let token = request.uri().path().trim_start_matches('/');
+    match state.tokens.resolve(token) {
+        Some(path) if !path_is_local(&path) => remote_image_pool(),
+        _ => local,
+    }
 }
 
 pub fn thumb_pool() -> &'static WorkerPool {
@@ -42,21 +125,34 @@ fn not_found() -> Response<Vec<u8>> {
         .unwrap()
 }
 
-fn png_response(bytes: Vec<u8>) -> Response<Vec<u8>> {
+/// Content-addressed images (the URL's `v=` names the revision) cache long.
+const MAX_AGE_SHARED: &str = "public, max-age=3600";
+/// Item-specific icons (apps, packages, custom icons) can change inside the
+/// bundle without the URL changing: keep the webview's copy short-lived.
+const MAX_AGE_PER_PATH: &str = "public, max-age=60";
+
+fn png_response(bytes: Vec<u8>, cache_control: &'static str) -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "image/png")
-        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .header(header::CACHE_CONTROL, cache_control)
         .body(bytes)
         .unwrap()
 }
 
-/// Parsed `scheme://localhost/<token>?size=NN&v=REV`. `v` is a content
-/// revision for the webview's HTTP cache only; backend caches validate
-/// against the file itself, so it is accepted and ignored here.
+fn icon_response(icon: crate::macos::icons::IconPng) -> Response<Vec<u8>> {
+    let cc = if icon.per_path { MAX_AGE_PER_PATH } else { MAX_AGE_SHARED };
+    png_response(icon.png.as_ref().clone(), cc)
+}
+
+/// Parsed `scheme://localhost/<token>?size=NN&v=REV`. `v` is the entry's
+/// content revision (`Entry::rev`): it busts the webview cache, and lets the
+/// icon memo answer without a stat when it matches. A forged `v` only forces
+/// a revalidation — the token alone decides which file is served.
 struct ImageRequest {
     token: String,
     size: u32,
+    rev: String,
 }
 
 fn query_param<'a>(uri: &'a tauri::http::Uri, key: &str) -> Option<&'a str> {
@@ -69,24 +165,25 @@ fn query_param<'a>(uri: &'a tauri::http::Uri, key: &str) -> Option<&'a str> {
 fn parse_image_request(uri: &tauri::http::Uri) -> ImageRequest {
     let token = uri.path().trim_start_matches('/').to_string();
     let size = query_param(uri, "size").and_then(|v| v.parse::<u32>().ok()).unwrap_or(32);
-    ImageRequest { token, size }
+    let rev = query_param(uri, "v").filter(|v| v.len() <= 64).unwrap_or_default().to_string();
+    ImageRequest { token, size, rev }
 }
 
 pub fn handle_icon<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     let state = app.state::<AppState>();
-    let ImageRequest { token, size } = parse_image_request(request.uri());
+    let ImageRequest { token, size, rev } = parse_image_request(request.uri());
     let Some(path) = state.tokens.resolve(&token) else {
         return not_found();
     };
-    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size) {
-        Some(png) => png_response(png.as_ref().clone()),
+    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size, &rev) {
+        Some(icon) => icon_response(icon),
         None => not_found(),
     }
 }
 
 pub fn handle_thumb<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     let state = app.state::<AppState>();
-    let ImageRequest { token, size } = parse_image_request(request.uri());
+    let ImageRequest { token, size, rev } = parse_image_request(request.uri());
     let Some(path) = state.tokens.resolve(&token) else {
         return not_found();
     };
@@ -98,11 +195,11 @@ pub fn handle_thumb<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) -
         crate::macos::thumbnails::thumbnail_png(&state.thumb_cache_dir, &path, size)
     };
     if let Some(png) = thumb {
-        return png_response(png);
+        return png_response(png, MAX_AGE_SHARED);
     }
     // Fallback: the plain icon at the requested size.
-    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size) {
-        Some(png) => png_response(png.as_ref().clone()),
+    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size, &rev) {
+        Some(icon) => icon_response(icon),
         None => not_found(),
     }
 }
@@ -278,6 +375,27 @@ mod tests {
             let r = parse_image_request(&uri);
             assert_eq!((r.token.as_str(), r.size), ("abc123", size), "{u}");
         }
+        let uri: tauri::http::Uri = "icon://localhost/t?v=00ff&size=16".parse().unwrap();
+        assert_eq!(parse_image_request(&uri).rev, "00ff");
+    }
+
+    #[test]
+    fn mount_table_isolates_remote_volumes_by_longest_prefix() {
+        use std::path::{Path, PathBuf};
+        let t = super::MountTable::new(vec![
+            (PathBuf::from("/"), true),
+            (PathBuf::from("/Volumes/share"), false),
+            (PathBuf::from("/Volumes/share/nested-local"), true),
+            (PathBuf::from("/Volumes/USB"), true),
+        ]);
+        assert!(t.is_local(Path::new("/Users/me/a.txt")));
+        assert!(!t.is_local(Path::new("/Volumes/share/docs/a.txt")));
+        assert!(t.is_local(Path::new("/Volumes/share/nested-local/x")));
+        assert!(t.is_local(Path::new("/Volumes/USB/x")));
+        // Component-wise prefix: /Volumes/shared is not under /Volumes/share.
+        assert!(t.is_local(Path::new("/Volumes/shared/x")));
+        // The live table knows the root volume is local.
+        assert!(super::MountTable::current().is_local(Path::new("/")));
     }
 
     #[test]

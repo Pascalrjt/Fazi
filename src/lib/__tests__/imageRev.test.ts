@@ -23,4 +23,12 @@ describe("image URL revisions", () => {
     expect(entryThumbUrl(row(6000, 9), 128)).not.toBe(afterEdit);
     expect(imageRev(row(6000, 9))).toBe("6000-9");
   });
+
+  it("prefers the backend content revision (covers same-mtime/size metadata changes)", () => {
+    const base = { ...row(5000, 9), hydrated: true };
+    const a = entryIconUrl({ ...base, rev: "00000000000000aa" }, 32);
+    const b = entryIconUrl({ ...base, rev: "00000000000000bb" }, 32);
+    expect(a).toBe(`icon://localhost/${tok}?size=32&v=00000000000000aa`);
+    expect(b).not.toBe(a);
+  });
 });

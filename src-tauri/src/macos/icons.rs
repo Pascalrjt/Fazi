@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use objc2::rc::Retained;
@@ -60,79 +61,95 @@ fn cache_key(path: &Path) -> String {
     format!("ext:{}", ext)
 }
 
-/// What an item looked like on disk when it was classified: one lstat.
-/// Writing FinderInfo (a custom icon flag) or `Icon\r` bumps ctime/mtime,
-/// replacing the item changes the inode — so any change that can alter its
-/// icon changes this identity, whichever token or listing asks.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Identity {
-    ino: u64,
-    size: u64,
-    mtime: (i64, i64),
-    ctime: (i64, i64),
+/// The item's current content revision (one lstat) — the same value
+/// hydration puts in `Entry::rev` and the webview sends back as `v=`.
+fn rev_of(path: &Path) -> Option<String> {
+    path.symlink_metadata().ok().map(|m| crate::core::entry::content_rev(&m))
 }
 
-fn identity_of(path: &Path) -> Option<Identity> {
-    use std::os::unix::fs::MetadataExt;
-    let m = path.symlink_metadata().ok()?;
-    Some(Identity {
-        ino: m.ino(),
-        size: m.size(),
-        mtime: (m.mtime(), m.mtime_nsec()),
-        ctime: (m.ctime(), m.ctime_nsec()),
-    })
+/// Per-path keys (custom icons, apps, packages) render from the item itself.
+fn is_per_path(key: &str) -> bool {
+    key.starts_with("path:")
 }
 
-/// Per-path keys (custom icons, apps, packages) render from the item
-/// itself, so they carry its identity: a changed item misses instead of
-/// serving the PNG drawn before the change. Extension-, generic- and
-/// special-folder keys don't depend on the item's content.
-fn identity_key(key: String, id: Option<Identity>) -> String {
-    match id {
-        Some(id) if key.starts_with("path:") => {
-            use std::hash::{BuildHasher, BuildHasherDefault};
-            let h = BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default()
-                .hash_one(id);
-            format!("{key}@{h:016x}")
-        }
-        _ => key,
-    }
+/// Per-path icons can change without their root's revision moving (an
+/// app's `Contents/Resources/*.icns` or a folder's `Icon\r` rewritten in
+/// place), so their memo entries — and PNGs — are re-validated this often.
+pub const PER_PATH_TTL: Duration = Duration::from_secs(300);
+
+struct Memo {
+    /// Revision the classification was validated against.
+    rev: Option<String>,
+    key: String,
+    at: Instant,
 }
 
-type KeyMemo = DashMap<PathBuf, (Option<Identity>, String)>;
+type KeyMemo = DashMap<PathBuf, Memo>;
+
+#[derive(Debug, PartialEq, Eq)]
+struct KeyLookup {
+    key: String,
+    per_path: bool,
+    /// A per-path entry outlived [`PER_PATH_TTL`]: drop its cached PNGs so
+    /// the next render picks up in-bundle icon changes.
+    expired: bool,
+}
 
 /// Path → classification memo: `cache_key` costs a stat + FinderInfo xattr
 /// per request, and result bursts repeat the same paths (refine ticks,
-/// scrolling). Entries are validated against the item's current identity
-/// (one lstat), so an item that changed — e.g. just gained a custom icon —
-/// is re-classified and re-rendered, independent of URL revisions or token
-/// generations.
+/// scrolling).
+///
+/// Hit path: the request's `v=` equals the revision the memo was validated
+/// against → no filesystem access at all (a dead network mount can't stall
+/// a cache hit). Otherwise (no/old/forged `v`) one lstat revalidates; a
+/// changed item — e.g. one that gained a custom icon — is re-classified, and
+/// per-path keys embed the revision so its PNG cache entry is new too.
 fn cached_key_in(
     keys: &KeyMemo,
     path: &Path,
-    identity: impl FnOnce(&Path) -> Option<Identity>,
+    req_rev: &str,
+    now: Instant,
+    rev_of: impl FnOnce(&Path) -> Option<String>,
     classify: impl FnOnce(&Path) -> String,
-) -> String {
-    let id = identity(path);
-    if let Some(k) = keys.get(path) {
-        if id.is_some() && k.0 == id {
-            return k.1.clone();
+) -> KeyLookup {
+    let fresh = |m: &Memo| !is_per_path(&m.key) || now.duration_since(m.at) < PER_PATH_TTL;
+    let mut was_expired = false;
+    if let Some(m) = keys.get(path) {
+        if fresh(&m) {
+            if !req_rev.is_empty() && m.rev.as_deref() == Some(req_rev) {
+                return KeyLookup { per_path: is_per_path(&m.key), key: m.key.clone(), expired: false };
+            }
+        } else {
+            was_expired = true;
         }
     }
-    let key = identity_key(classify(path), id);
+    let rev = rev_of(path);
+    if !was_expired {
+        if let Some(m) = keys.get(path) {
+            if rev.is_some() && m.rev == rev {
+                return KeyLookup { per_path: is_per_path(&m.key), key: m.key.clone(), expired: false };
+            }
+        }
+    }
+    let class = classify(path);
+    let per_path = is_per_path(&class);
+    let key = match &rev {
+        Some(r) if per_path => format!("{class}@{r}"),
+        _ => class,
+    };
     if keys.len() > 16_384 {
         let victims: Vec<PathBuf> = keys.iter().take(4096).map(|e| e.key().clone()).collect();
         for v in victims {
             keys.remove(&v);
         }
     }
-    keys.insert(path.to_path_buf(), (id, key.clone()));
-    key
+    keys.insert(path.to_path_buf(), Memo { rev, key: key.clone(), at: now });
+    KeyLookup { key, per_path, expired: was_expired && per_path }
 }
 
-fn cached_key(path: &Path) -> String {
+fn cached_key(path: &Path, req_rev: &str) -> KeyLookup {
     static KEYS: OnceLock<KeyMemo> = OnceLock::new();
-    cached_key_in(KEYS.get_or_init(DashMap::new), path, identity_of, cache_key)
+    cached_key_in(KEYS.get_or_init(DashMap::new), path, req_rev, Instant::now(), rev_of, cache_key)
 }
 
 /// Render the icon PNG. MUST run on the main thread.
@@ -247,20 +264,34 @@ pub fn cached_or_render(
 
 /// Cached icon lookup; on miss draws on the main thread and PNG-encodes on
 /// the calling (worker) thread.
+/// A served icon; `per_path` icons are item-specific and may change
+/// without their URL changing, so they get a short HTTP cache lifetime.
+pub struct IconPng {
+    pub png: Arc<Vec<u8>>,
+    pub per_path: bool,
+}
+
 pub fn icon_png<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     cache: &IconCache,
     path: &Path,
     size: u32,
-) -> Option<Arc<Vec<u8>>> {
+    req_rev: &str,
+) -> Option<IconPng> {
     let size = size.clamp(8, 1024);
-    let key = (cached_key(path), size);
-    cached_or_render(cache, flights(), key, || {
+    let lookup = cached_key(path, req_rev);
+    if lookup.expired {
+        cache.retain(|k, _| k.0 != lookup.key);
+    }
+    let per_path = lookup.per_path;
+    let key = (lookup.key, size);
+    let png = cached_or_render(cache, flights(), key, || {
         let p = path.to_path_buf();
         let bitmap =
             crate::macos::main_thread::on_main(app, move || icon_bitmap_main_thread(&p, size))?;
         encode_png(&bitmap.0)
-    })
+    })?;
+    Some(IconPng { png, per_path })
 }
 
 /// Extensions whose type icons ⌘P result bursts most commonly need.
@@ -299,7 +330,7 @@ pub fn prewarm_common<R: tauri::Runtime>(app: &tauri::AppHandle<R>, cache: &Icon
     }
     for &size in PREWARM_SIZES {
         for p in &paths {
-            let _ = icon_png(app, cache, p, size);
+            let _ = icon_png(app, cache, p, size, "");
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
@@ -360,40 +391,102 @@ mod tests {
     }
 
     #[test]
-    fn per_path_keys_follow_the_items_identity_across_token_generations() {
+    fn per_path_keys_follow_the_items_revision_across_token_generations() {
         let d = std::env::temp_dir().join(format!("fazi-icon-id-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("doc.txt");
         std::fs::write(&f, b"x").unwrap();
         let memo = KeyMemo::new();
+        let now = Instant::now();
         let classified = std::cell::Cell::new(0);
         let classify = |p: &Path| {
             classified.set(classified.get() + 1);
             cache_key(p)
         };
-        // First listing: shared ext icon; repeat requests are memo hits.
-        assert_eq!(cached_key_in(&memo, &f, identity_of, classify), "ext:txt");
-        assert_eq!(cached_key_in(&memo, &f, identity_of, classify), "ext:txt");
+        let k = cached_key_in(&memo, &f, "", now, rev_of, classify);
+        assert_eq!(k.key, "ext:txt");
+        assert!(!k.per_path);
+        assert_eq!(cached_key_in(&memo, &f, "", now, rev_of, classify).key, "ext:txt");
         assert_eq!(classified.get(), 1);
 
         // While away: the file gains a custom icon (FinderInfo flag).
         let mut info = [0u8; 32];
         info[8] = 0x04; // kHasCustomIcon
         set_finder_info(&f, &info);
-        // Reopen (new owner, new token, no URL revision): the backend still
-        // notices because the item's identity changed.
-        let custom = cached_key_in(&memo, &f, identity_of, classify);
-        assert!(custom.starts_with("path:") && custom.contains('@'), "{custom}");
+        // Reopen (new owner/token, no URL revision): revalidation notices.
+        let custom = cached_key_in(&memo, &f, "", now, rev_of, classify);
+        assert!(custom.per_path && custom.key.contains('@'), "{custom:?}");
         assert_eq!(classified.get(), 2);
 
         // Editing a custom-icon item gives it a fresh PNG cache key.
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(5));
         std::fs::write(&f, b"edited").unwrap();
-        let edited = cached_key_in(&memo, &f, identity_of, classify);
-        assert!(edited.starts_with("path:"));
-        assert_ne!(edited, custom);
+        let edited = cached_key_in(&memo, &f, "", now, rev_of, classify);
+        assert!(edited.per_path);
+        assert_ne!(edited.key, custom.key);
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn same_size_same_mtime_xattr_change_yields_a_new_rev() {
+        let d = std::env::temp_dir().join(format!("fazi-icon-rev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("doc.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let before = f.symlink_metadata().unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        set_finder_info(&f, &[0u8; 32]);
+        let after = f.symlink_metadata().unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!((before.size(), before.mtime(), before.mtime_nsec()), (after.size(), after.mtime(), after.mtime_nsec()));
+        assert_ne!(crate::core::entry::content_rev(&before), crate::core::entry::content_rev(&after));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn matching_url_revision_is_a_hit_without_any_lstat() {
+        let memo = KeyMemo::new();
+        let p = Path::new("/Volumes/dead-mount/Foo.app");
+        let now = Instant::now();
+        let stats = std::cell::Cell::new(0);
+        let rev = |_: &Path| {
+            stats.set(stats.get() + 1);
+            Some("r1".to_string())
+        };
+        let class = |_: &Path| "path:/Volumes/dead-mount/Foo.app".to_string();
+        let first = cached_key_in(&memo, p, "", now, rev, class);
+        assert_eq!(first.key, "path:/Volumes/dead-mount/Foo.app@r1");
+        assert_eq!(stats.get(), 1);
+        for _ in 0..5 {
+            let hit = cached_key_in(&memo, p, "r1", now, rev, |_: &Path| unreachable!());
+            assert_eq!(hit.key, first.key);
+        }
+        assert_eq!(stats.get(), 1, "v= matching the memo never touches the filesystem");
+        // A forged / stale v only costs one revalidation.
+        let again = cached_key_in(&memo, p, "bogus", now, rev, |_: &Path| unreachable!());
+        assert_eq!(again.key, first.key);
+        assert_eq!(stats.get(), 2);
+    }
+
+    #[test]
+    fn per_path_entries_expire_so_in_bundle_icon_edits_show_up() {
+        let memo = KeyMemo::new();
+        let p = Path::new("/Applications/Foo.app");
+        let t0 = Instant::now();
+        let rev = |_: &Path| Some("r1".to_string());
+        let class = |_: &Path| "path:/Applications/Foo.app".to_string();
+        assert!(!cached_key_in(&memo, p, "r1", t0, rev, class).expired);
+        assert!(!cached_key_in(&memo, p, "r1", t0 + Duration::from_secs(60), rev, class).expired);
+        let late = cached_key_in(&memo, p, "r1", t0 + PER_PATH_TTL + Duration::from_secs(1), rev, class);
+        assert!(late.expired, "stale per-path PNGs get purged and re-rendered");
+        // Shared keys never expire.
+        let txt = Path::new("/x/a.txt");
+        let ext = |_: &Path| "ext:txt".to_string();
+        cached_key_in(&memo, txt, "r1", t0, rev, ext);
+        let shared = cached_key_in(&memo, txt, "r1", t0 + PER_PATH_TTL * 2, rev, |_: &Path| unreachable!());
+        assert!(!shared.expired && !shared.per_path);
     }
 
     fn set_finder_info(path: &Path, info: &[u8; 32]) {
@@ -406,12 +499,4 @@ mod tests {
         assert_eq!(rc, 0, "setxattr");
     }
 
-    #[test]
-    fn shared_keys_ignore_identity() {
-        let id = identity_of(Path::new("/")).unwrap();
-        assert_eq!(identity_key("ext:txt".into(), Some(id)), "ext:txt");
-        assert_eq!(identity_key("dir:generic".into(), Some(id)), "dir:generic");
-        assert_eq!(identity_key("dir:/Users/me".into(), Some(id)), "dir:/Users/me");
-        assert!(identity_key("path:/A.app".into(), Some(id)).starts_with("path:/A.app@"));
-    }
 }

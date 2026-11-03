@@ -138,13 +138,13 @@ pub fn run() {
         })
         .register_asynchronous_uri_scheme_protocol("icon", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            protocols::icon_pool().execute(move || {
+            protocols::image_pool_for(&app, &request, protocols::icon_pool()).execute(move || {
                 responder.respond(protocols::handle_icon(&app, request));
             });
         })
         .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            protocols::thumb_pool().execute(move || {
+            protocols::image_pool_for(&app, &request, protocols::thumb_pool()).execute(move || {
                 responder.respond(protocols::handle_thumb(&app, request));
             });
         })

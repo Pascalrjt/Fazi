@@ -49,6 +49,28 @@ pub struct Entry {
     /// Finder's custom-icon flag; such folders keep their own look rather
     /// than taking the accent tint.
     pub custom_icon: bool,
+    /// Opaque content revision (see [`content_rev`]) for image URLs; set by
+    /// hydration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+}
+
+/// Opaque content revision of an lstat result: inode, size, and mtime/ctime
+/// at nanosecond precision. ctime moves on every metadata change too —
+/// FinderInfo / resource fork / custom icon xattrs — and a same-size,
+/// same-mtime replacement changes the inode or ctime. Image URLs carry it as
+/// `v=` and the icon handler validates its memo against it.
+pub fn content_rev(meta: &std::fs::Metadata) -> String {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    let h = BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().hash_one((
+        meta.ino(),
+        meta.size(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+        meta.ctime(),
+        meta.ctime_nsec(),
+    ));
+    format!("{h:016x}")
 }
 
 /// Extensions treated as packages without asking NSWorkspace (fast path).
@@ -105,6 +127,7 @@ pub fn pass1_entry_owned(
         tags: Vec::new(),
         no_access: false,
         custom_icon: false,
+        rev: None,
     }
 }
 
@@ -253,6 +276,7 @@ pub fn hydrate_with_meta(entry: &mut Entry, meta: &std::fs::Metadata) -> bool {
     entry.size = if ft.is_dir() { None } else { Some(meta.len()) };
     entry.mtime = Some(meta.mtime() * 1000 + meta.mtime_nsec() / 1_000_000);
     entry.btime = Some(meta.st_birthtime() * 1000 + meta.st_birthtime_nsec() / 1_000_000);
+    entry.rev = Some(content_rev(meta));
 
     // One C path for every per-entry syscall below.
     let cpath = CString::new(entry.path.as_bytes()).ok();
@@ -354,6 +378,10 @@ mod tests {
         assert_eq!(e.size, Some(5));
         assert!(e.hydrated);
         assert!(e.mtime.is_some());
+        // The wire revision equals what the icon handler computes from lstat.
+        let meta = f.symlink_metadata().unwrap();
+        assert_eq!(e.rev.as_deref(), Some(content_rev(&meta).as_str()));
+        assert_eq!(e.rev.as_ref().unwrap().len(), 16);
         std::fs::remove_dir_all(&dir).ok();
     }
 
