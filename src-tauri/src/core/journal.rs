@@ -45,7 +45,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::walker::{is_staging_name, remove_tree_best_effort};
+use crate::core::walker::{is_staging_name, remove_tree, remove_tree_best_effort};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -291,17 +291,30 @@ impl Journal {
         };
         let files: Vec<PathBuf> = rd.flatten().map(|f| f.path()).collect();
         let is_header = |p: &Path| p.extension().and_then(|e| e.to_str()) == Some("json");
+        let mut kept_logs: Vec<PathBuf> = Vec::new();
         for p in files.iter().filter(|p| is_header(p)) {
+            let mut keep = false;
             if let Some(entry) = load_entry(p) {
-                // 1. Remove explicit staging paths.
-                for s in &entry.staging {
-                    remove_tree_best_effort(Path::new(s));
-                }
+                // 1. Remove explicit staging paths. One that can't be removed
+                // keeps the record so the next launch retries — dropping it
+                // would orphan the tree for good.
+                let leftover: Vec<String> = entry
+                    .staging
+                    .iter()
+                    .filter(|s| remove_tree(Path::new(s)).is_err())
+                    .cloned()
+                    .collect();
                 // 2. Scan merge roots for per-entry staging names.
                 for root in &entry.merge_roots {
                     remove_staging_recursive(Path::new(root), &entry.op_id);
                 }
                 self.live.lock().unwrap().remove(&entry.op_id);
+                if !leftover.is_empty() {
+                    let retry = OpJournalEntry { staging: leftover, ..entry.clone() };
+                    keep = self.write(&retry).is_ok();
+                    // Not a live op: just a record for the next launch.
+                    self.live.lock().unwrap().remove(&entry.op_id);
+                }
                 report.push(InterruptedOp {
                     op_id: entry.op_id,
                     kind: entry.kind,
@@ -311,11 +324,15 @@ impl Journal {
                     started_at_ms: entry.started_at_ms,
                 });
             }
+            if keep {
+                kept_logs.push(p.with_extension("log"));
+                continue;
+            }
             let _ = fs::remove_file(p);
             let _ = fs::remove_file(p.with_extension("log"));
         }
         // Whatever is left: orphan logs, temp headers, foreign files.
-        for p in files.iter().filter(|p| !is_header(p)) {
+        for p in files.iter().filter(|p| !is_header(p) && !kept_logs.contains(p)) {
             let _ = fs::remove_file(p);
         }
         report

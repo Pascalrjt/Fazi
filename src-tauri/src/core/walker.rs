@@ -286,11 +286,59 @@ pub fn new_folder_name(dir: &Path, base: &str) -> String {
 }
 
 pub fn remove_tree_best_effort(path: &Path) {
-    let _ = match path.symlink_metadata() {
+    let _ = remove_tree(path);
+}
+
+fn remove_plain(path: &Path) -> io::Result<()> {
+    match path.symlink_metadata() {
         Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
         Ok(_) => std::fs::remove_file(path),
-        Err(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Remove a file or tree we created (a staging copy), reporting whether it
+/// is gone. Copies preserve permissions and BSD flags, so a staged read-only
+/// folder (0555) or locked (uchg) item would block a plain removal: on
+/// failure, clear flags and make every directory owner-writable, then retry.
+/// Never follows symlinks.
+pub fn remove_tree(path: &Path) -> io::Result<()> {
+    if remove_plain(path).is_ok() {
+        return Ok(());
+    }
+    make_removable(path);
+    remove_plain(path)?;
+    if path.symlink_metadata().is_ok() {
+        return Err(io::Error::other("staging tree still present"));
+    }
+    Ok(())
+}
+
+fn make_removable(path: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = path.symlink_metadata() else {
+        return;
     };
+    if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
+        extern "C" {
+            fn lchflags(path: *const libc::c_char, flags: libc::c_uint) -> libc::c_int;
+        }
+        // SAFETY: valid path; lchflags never follows a symlink.
+        unsafe { lchflags(c.as_ptr(), 0) };
+    }
+    if meta.is_dir() {
+        let mode = meta.permissions().mode();
+        if mode & 0o700 != 0o700 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700));
+        }
+        if let Ok(rd) = std::fs::read_dir(path) {
+            for child in rd.flatten() {
+                make_removable(&child.path());
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -995,6 +1043,42 @@ fn stage_cross_volume(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_tree_handles_read_only_and_locked_staging_copies() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("fazi-rmtree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let stage = d.join("stage");
+        std::fs::create_dir_all(stage.join("ro/inner")).unwrap();
+        std::fs::write(stage.join("ro/inner/a.txt"), b"a").unwrap();
+        std::fs::write(stage.join("ro/locked.txt"), b"l").unwrap();
+        let c = std::ffi::CString::new(stage.join("ro/locked.txt").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_IMMUTABLE as _) }, 0);
+        for p in [stage.join("ro/inner"), stage.join("ro")] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        assert!(std::fs::remove_dir_all(&stage).is_err(), "plain removal is blocked");
+        remove_tree(&stage).unwrap();
+        assert!(!stage.exists());
+        // Absent paths are already removed.
+        remove_tree(&stage).unwrap();
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn remove_tree_reports_a_tree_it_cannot_remove() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("fazi-rmtree-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let parent = d.join("parent");
+        std::fs::create_dir_all(parent.join("stage")).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(remove_tree(&parent.join("stage")).is_err());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&d).ok();
+    }
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
 
