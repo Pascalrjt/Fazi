@@ -10,6 +10,7 @@ use dashmap::DashMap;
 
 use crate::core::journal::InterruptedOp;
 use crate::core::op_queue::Engine;
+use crate::core::volume_gate::VolumeGate;
 use crate::core::watcher::DirDebouncer;
 use crate::macos::icons::IconCache;
 use crate::search::fuzzy::FuzzyIndex;
@@ -73,15 +74,18 @@ pub struct AppState {
     pub fuzzy_lru: Mutex<Vec<PathBuf>>,
     /// fuzzy query id → cancel flag (the listing-cancel pattern).
     pub fuzzy_queries: DashMap<String, Arc<AtomicBool>>,
-    /// Roots with an in-flight background refresh walk (serve-old-until-swap).
+    /// Roots with an in-flight background refresh walk (serve-old-until-swap)
+    /// → the index being built, so a drop or eject can abort the walk.
     /// Arc-shared with the refresh threads.
-    pub fuzzy_pending: Arc<DashMap<PathBuf, u64>>,
+    pub fuzzy_pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
     /// Persisted fuzzy-index snapshots (instant warm on relaunch).
     pub fuzzy_cache_dir: PathBuf,
     pub engine: Arc<Engine>,
     pub native_menu: Arc<crate::macos::menu::NativeMenu>,
     pub icon_cache: Arc<IconCache>,
     pub thumb_cache_dir: PathBuf,
+    /// Fazi's own open handles per volume; closed while ejecting.
+    pub volume_gate: Arc<VolumeGate>,
     /// Journal recovery report from startup.
     pub interrupted: Vec<InterruptedOp>,
     /// (changeCount, isCut) of the last Fazi-originated pasteboard write.

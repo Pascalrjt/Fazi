@@ -12,7 +12,7 @@ use tauri::{AppHandle, State};
 use crate::core::tags::{read_tags, write_tags, FinderTag};
 use crate::error::{Error, Result};
 use crate::macos::main_thread::on_main;
-use crate::macos::{pasteboard, share, volumes, workspace};
+use crate::macos::{eject, pasteboard, share, volumes, workspace};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -156,12 +156,12 @@ pub fn quicklook_panel(paths: Vec<String>) -> Result<()> {
 // Tags & Get Info
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_tags(path: String) -> Vec<FinderTag> {
     read_tags(Path::new(&path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_tags(path: String, tags: Vec<FinderTag>) -> Result<()> {
     write_tags(Path::new(&path), &tags).map_err(Error::Io)
 }
@@ -198,7 +198,7 @@ fn group_name(gid: u32) -> String {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_info(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -239,16 +239,30 @@ pub struct DirSizeEvent {
     pub bytes: u64,
     pub entries: u64,
     pub done: bool,
+    /// The walk stopped early (its volume is being ejected): the totals are
+    /// partial and must not be cached.
+    pub cancelled: bool,
 }
 
-/// Lazy folder size: streamed cumulative totals (Get Info panel).
+/// Lazy folder size: streamed cumulative totals (Get Info panel, size
+/// column). Tracked by the volume gate so an eject can stop it.
 #[tauri::command]
-pub fn dir_size(path: String, channel: Channel<DirSizeEvent>) {
+pub fn dir_size(state: State<'_, AppState>, path: String, channel: Channel<DirSizeEvent>) {
+    let gate = state.volume_gate.clone();
     std::thread::spawn(move || {
         let mut bytes = 0u64;
         let mut entries = 0u64;
+        let Some(reader) = gate.track(Path::new(&path)) else {
+            let _ = channel.send(DirSizeEvent { bytes, entries, done: true, cancelled: true });
+            return;
+        };
         let mut last = Instant::now();
         for entry in jwalk::WalkDir::new(&path).skip_hidden(false) {
+            if reader.cancelled() {
+                // Drop the walk (closing its directory handles) before
+                // releasing the reader, so the eject's drain wait is honest.
+                break;
+            }
             let Ok(e) = entry else { continue };
             entries += 1;
             if e.file_type().is_file() {
@@ -258,12 +272,14 @@ pub fn dir_size(path: String, channel: Channel<DirSizeEvent>) {
             }
             if last.elapsed() > Duration::from_millis(120) {
                 last = Instant::now();
-                if channel.send(DirSizeEvent { bytes, entries, done: false }).is_err() {
+                let partial = DirSizeEvent { bytes, entries, done: false, cancelled: false };
+                if channel.send(partial).is_err() {
                     return;
                 }
             }
         }
-        let _ = channel.send(DirSizeEvent { bytes, entries, done: true });
+        let cancelled = reader.cancelled();
+        let _ = channel.send(DirSizeEvent { bytes, entries, done: true, cancelled });
     });
 }
 
@@ -271,20 +287,35 @@ pub fn dir_size(path: String, channel: Channel<DirSizeEvent>) {
 // Volumes & default folders
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub fn list_volumes(app: AppHandle) -> Vec<volumes::Volume> {
-    on_main(&app, volumes::list_volumes)
+/// Worker thread, not main: reading each volume's capacity is a statfs that
+/// can block for a long time on an unresponsive network mount.
+#[tauri::command(async)]
+pub fn list_volumes() -> Vec<volumes::Volume> {
+    volumes::list_volumes()
 }
 
-#[tauri::command]
-pub fn eject(app: AppHandle, path: String) -> Result<()> {
-    let p = PathBuf::from(&path);
-    let ok = on_main(&app, move || workspace::eject(&p));
-    if ok {
-        Ok(())
-    } else {
-        Err(Error::msg("couldn't eject — the volume may be in use"))
-    }
+/// Upper bound on waiting for Fazi's own readers on the volume to stop.
+const EJECT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Eject the volume mounted at `path`.
+///
+/// Async (Tauri worker pool): an unmount takes seconds, ~10 s when the
+/// volume is busy, and must never block the AppKit main thread. First
+/// releases Fazi's own handles on the volume (cancel folder-size walks and
+/// ⌘P index walks, refuse new readers, wait for in-flight ones to finish),
+/// then hands off to `diskutil`, which names the process when the system
+/// refuses.
+#[tauri::command(async)]
+pub fn eject(state: State<'_, AppState>, path: String) -> Result<()> {
+    let root = PathBuf::from(&path);
+    let Some(_closed) = state.volume_gate.begin_eject(&root) else {
+        return Err(Error::msg("it's already being ejected"));
+    };
+    crate::commands::fuzzy::release_volume(&state, &root);
+    // Best effort: a reader still draining shows up as Fazi dissenting,
+    // which the eject retries once.
+    state.volume_gate.wait_drained(&root, EJECT_DRAIN_TIMEOUT);
+    eject::eject(&root).map_err(|e| Error::msg(e.message(std::process::id())))
 }
 
 #[derive(Serialize)]
@@ -321,7 +352,7 @@ pub fn default_folders() -> DefaultFolders {
 // Full Disk Access
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_full_disk_access() -> bool {
     workspace::probe_full_disk_access()
 }
@@ -432,7 +463,7 @@ pub struct TextPreview {
     pub total_bytes: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_text_head(path: String, max_bytes: u64) -> Result<TextPreview> {
     let max = max_bytes.clamp(1, 4 * 1024 * 1024) as usize;
     let mut file = std::fs::File::open(&path).map_err(Error::Io)?;

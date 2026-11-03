@@ -8,5 +8,6 @@ pub mod op_queue;
 pub mod tags;
 pub mod undo;
 pub mod verify;
+pub mod volume_gate;
 pub mod walker;
 pub mod watcher;

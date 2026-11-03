@@ -22,6 +22,7 @@ import {
 import { basename, dirname, joinPath, pluralize } from "../lib/format";
 import { useSettings } from "./settings";
 import { useApp, type PaneId } from "./app";
+import { ejectedByUser, useVolumes } from "./volumes";
 
 enableMapSet();
 
@@ -128,6 +129,10 @@ interface PanesState {
   applyListEvent(paneId: PaneId, tabId: string, listingId: string, event: ListEvent): void;
   finishHydration(paneId: PaneId, tabId: string, listingId: string): void;
   applyWatchBatch(paneId: PaneId, tabId: string, watchId: string, event: WatchEvent): void;
+  /** A volume mounted at `root` went away: every tab on it walks up to the
+   *  nearest surviving ancestor. FSEvents only reports the unmount to a
+   *  watcher rooted AT the mount point, so tabs in subfolders need this. */
+  volumeGone(root: string): void;
 
   // --- view state --------------------------------------------------------
   setSort(paneId: PaneId, tabId: string, key: SortKey, dir?: SortDir): void;
@@ -464,6 +469,42 @@ function resetForNavigation(tab: Tab, path: string): void {
 // ---------------------------------------------------------------------------
 // store
 // ---------------------------------------------------------------------------
+
+/** listingId → tail of its watcher stat chain (see the "batch" case). */
+const watcherStats = new Map<string, Promise<void>>();
+
+/** `${tabId}\0${path}` of vanished-root recoveries in flight: an unmount at
+ *  the tab's own root reports through BOTH the watcher and the volume list. */
+const recovering = new Set<string>();
+
+/** The tab's folder vanished (watcher rootGone, or its volume unmounted):
+ *  walk up to the nearest SURVIVING ancestor — after an eject the immediate
+ *  parent (and everything up to /Volumes) may be gone too. */
+function recoverVanishedTab(paneId: PaneId, tabId: string, from: string, listingId: string): void {
+  const key = `${tabId}\0${from}`;
+  if (recovering.has(key)) return;
+  recovering.add(key);
+  // A user-initiated eject already reports "Ejected “X”".
+  if (!ejectedByUser(from)) {
+    useApp.getState().pushToast(`“${basename(from)}” is no longer available`);
+  }
+  void (async () => {
+    try {
+      const dest = await nearestExistingAncestor(from, (p) =>
+        ipc
+          .statPath(p, listingId)
+          .then((e) => e != null)
+          .catch(() => false),
+      );
+      const s = usePanes.getState();
+      const t = s.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
+      // Only navigate if the tab still shows the vanished dir.
+      if (t && t.path === from) s.navigate(paneId, tabId, dest);
+    } finally {
+      recovering.delete(key);
+    }
+  })();
+}
 
 export const usePanes = create<PanesState>()(
   immer((set, get) => ({
@@ -877,40 +918,44 @@ export const usePanes = create<PanesState>()(
             // One bulk stat per batch — hot dirs no longer fan out one IPC
             // call per changed name.
             const paths = event.upserted.map((name) => joinPath(tab.path, name));
-            ipc
-              .statPaths(tab.listingId, paths)
+            // Stats run on backend worker threads and may resolve out of
+            // order: request now, but apply in batch order so an older
+            // stat never overwrites a newer one.
+            const request = ipc.statPaths(tab.listingId, paths);
+            request.catch(() => {}); // handled in the chain; avoid an early unhandled rejection
+            const key = tab.listingId;
+            const applied = (watcherStats.get(key) ?? Promise.resolve())
+              .then(() => request)
               .then((entries) => {
                 for (const entry of entries) {
                   if (entry) get().upsertEntryNow(paneId, tabId, entry);
                 }
               })
               .catch(() => {});
+            watcherStats.set(key, applied);
+            void applied.then(() => {
+              if (watcherStats.get(key) === applied) watcherStats.delete(key);
+            });
           }
           break;
         }
         case "rootGone": {
-          // Walk up to the nearest SURVIVING ancestor — after an eject the
-          // immediate parent (and everything up to /Volumes) may be gone too.
-          const from = tab.path;
-          const listingId = tab.listingId;
-          useApp.getState().pushToast(`“${basename(from)}” is no longer available`);
-          void (async () => {
-            const dest = await nearestExistingAncestor(from, (p) =>
-              ipc
-                .statPath(p, listingId)
-                .then((e) => e != null)
-                .catch(() => false),
-            );
-            const s = get();
-            const t = s.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
-            // Only navigate if the tab still shows the vanished dir.
-            if (t && t.path === from) s.navigate(paneId, tabId, dest);
-          })();
+          recoverVanishedTab(paneId, tabId, tab.path, tab.listingId);
           break;
         }
         default: {
           const _exhaustive: never = event;
           void _exhaustive;
+        }
+      }
+    },
+
+    volumeGone: (root) => {
+      for (const pane of get().panes) {
+        for (const tab of pane.tabs) {
+          if (tab.path === root || tab.path.startsWith(`${root}/`)) {
+            recoverVanishedTab(pane.id, tab.id, tab.path, tab.listingId);
+          }
         }
       }
     },
@@ -1106,3 +1151,12 @@ export function selectionLabel(): string {
   const n = selectedEntries().length;
   return pluralize(n, "item");
 }
+
+// Volumes that drop out of the mounted list take their tabs with them.
+useVolumes.subscribe((now, prev) => {
+  if (now.volumes === prev.volumes || !prev.loaded) return;
+  const mounted = new Set(now.volumes.map((v) => v.path));
+  for (const v of prev.volumes) {
+    if (!v.isRoot && !mounted.has(v.path)) usePanes.getState().volumeGone(v.path);
+  }
+});

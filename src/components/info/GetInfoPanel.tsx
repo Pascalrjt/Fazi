@@ -78,7 +78,9 @@ function DirSize({ path }: { path: string }) {
     setError(null);
     safeIpc(() =>
       ipc.dirSize(path, (e) => {
-        if (alive) setProgress({ bytes: e.bytes, entries: e.entries, done: e.done });
+        if (!alive) return;
+        if (e.cancelled) setError("cancelled");
+        else setProgress({ bytes: e.bytes, entries: e.entries, done: e.done });
       }),
     )
       .catch((err) => {

@@ -1,5 +1,5 @@
 //! NSWorkspace integration: open, Open With, reveal, package detection,
-//! eject, Full Disk Access probing. All calls marshaled to the main thread
+//! Full Disk Access probing. All calls marshaled to the main thread
 //! by the callers via `main_thread::on_main`.
 
 // objc2 versions move methods between safe/unsafe; keep defensive `unsafe`
@@ -118,12 +118,6 @@ pub fn are_file_packages(paths: &[PathBuf]) -> Vec<bool> {
         .iter()
         .map(|p| unsafe { ws.isFilePackageAtPath(&NSString::from_str(&p.to_string_lossy())) })
         .collect()
-}
-
-/// MUST run on the main thread.
-pub fn eject(path: &Path) -> bool {
-    let ws = unsafe { NSWorkspace::sharedWorkspace() };
-    unsafe { ws.unmountAndEjectDeviceAtPath(&NSString::from_str(&path.to_string_lossy())) }
 }
 
 /// MUST run on the main thread.

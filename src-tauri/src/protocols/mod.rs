@@ -62,7 +62,14 @@ pub fn handle_thumb<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) -
     let Some(path) = state.tokens.resolve(&token) else {
         return not_found();
     };
-    if let Some(png) = crate::macos::thumbnails::thumbnail_png(&state.thumb_cache_dir, &path, size) {
+    // While its volume is being ejected, never start a Quick Look render
+    // (the thumbnailer would hold the file open and veto the unmount).
+    let thumb = if state.volume_gate.is_blocked(&path) {
+        crate::macos::thumbnails::cached_thumbnail_png(&state.thumb_cache_dir, &path, size)
+    } else {
+        crate::macos::thumbnails::thumbnail_png(&state.thumb_cache_dir, &path, size)
+    };
+    if let Some(png) = thumb {
         return png_response(png);
     }
     // Fallback: the plain icon at the requested size.
@@ -147,6 +154,11 @@ fn preview_response<R: Runtime>(
     let Some(path) = state.previews.get(&token).map(|p| p.clone()) else {
         return not_found();
     };
+    // Media players re-request ranges continuously; each request opens the
+    // file, which would veto an in-flight eject of its volume.
+    if state.volume_gate.is_blocked(&path) {
+        return not_found();
+    }
     let Ok(mut file) = std::fs::File::open(&path) else {
         return not_found();
     };

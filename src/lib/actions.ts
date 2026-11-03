@@ -13,7 +13,9 @@ import { clickSelect } from "./selection";
 import { useSettings } from "../stores/settings";
 import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
 import { useOps } from "../stores/ops";
-import { useVolumes } from "../stores/volumes";
+import { markEjected, useVolumes } from "../stores/volumes";
+import { useDirSizes } from "../stores/dirSizes";
+import { safeIpc } from "./safeIpc";
 import { showMenu, type MenuItem } from "../stores/menu";
 import { iconUrl } from "../types/ipc";
 
@@ -598,12 +600,19 @@ export function revealInFazi(path: string): void {
   usePanes.getState().navigate(at.pane.id, at.tab.id, parent, { selectName: basename(path) });
 }
 
+/** `path` is `root` or inside it. Component-wise: `/Volumes/USB 2` is not
+ *  inside `/Volumes/USB`. */
+export function isWithin(path: string, root: string): boolean {
+  if (root === "/") return path.startsWith("/");
+  return path === root || path.startsWith(`${root}/`);
+}
+
 export function ejectActiveVolume(): void {
   const at = activePaneTab();
   if (!at) return;
   const volumes = useVolumes.getState().volumes;
   const candidates = volumes
-    .filter((v) => !v.isRoot && v.isEjectable && at.tab.path.startsWith(v.path))
+    .filter((v) => !v.isRoot && v.isEjectable && isWithin(at.tab.path, v.path))
     .sort((a, b) => b.path.length - a.path.length);
   const vol = candidates[0];
   if (!vol) {
@@ -613,11 +622,49 @@ export function ejectActiveVolume(): void {
   ejectVolume(vol.path, vol.name);
 }
 
+/** A clean eject takes ~0.3 s; only longer ones get an "Ejecting…" toast. */
+export const EJECT_PROGRESS_DELAY_MS = 600;
+
+/**
+ * Eject the volume mounted at `path`. The backend stops Fazi's own readers
+ * on it, then unmounts off the main thread; a refusal names the app that
+ * holds it. A copy/move touching the volume is reported up front instead.
+ */
 export function ejectVolume(path: string, name: string): void {
-  void ipc
-    .eject(path)
-    .then(() => toast(`Ejected “${name}”`))
-    .catch((err) => toast(`Couldn't eject “${name}”: ${err}`, { danger: true }));
+  const volumes = useVolumes.getState();
+  if (volumes.ejecting.includes(path)) return;
+  const busy = useOps
+    .getState()
+    .cards.some(
+      (c) => c.status === "running" && [...c.sources, c.destDir].some((p) => isWithin(p, path)),
+    );
+  if (busy) {
+    toast(`Couldn't eject “${name}”: wait for the running file operation to finish`, {
+      danger: true,
+    });
+    return;
+  }
+
+  useDirSizes.getState().dropUnder(path);
+  volumes.setEjecting(path, true);
+  let progressToast: number | null = null;
+  const timer = setTimeout(() => {
+    progressToast = useApp.getState().pushToast(`Ejecting “${name}”…`);
+  }, EJECT_PROGRESS_DELAY_MS);
+
+  void safeIpc(() => ipc.eject(path))
+    .then(
+      () => {
+        markEjected(path);
+        toast(`Ejected “${name}”`);
+      },
+      (err) => toast(`Couldn't eject “${name}”: ${err}`, { danger: true }),
+    )
+    .finally(() => {
+      clearTimeout(timer);
+      if (progressToast !== null) useApp.getState().dismissToast(progressToast);
+      useVolumes.getState().setEjecting(path, false);
+    });
 }
 
 // ---------------------------------------------------------------------------

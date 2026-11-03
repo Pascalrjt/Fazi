@@ -48,7 +48,7 @@ pub fn prune(dir: &Path) {
             Some((modified, e.path()))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    files.sort_by_key(|f| std::cmp::Reverse(f.0)); // newest first
     for (_, path) in files.into_iter().skip(MAX_SNAPSHOTS) {
         let _ = std::fs::remove_file(path);
     }

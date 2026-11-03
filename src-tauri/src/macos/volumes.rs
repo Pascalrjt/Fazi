@@ -25,7 +25,8 @@ pub struct Volume {
     pub available_bytes: Option<u64>,
 }
 
-/// MUST run on the main thread (resource-value fetches are cheap but AppKit-adjacent).
+/// Thread-safe (NSFileManager + NSURL resource values are Foundation, not
+/// AppKit). May block on unresponsive mounts — call off the main thread.
 pub fn list_volumes() -> Vec<Volume> {
     let fm = unsafe { NSFileManager::defaultManager() };
 

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use notify::{RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, NoCache};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,7 +21,11 @@ pub enum WatchEvent {
     RootGone,
 }
 
-pub type DirDebouncer = Debouncer<RecommendedWatcher, RecommendedCache>;
+/// `NoCache`: the default file-id cache stats every entry of the watched
+/// directory up front (on the main thread, via `watch_dir`) — ~0.5 s for a
+/// 100k-entry folder on a fresh mount — only to pair rename events by file
+/// id. `map_events` classifies by existence instead, so it needs no ids.
+pub type DirDebouncer = Debouncer<RecommendedWatcher, NoCache>;
 
 /// Start watching `root` (non-recursive). `send` receives debounced batches.
 pub fn watch(
@@ -32,7 +36,7 @@ pub fn watch(
     // and compare against the canonical root or deltas silently vanish.
     let root = std::fs::canonicalize(&root).unwrap_or(root);
     let watched = root.clone();
-    let mut debouncer = new_debouncer(
+    let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
         Duration::from_millis(150),
         None,
         move |result: DebounceEventResult| match result {
@@ -50,6 +54,8 @@ pub fn watch(
                 });
             }
         },
+        NoCache,
+        notify::Config::default(),
     )?;
     debouncer.watch(&root, RecursiveMode::NonRecursive)?;
     Ok(debouncer)
@@ -159,6 +165,41 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    #[ignore = "FSEvents delivery is flaky in sandboxed environments; run with cargo test -- --ignored"]
+    fn renames_arrive_as_remove_plus_upsert_without_a_file_id_cache() {
+        let root = std::env::temp_dir().join(format!("fazi-watch-rn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("before.txt"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(300)); // let the create settle
+
+        let (tx, rx) = mpsc::channel();
+        let _guard = watch(root.clone(), move |e| {
+            let _ = tx.send(e);
+        })
+        .unwrap();
+        std::fs::rename(root.join("before.txt"), root.join("after.txt")).unwrap();
+
+        // The two sides may land in one batch or two.
+        let (mut removed, mut upserted) = (Vec::new(), Vec::new());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !(removed.contains(&"before.txt".to_string())
+            && upserted.contains(&"after.txt".to_string()))
+        {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left).expect("rename not reported") {
+                WatchEvent::Batch { upserted: u, removed: r, .. } => {
+                    upserted.extend(u);
+                    removed.extend(r);
+                }
+                other => panic!("unexpected: {:?}", other),
+            }
+        }
+        assert!(!upserted.contains(&"before.txt".to_string()));
         std::fs::remove_dir_all(&root).ok();
     }
 

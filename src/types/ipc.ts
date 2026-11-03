@@ -377,6 +377,8 @@ export interface DirSizeEvent {
   bytes: number;
   entries: number;
   done: boolean;
+  /** Stopped early (its volume is being ejected): partial, don't cache. */
+  cancelled: boolean;
 }
 
 /** Text preview payload from read_text_head. */

@@ -36,14 +36,11 @@ fn cache_file(cache_dir: &Path, path: &Path, size: u32) -> Option<PathBuf> {
 /// QLThumbnailGenerator dispatches internally; the CGImage→PNG conversion
 /// happens on the completion queue.
 pub fn thumbnail_png(cache_dir: &Path, path: &Path, size: u32) -> Option<Vec<u8>> {
+    if let Some(bytes) = cached_thumbnail_png(cache_dir, path, size) {
+        return Some(bytes);
+    }
     let size = size.clamp(32, 2048);
     let cache_path = cache_file(cache_dir, path, size);
-    if let Some(cp) = &cache_path {
-        if let Ok(bytes) = std::fs::read(cp) {
-            return Some(bytes);
-        }
-    }
-
     let png = generate(path, size)?;
 
     if let Some(cp) = &cache_path {
@@ -51,6 +48,13 @@ pub fn thumbnail_png(cache_dir: &Path, path: &Path, size: u32) -> Option<Vec<u8>
         let _ = std::fs::write(cp, &png);
     }
     Some(png)
+}
+
+/// Disk-cache hit only — never asks Quick Look to open the file (used while
+/// the file's volume is being ejected).
+pub fn cached_thumbnail_png(cache_dir: &Path, path: &Path, size: u32) -> Option<Vec<u8>> {
+    let cache_path = cache_file(cache_dir, path, size.clamp(32, 2048))?;
+    std::fs::read(cache_path).ok()
 }
 
 fn generate(path: &Path, size: u32) -> Option<Vec<u8>> {
