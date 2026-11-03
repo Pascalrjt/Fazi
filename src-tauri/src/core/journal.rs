@@ -45,7 +45,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::walker::{is_staging_name, remove_tree, remove_tree_best_effort};
+use crate::core::walker::{is_staging_name, remove_staging, remove_tree_best_effort};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -240,6 +240,10 @@ impl Journal {
     /// lose the rename itself, so a fail-fast caller's "write succeeded before
     /// mutation" would be a false promise.
     fn write_header(&self, entry: &OpJournalEntry) -> std::io::Result<LiveOp> {
+        #[cfg(test)]
+        if FAIL_HEADER_WRITES.with(|f| f.get()) {
+            return Err(std::io::Error::from_raw_os_error(libc::ENOSPC));
+        }
         let final_path = self.path_for(&entry.op_id);
         let log_path = self.log_path_for(&entry.op_id);
         let log = fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
@@ -301,7 +305,7 @@ impl Journal {
                 let leftover: Vec<String> = entry
                     .staging
                     .iter()
-                    .filter(|s| remove_tree(Path::new(s)).is_err())
+                    .filter(|s| remove_staging(Path::new(s)).is_err())
                     .cloned()
                     .collect();
                 // 2. Scan merge roots for per-entry staging names.
@@ -310,8 +314,12 @@ impl Journal {
                 }
                 self.live.lock().unwrap().remove(&entry.op_id);
                 if !leftover.is_empty() {
+                    // Keep a record no matter what: narrowed to the survivors
+                    // if the rewrite works, else the existing header+log
+                    // (a superset — every listed path is a staging name).
+                    keep = true;
                     let retry = OpJournalEntry { staging: leftover, ..entry.clone() };
-                    keep = self.write(&retry).is_ok();
+                    let _ = self.write(&retry);
                     // Not a live op: just a record for the next launch.
                     self.live.lock().unwrap().remove(&entry.op_id);
                 }
@@ -337,6 +345,12 @@ impl Journal {
         }
         report
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test fault injection: header writes fail with ENOSPC.
+    static FAIL_HEADER_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Records turning `op`'s last-written state into `entry`, or None when the
@@ -450,6 +464,44 @@ fn remove_staging_recursive(root: &Path, op_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_keeps_the_record_when_leftovers_remain_even_if_rewrite_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("recover-enospc");
+        let journal = Journal::new(d.join("journal")).unwrap();
+        let parent = d.join("ro");
+        let stuck = parent.join(staging_name("Big", "op-stuck"));
+        fs::create_dir_all(&stuck).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+        journal
+            .write(&OpJournalEntry {
+                op_id: "op-stuck".into(),
+                kind: "compress".into(),
+                sources: vec![],
+                dest_dir: d.to_string_lossy().into_owned(),
+                staging: vec![stuck.to_string_lossy().into_owned()],
+                merge_roots: Vec::new(),
+                completed: Vec::new(),
+                total: 1,
+                started_at_ms: 0,
+            })
+            .unwrap();
+        journal.live.lock().unwrap().clear(); // as after a restart
+
+        FAIL_HEADER_WRITES.with(|f| f.set(true));
+        assert_eq!(journal.recover().len(), 1);
+        FAIL_HEADER_WRITES.with(|f| f.set(false));
+        assert!(stuck.exists());
+        let kept = load_entry(&journal.path_for("op-stuck")).expect("record survives ENOSPC");
+        assert_eq!(kept.staging, vec![stuck.to_string_lossy().into_owned()]);
+
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(journal.recover().len(), 1);
+        assert!(!stuck.exists());
+        assert!(journal.recover().is_empty());
+        fs::remove_dir_all(&d).ok();
+    }
     use crate::core::walker::staging_name;
 
     fn tmp(name: &str) -> PathBuf {

@@ -855,7 +855,7 @@ fn transfer_toplevel(
     let stage = args
         .dest_dir
         .join(staging_name(&dest.file_name().unwrap_or_default().to_string_lossy(), &args.op_id));
-    walker::remove_tree_best_effort(&stage);
+    walker::remove_staging_best_effort(&stage);
     // Fail-fast: an unrecorded staging path would be invisible to recovery.
     journal_entry.staging.push(stage.to_string_lossy().into_owned());
     if let Err(e) = engine.journal.write(journal_entry) {
@@ -868,7 +868,7 @@ fn transfer_toplevel(
 
     let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
-        walker::remove_tree_best_effort(&stage);
+        walker::remove_staging_best_effort(&stage);
         pop_staging(journal_entry, &stage);
         let _ = engine.journal.write(journal_entry);
         return Ok(false);
@@ -881,7 +881,7 @@ fn transfer_toplevel(
         // stage, so verification fails and the source is preserved.
         let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
-            walker::remove_tree_best_effort(&stage);
+            walker::remove_staging_best_effort(&stage);
             pop_staging(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             return Err(io::Error::new(
@@ -894,7 +894,7 @@ fn transfer_toplevel(
     match copier::rename_excl(&stage, dest) {
         Ok(()) => {}
         Err(e) => {
-            walker::remove_tree_best_effort(&stage);
+            walker::remove_staging_best_effort(&stage);
             pop_staging(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             return Err(e);
@@ -977,7 +977,7 @@ fn replace_item(
     let stage = args
         .dest_dir
         .join(staging_name(&dest.file_name().unwrap_or_default().to_string_lossy(), &args.op_id));
-    walker::remove_tree_best_effort(&stage);
+    walker::remove_staging_best_effort(&stage);
     // Fail-fast: an unrecorded staging path would be invisible to recovery.
     journal_entry.staging.push(stage.to_string_lossy().into_owned());
     if let Err(e) = engine.journal.write(journal_entry) {
@@ -990,7 +990,7 @@ fn replace_item(
 
     let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
-        walker::remove_tree_best_effort(&stage);
+        walker::remove_staging_best_effort(&stage);
         pop_staging(journal_entry, &stage);
         let _ = engine.journal.write(journal_entry);
         return Ok(false);
@@ -998,7 +998,7 @@ fn replace_item(
     if args.kind == OpKind::Move {
         let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
-            walker::remove_tree_best_effort(&stage);
+            walker::remove_staging_best_effort(&stage);
             pop_staging(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             return Err(io::Error::new(
@@ -1059,7 +1059,7 @@ fn replace_item(
         Err(e) => {
             // Only ever a throwaway copy now — the source was never renamed
             // into staging.
-            walker::remove_tree_best_effort(&stage);
+            walker::remove_staging_best_effort(&stage);
             pop_staging(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             Err(e)
@@ -1154,7 +1154,7 @@ fn run_duplicate_thread(
         let dup = walker::duplicate_name_in(names, &name.to_string_lossy());
         let dest = parent.join(&dup);
         let stage = parent.join(staging_name(&dup, &op_id));
-        walker::remove_tree_best_effort(&stage);
+        walker::remove_staging_best_effort(&stage);
         // Fail-fast: an unrecorded staging path would be invisible to recovery.
         journal_entry.staging.push(stage.to_string_lossy().into_owned());
         if let Err(e) = engine.journal.write(&journal_entry) {
@@ -1181,19 +1181,19 @@ fn run_duplicate_thread(
                     produced.push(dest);
                 }
                 Err(e) => {
-                    walker::remove_tree_best_effort(&stage);
+                    walker::remove_staging_best_effort(&stage);
                     pop_staging(&mut journal_entry, &stage);
                     sink.item_error(source, &e);
                 }
             },
             Ok(Outcome::Cancelled) => {
-                walker::remove_tree_best_effort(&stage);
+                walker::remove_staging_best_effort(&stage);
                 pop_staging(&mut journal_entry, &stage);
                 cancelled = true;
                 break;
             }
             Err(e) => {
-                walker::remove_tree_best_effort(&stage);
+                walker::remove_staging_best_effort(&stage);
                 pop_staging(&mut journal_entry, &stage);
                 sink.item_error(source, &e);
             }

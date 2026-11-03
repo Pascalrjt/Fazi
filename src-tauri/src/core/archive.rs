@@ -402,28 +402,35 @@ fn stage_with_fallback(
     stage(stage_contents, true)
 }
 
-/// Finish an op's journal record: retry removing staging trees that refused
-/// to go earlier; drop the record only once they're all gone, else leave
-/// just those paths journaled for startup recovery.
-fn retire_journal(journal: &crate::core::journal::Journal, op_id: &str, leftovers: &[PathBuf]) {
-    let remaining: Vec<String> = leftovers
+/// Finish an op's journal record from what's actually on disk: every staging
+/// path still recorded (the persisted record — what recovery would see) is
+/// removed again; the record is dropped only once all are confirmed gone,
+/// else it is rewritten to list exactly the survivors so startup recovery
+/// retries them. If that rewrite fails the previous record (a superset)
+/// stays.
+fn retire_journal(journal: &crate::core::journal::Journal, op_id: &str) {
+    let Some(mut entry) = journal.snapshot(op_id) else {
+        journal.remove(op_id);
+        return;
+    };
+    let remaining: Vec<String> = entry
+        .staging
         .iter()
-        .filter(|p| walker::remove_tree(p).is_err())
-        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| walker::remove_staging(Path::new(p)).is_err())
+        .cloned()
         .collect();
     if remaining.is_empty() {
         journal.remove(op_id);
         return;
     }
-    match journal.snapshot(op_id) {
-        Some(mut entry) => {
-            entry.staging = remaining;
-            entry.merge_roots.clear();
-            if journal.write(&entry).is_err() {
-                // Keep the previous record (it lists the leftovers too).
-            }
-        }
-        None => journal.remove(op_id),
+    entry.staging = remaining;
+    let _ = journal.write(&entry);
+}
+
+/// Remove a staging artifact and un-journal it only if it's really gone.
+fn discard_staged(journal_entry: &mut OpJournalEntry, stage: &Path) {
+    if walker::remove_staging(stage).is_ok() {
+        pop_staging(journal_entry, stage);
     }
 }
 
@@ -694,8 +701,6 @@ fn run_compress_thread(
     // back to journaled destination-side staging.
     let mut cancelled = false;
     let mut staging_failed = false;
-    // Failed source-side trees that couldn't be removed: stay journaled.
-    let mut leftovers: Vec<PathBuf> = Vec::new();
     if multi {
         let staged = stage_with_fallback(
             &mut stage_contents,
@@ -707,43 +712,38 @@ fn run_compress_thread(
                 stage_sources(&sources, dir, &mut sink, &handle)
             },
             |from, to, from_removed| {
+                // A tree that refused removal stays journaled for recovery.
                 if from_removed {
                     pop_staging(&mut journal_entry, from);
-                } else {
-                    leftovers.push(from.to_path_buf());
                 }
                 journal_entry.staging.push(to.to_string_lossy().into_owned());
                 journal_write_fail_fast(&engine, &journal_entry, &op_id, &emitter)
             },
-            |dir| walker::remove_tree(dir).is_ok(),
+            |dir| walker::remove_staging(dir).is_ok(),
         );
         match staged {
             Staged::Done => {}
             Staged::Cancelled => cancelled = true,
             Staged::Failed => staging_failed = true,
             Staged::JournalFailed => {
-                walker::remove_tree_best_effort(&stage_zip);
-                engine.journal.remove(&op_id);
+                retire_journal(&engine.journal, &op_id);
                 return;
             }
         }
     }
     let stage_contents = stage_contents;
-    let leftovers = leftovers;
 
     let cleanup_staging = |journal_entry: &mut OpJournalEntry| {
-        walker::remove_tree_best_effort(&stage_zip);
+        discard_staged(journal_entry, &stage_zip);
         if multi {
-            walker::remove_tree_best_effort(&stage_contents);
+            discard_staged(journal_entry, &stage_contents);
         }
-        pop_staging(journal_entry, &stage_zip);
-        pop_staging(journal_entry, &stage_contents);
         let _ = engine.journal.write(journal_entry);
     };
 
     if cancelled || staging_failed {
         cleanup_staging(&mut journal_entry);
-        retire_journal(&engine.journal, &op_id, &leftovers);
+        retire_journal(&engine.journal, &op_id);
         engine.ops.remove(&op_id);
         emitter.emit(OpEvent::Done {
             status: if cancelled { "cancelled" } else { "failed" },
@@ -826,7 +826,7 @@ fn run_compress_thread(
                 pairs: produced.iter().map(|p| (p.clone(), None)).collect(),
             });
         }
-        retire_journal(&engine.journal, &op_id, &leftovers);
+        retire_journal(&engine.journal, &op_id);
         engine.ops.remove(&op_id);
         let touched: Vec<PathBuf> = sources.iter().chain(produced.iter()).cloned().collect();
         (engine.invalidate_fuzzy)(&touched);
@@ -879,8 +879,7 @@ fn run_compress_thread(
         Ok(_) => {
             // Promote the staged zip; contents dir is now disposable.
             if multi {
-                walker::remove_tree_best_effort(&stage_contents);
-                pop_staging(&mut journal_entry, &stage_contents);
+                discard_staged(&mut journal_entry, &stage_contents);
                 let _ = engine.journal.write(&journal_entry);
             }
             match promote_unique(&stage_zip, &dest_dir, &zip_name, &keep_both_name) {
@@ -1610,7 +1609,7 @@ mod tests {
                 stage_sources(&sources, dir, &mut sink, &handle)
             },
             |_, _, _| true,
-            |d| walker::remove_tree(d).is_ok(),
+            |d| walker::remove_staging(d).is_ok(),
         );
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(r, Staged::Done);
@@ -1649,7 +1648,6 @@ mod tests {
             started_at_ms: 0,
         };
         journal.write(&entry).unwrap();
-        let mut leftovers = Vec::new();
         let mut at = stage.clone();
         let r = stage_with_fallback(
             &mut at,
@@ -1657,15 +1655,16 @@ mod tests {
             |dir, _| if dir == stage { Staged::Failed } else { Staged::Done },
             |from, to, removed| {
                 assert!(!removed, "a read-only parent blocks removal");
-                leftovers.push(from.to_path_buf());
+                assert_eq!(from, stage.as_path());
                 entry.staging.push(to.to_string_lossy().into_owned());
                 journal.write(&entry).is_ok()
             },
-            |dir| walker::remove_tree(dir).is_ok(),
+            |dir| walker::remove_staging(dir).is_ok(),
         );
         assert_eq!(r, Staged::Done);
-        // Op finishes: the leftover is still there, so its record survives.
-        retire_journal(&journal, "op-left", &leftovers);
+        // Op finishes (dest-side stage already cleaned): the leftover is
+        // still there, so its record survives listing only it.
+        retire_journal(&journal, "op-left");
         let kept = journal.snapshot("op-left").expect("leftover keeps the record");
         assert_eq!(kept.staging, vec![stage.to_string_lossy().into_owned()]);
 
@@ -1681,6 +1680,62 @@ mod tests {
         assert_eq!(report.len(), 1);
         assert!(!stage.exists());
         assert!(journal.recover().is_empty());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn every_recorded_staging_path_is_retired_only_once_confirmed_gone() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("retire-all");
+        let journal = crate::core::journal::Journal::new(d.join("journal")).unwrap();
+        let dest = d.join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        // The staged zip can go; the contents dir sits under a folder that
+        // turned read-only, so it can't.
+        let stage_zip = dest.join(staging_name("Archive.zip", "op-r"));
+        fs::write(&stage_zip, b"PK").unwrap();
+        let ro = d.join("ro");
+        let stage_contents = ro.join(staging_name("Archive.zip.contents", "op-r"));
+        fs::create_dir_all(stage_contents.join("a")).unwrap();
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o555)).unwrap();
+        let mut entry = OpJournalEntry {
+            op_id: "op-r".into(),
+            kind: "compress".into(),
+            sources: vec![],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            staging: vec![
+                stage_zip.to_string_lossy().into_owned(),
+                stage_contents.to_string_lossy().into_owned(),
+            ],
+            merge_roots: Vec::new(),
+            completed: Vec::new(),
+            total: 1,
+            started_at_ms: 0,
+        };
+        journal.write(&entry).unwrap();
+
+        // Cancel-path cleanup: only the confirmed removal is un-journaled.
+        discard_staged(&mut entry, &stage_zip);
+        discard_staged(&mut entry, &stage_contents);
+        assert_eq!(entry.staging, vec![stage_contents.to_string_lossy().into_owned()]);
+        journal.write(&entry).unwrap();
+        retire_journal(&journal, "op-r");
+        let kept = journal.snapshot("op-r").expect("stuck staging stays journaled");
+        assert_eq!(kept.staging, vec![stage_contents.to_string_lossy().into_owned()]);
+
+        // Even a record that still lists everything is narrowed by results.
+        entry.staging.push(stage_zip.to_string_lossy().into_owned());
+        journal.write(&entry).unwrap();
+        retire_journal(&journal, "op-r");
+        assert_eq!(
+            journal.snapshot("op-r").unwrap().staging,
+            vec![stage_contents.to_string_lossy().into_owned()]
+        );
+
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+        retire_journal(&journal, "op-r");
+        assert!(journal.snapshot("op-r").is_none());
+        assert!(!stage_contents.exists());
         fs::remove_dir_all(&d).ok();
     }
 }

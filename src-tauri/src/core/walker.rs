@@ -286,7 +286,11 @@ pub fn new_folder_name(dir: &Path, base: &str) -> String {
 }
 
 pub fn remove_tree_best_effort(path: &Path) {
-    let _ = remove_tree(path);
+    let _ = match path.symlink_metadata() {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(_) => Ok(()),
+    };
 }
 
 fn remove_plain(path: &Path) -> io::Result<()> {
@@ -298,14 +302,27 @@ fn remove_plain(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Remove a file or tree we created (a staging copy), reporting whether it
-/// is gone. Copies preserve permissions and BSD flags, so a staged read-only
-/// folder (0555) or locked (uchg) item would block a plain removal: on
-/// failure, clear flags and make every directory owner-writable, then retry.
-/// Never follows symlinks.
-pub fn remove_tree(path: &Path) -> io::Result<()> {
-    if remove_plain(path).is_ok() {
-        return Ok(());
+/// Marker every Fazi staging artifact's name carries (see `staging_name`).
+const STAGING_MARKER: &str = ".fazi-partial-";
+
+/// True for paths named like one of OUR staging artifacts.
+pub fn is_staging_artifact(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n.to_string_lossy().contains(STAGING_MARKER))
+}
+
+/// Remove one of OUR staging artifacts, reporting whether it is gone.
+/// Copies preserve permissions and BSD flags, so a staged read-only folder
+/// (0555) or locked (uchg) copy blocks a plain removal: only for staging-
+/// named paths, clear flags and make directories owner-writable, then retry.
+///
+/// NEVER meant for user data (move sources, merge/undo originals): those go
+/// through [`remove_tree_best_effort`], which leaves locked items alone. As a
+/// guard, a path not named like staging gets only the plain removal — its
+/// flags and permissions are never touched.
+pub fn remove_staging(path: &Path) -> io::Result<()> {
+    let plain = remove_plain(path);
+    if plain.is_ok() || !is_staging_artifact(path) {
+        return plain;
     }
     make_removable(path);
     remove_plain(path)?;
@@ -313,6 +330,11 @@ pub fn remove_tree(path: &Path) -> io::Result<()> {
         return Err(io::Error::other("staging tree still present"));
     }
     Ok(())
+}
+
+/// [`remove_staging`] ignoring the result.
+pub fn remove_staging_best_effort(path: &Path) {
+    let _ = remove_staging(path);
 }
 
 fn make_removable(path: &Path) {
@@ -876,7 +898,7 @@ pub fn merge_into(
                         // only ever holds a throwaway copy — safe for recovery
                         // to delete.
                         let stage = dst.join(staging_name(&name, ctx.op_id));
-                        remove_tree_best_effort(&stage);
+                        remove_staging_best_effort(&stage);
                         let staged = if ctx.moving {
                             stage_cross_volume(&spath, &stage, ctx, sink)
                         } else {
@@ -884,7 +906,7 @@ pub fn merge_into(
                         };
                         match staged {
                             Ok(Outcome::Cancelled) => {
-                                remove_tree_best_effort(&stage);
+                                remove_staging_best_effort(&stage);
                                 return Ok(Outcome::Cancelled);
                             }
                             Ok(Outcome::Done) => match replace_with_staged(&stage, &dpath, ctx.trasher) {
@@ -929,12 +951,12 @@ pub fn merge_into(
                                 Err(e) => {
                                     // Only ever a throwaway copy now — the
                                     // source was never renamed into staging.
-                                    remove_tree_best_effort(&stage);
+                                    remove_staging_best_effort(&stage);
                                     sink.item_error(&spath, &e);
                                 }
                             },
                             Err(e) => {
-                                remove_tree_best_effort(&stage);
+                                remove_staging_best_effort(&stage);
                                 sink.item_error(&spath, &e);
                             }
                         }
@@ -979,11 +1001,11 @@ fn transfer_entry(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let stage = dir.join(staging_name(&name, ctx.op_id));
-    remove_tree_best_effort(&stage);
+    remove_staging_best_effort(&stage);
 
     match copy_fresh(src, &stage, sink)? {
         Outcome::Cancelled => {
-            remove_tree_best_effort(&stage);
+            remove_staging_best_effort(&stage);
             return Ok(Outcome::Cancelled);
         }
         Outcome::Done => {}
@@ -993,7 +1015,7 @@ fn transfer_entry(
         // Verify before the source is deleted — a crash mid-move never loses data.
         let report = verify_tree(src, &stage, &HashSet::new(), ctx.tol_ms)?;
         if !report.mismatches.is_empty() {
-            remove_tree_best_effort(&stage);
+            remove_staging_best_effort(&stage);
             let e = io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("verification failed: {}", report.mismatches.join("; ")),
@@ -1006,7 +1028,7 @@ fn transfer_entry(
     match copier::rename_excl(&stage, dst) {
         Ok(()) => {}
         Err(e) => {
-            remove_tree_best_effort(&stage);
+            remove_staging_best_effort(&stage);
             sink.item_error(src, &e);
             return Ok(Outcome::Done);
         }
@@ -1044,38 +1066,74 @@ fn stage_cross_volume(
 mod tests {
     use super::*;
 
-    #[test]
-    fn remove_tree_handles_read_only_and_locked_staging_copies() {
+    fn lock(p: &Path) {
         use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_IMMUTABLE as _) }, 0);
+    }
+
+    fn unlock(p: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+        unsafe { libc::chflags(c.as_ptr(), 0) };
+    }
+
+    fn is_locked(p: &Path) -> bool {
+        use std::os::macos::fs::MetadataExt;
+        p.symlink_metadata().unwrap().st_flags() & libc::UF_IMMUTABLE != 0
+    }
+
+    #[test]
+    fn staging_removal_handles_read_only_and_locked_copies() {
         use std::os::unix::fs::PermissionsExt;
         let d = std::env::temp_dir().join(format!("fazi-rmtree-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let stage = d.join("stage");
+        let stage = d.join(staging_name("Folder", "op-1"));
         std::fs::create_dir_all(stage.join("ro/inner")).unwrap();
         std::fs::write(stage.join("ro/inner/a.txt"), b"a").unwrap();
         std::fs::write(stage.join("ro/locked.txt"), b"l").unwrap();
-        let c = std::ffi::CString::new(stage.join("ro/locked.txt").as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_IMMUTABLE as _) }, 0);
+        lock(&stage.join("ro/locked.txt"));
         for p in [stage.join("ro/inner"), stage.join("ro")] {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o555)).unwrap();
         }
         assert!(std::fs::remove_dir_all(&stage).is_err(), "plain removal is blocked");
-        remove_tree(&stage).unwrap();
+        remove_staging(&stage).unwrap();
         assert!(!stage.exists());
-        // Absent paths are already removed.
-        remove_tree(&stage).unwrap();
+        remove_staging(&stage).unwrap(); // absent = removed
         std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
-    fn remove_tree_reports_a_tree_it_cannot_remove() {
+    fn user_data_removal_never_unlocks_and_staging_removal_refuses_user_paths() {
+        let d = std::env::temp_dir().join(format!("fazi-rmtree-user-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        // A cross-volume move's source: a locked file the user owns.
+        let src = d.join("Contract.pdf");
+        std::fs::write(&src, b"signed").unwrap();
+        lock(&src);
+        remove_tree_best_effort(&src);
+        assert!(src.exists(), "a locked original survives source deletion (as on main)");
+        assert!(is_locked(&src), "and keeps its flags");
+        // The repairing remover never repairs anything not named like staging.
+        assert!(!is_staging_artifact(&src));
+        assert!(remove_staging(&src).is_err());
+        remove_staging_best_effort(&src);
+        assert!(src.exists() && is_locked(&src));
+        unlock(&src);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn staging_removal_reports_a_tree_it_cannot_remove() {
         use std::os::unix::fs::PermissionsExt;
         let d = std::env::temp_dir().join(format!("fazi-rmtree-fail-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let parent = d.join("parent");
-        std::fs::create_dir_all(parent.join("stage")).unwrap();
+        let stage = parent.join(staging_name("x", "op-2"));
+        std::fs::create_dir_all(&stage).unwrap();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
-        assert!(remove_tree(&parent.join("stage")).is_err());
+        assert!(remove_staging(&stage).is_err());
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::remove_dir_all(&d).ok();
     }
