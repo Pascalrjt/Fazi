@@ -9,20 +9,19 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "camelCase")]
 pub enum SearchEvent {
+    /// A batch of hits (flushed every ~50 ms or 200 hits — never one
+    /// channel message per result).
     #[serde(rename_all = "camelCase")]
-    Hit {
-        path: String,
-        name: String,
-        is_dir: bool,
-        icon: String,
-    },
+    Hits { hits: Vec<SearchHit> },
     #[serde(rename_all = "camelCase")]
     Done {
         total: u64,
@@ -35,6 +34,21 @@ pub enum SearchEvent {
     #[serde(rename_all = "camelCase")]
     Error { message: String },
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub icon: String,
+}
+
+/// Batch flush policy: the first batch goes out one frame after its first
+/// hit (time-to-first-result), later ones every 50 ms, or at 200 hits.
+const FIRST_FLUSH: Duration = Duration::from_millis(16);
+const FLUSH_EVERY: Duration = Duration::from_millis(50);
+const FLUSH_HITS: usize = 200;
 
 /// One shared ceiling for every search mode (mdfind AND the fuzzy fallback).
 pub const MAX_RESULTS_CEILING: u64 = 10_000;
@@ -213,35 +227,82 @@ pub fn spawn_search(
     let handle_thread = handle.clone();
 
     std::thread::spawn(move || {
-        // Probe indexing while results stream (cheap; reported in Done).
-        let indexed = match &scope {
-            Some(s) => volume_indexed(s),
-            None => true, // whole Mac: no single volume to probe
-        };
-        let reader = BufReader::new(stdout);
-        let (total, capped) = stream_hits(reader, cap, |path| {
-            let p = PathBuf::from(path);
-            let name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_owned());
-            let is_dir = p.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
-            send(SearchEvent::Hit {
-                icon: icon_token(&p),
-                path: path.to_owned(),
-                name,
-                is_dir,
-            });
+        // Probe indexing CONCURRENTLY (an `mdutil` subprocess) — it used to
+        // run before the first result was even read. Reported in Done.
+        let probe = scope.map(|s| std::thread::spawn(move || volume_indexed(&s)));
+
+        // Reader thread: blocking line reads + per-hit lstat/token. The
+        // batcher below owns the channel so it can flush on a timer while
+        // the reader is blocked waiting on mdfind.
+        let (tx, rx) = mpsc::channel::<SearchHit>();
+        let reader = std::thread::spawn(move || {
+            stream_hits(BufReader::new(stdout), cap, |path| {
+                let p = PathBuf::from(path);
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_owned());
+                let is_dir = p.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
+                let _ = tx.send(SearchHit {
+                    icon: icon_token(&p),
+                    path: path.to_owned(),
+                    name,
+                    is_dir,
+                });
+            })
         });
+        batch_hits(&rx, &send);
+        let (total, capped) = reader.join().unwrap_or((0, false));
         // Reap (or kill, if we bailed early on the cap).
         if let Some(mut c) = handle_thread.lock().unwrap().take() {
             let _ = c.kill();
             let _ = c.wait();
         }
+        let indexed = probe.map(|h| h.join().unwrap_or(true)).unwrap_or(true);
         send(SearchEvent::Done { total, capped, indexed });
     });
 
     Ok(handle)
+}
+
+/// Drain `rx` into `Hits` batches until the sender hangs up: a batch is
+/// sent when it reaches `FLUSH_HITS`, or once its first hit is `FIRST_FLUSH`
+/// (first batch) / `FLUSH_EVERY` (later batches) old. Returns batches sent.
+fn batch_hits(rx: &mpsc::Receiver<SearchHit>, send: &impl Fn(SearchEvent)) -> usize {
+    let mut batch: Vec<SearchHit> = Vec::new();
+    let mut opened: Option<Instant> = None;
+    let mut sent = 0usize;
+    let flush = |batch: &mut Vec<SearchHit>, opened: &mut Option<Instant>, sent: &mut usize| {
+        *opened = None;
+        if !batch.is_empty() {
+            send(SearchEvent::Hits { hits: std::mem::take(batch) });
+            *sent += 1;
+        }
+    };
+    loop {
+        let wait = match opened {
+            Some(t) => {
+                let window = if sent == 0 { FIRST_FLUSH } else { FLUSH_EVERY };
+                window.saturating_sub(t.elapsed())
+            }
+            None => Duration::from_secs(3600),
+        };
+        match rx.recv_timeout(wait) {
+            Ok(hit) => {
+                opened.get_or_insert_with(Instant::now);
+                batch.push(hit);
+                if batch.len() >= FLUSH_HITS {
+                    flush(&mut batch, &mut opened, &mut sent);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => flush(&mut batch, &mut opened, &mut sent),
+            Err(RecvTimeoutError::Disconnected) => {
+                flush(&mut batch, &mut opened, &mut sent);
+                break;
+            }
+        }
+    }
+    sent
 }
 
 /// Emit up to `cap` non-empty lines through `on_hit` and report `(emitted,
@@ -313,6 +374,55 @@ mod tests {
         assert_eq!(hits, vec!["/a", "/b", "/c"]);
         assert_eq!(total, 3);
         assert!(!capped);
+    }
+
+    fn hit(i: usize) -> SearchHit {
+        SearchHit { path: format!("/p/{i}"), name: format!("{i}"), is_dir: false, icon: String::new() }
+    }
+
+    #[test]
+    fn hits_batch_by_count_and_flush_on_close() {
+        let (tx, rx) = mpsc::channel();
+        for i in 0..450 {
+            tx.send(hit(i)).unwrap();
+        }
+        drop(tx);
+        let events = Mutex::new(Vec::new());
+        let sent = batch_hits(&rx, &|e| events.lock().unwrap().push(e));
+        let sizes: Vec<usize> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| match e {
+                SearchEvent::Hits { hits } => hits.len(),
+                _ => panic!("only hit batches"),
+            })
+            .collect();
+        assert_eq!(sizes, vec![200, 200, 50], "count flushes + final flush");
+        assert_eq!(sent, 3);
+    }
+
+    #[test]
+    fn a_slow_stream_still_flushes_on_the_timer() {
+        let (tx, rx) = mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            tx.send(hit(0)).unwrap();
+            // Longer than FIRST_FLUSH: the first hit must not wait for more.
+            std::thread::sleep(Duration::from_millis(120));
+            tx.send(hit(1)).unwrap();
+        });
+        let t0 = Instant::now();
+        let first_at = Mutex::new(None);
+        let count = Mutex::new(0usize);
+        batch_hits(&rx, &|e| {
+            if let SearchEvent::Hits { hits } = e {
+                first_at.lock().unwrap().get_or_insert(t0.elapsed());
+                *count.lock().unwrap() += hits.len();
+            }
+        });
+        producer.join().unwrap();
+        assert_eq!(*count.lock().unwrap(), 2);
+        assert!(first_at.lock().unwrap().unwrap() < Duration::from_millis(100));
     }
 
     #[test]

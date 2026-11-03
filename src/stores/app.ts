@@ -435,9 +435,11 @@ export const useApp = create<AppState>()(
       const onEvent = (e: SearchEvent) => {
         if (useApp.getState().globalSearch.searchId !== searchId) return;
         switch (e.event) {
-          case "hit": {
+          case "hits": {
             const buf = hitBuffers.get(searchId) ?? [];
-            buf.push({ path: e.path, name: e.name, isDir: e.isDir, icon: e.icon });
+            for (const h of e.hits) {
+              buf.push({ path: h.path, name: h.name, isDir: h.isDir, icon: h.icon });
+            }
             hitBuffers.set(searchId, buf);
             if (buf.length >= FLUSH_COUNT) {
               flush();

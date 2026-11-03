@@ -247,7 +247,11 @@ export interface SearchArgs {
 }
 
 export type SearchEvent =
-  | { event: "hit"; path: string; name: string; isDir: boolean; icon: string }
+  /** A batch of hits (the backend flushes every ~50 ms or 200 hits). */
+  | {
+      event: "hits";
+      hits: Array<{ path: string; name: string; isDir: boolean; icon: string }>;
+    }
   | {
       event: "done";
       total: number;
