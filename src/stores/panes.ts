@@ -470,6 +470,9 @@ function resetForNavigation(tab: Tab, path: string): void {
 // store
 // ---------------------------------------------------------------------------
 
+/** listingId → tail of its watcher stat chain (see the "batch" case). */
+const watcherStats = new Map<string, Promise<void>>();
+
 /** `${tabId}\0${path}` of vanished-root recoveries in flight: an unmount at
  *  the tab's own root reports through BOTH the watcher and the volume list. */
 const recovering = new Set<string>();
@@ -915,14 +918,24 @@ export const usePanes = create<PanesState>()(
             // One bulk stat per batch — hot dirs no longer fan out one IPC
             // call per changed name.
             const paths = event.upserted.map((name) => joinPath(tab.path, name));
-            ipc
-              .statPaths(tab.listingId, paths)
+            // Stats run on backend worker threads and may resolve out of
+            // order: request now, but apply in batch order so an older
+            // stat never overwrites a newer one.
+            const request = ipc.statPaths(tab.listingId, paths);
+            request.catch(() => {}); // handled in the chain; avoid an early unhandled rejection
+            const key = tab.listingId;
+            const applied = (watcherStats.get(key) ?? Promise.resolve())
+              .then(() => request)
               .then((entries) => {
                 for (const entry of entries) {
                   if (entry) get().upsertEntryNow(paneId, tabId, entry);
                 }
               })
               .catch(() => {});
+            watcherStats.set(key, applied);
+            void applied.then(() => {
+              if (watcherStats.get(key) === applied) watcherStats.delete(key);
+            });
           }
           break;
         }

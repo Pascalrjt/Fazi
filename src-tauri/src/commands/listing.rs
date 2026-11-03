@@ -170,7 +170,7 @@ pub fn cancel_listing(state: State<'_, AppState>, listing_id: String) {
 
 /// Fully-hydrated entry for one path (watcher upserts, get-info).
 /// Icon token is registered under `listing_id` so it lives with the listing.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stat_path(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -212,7 +212,7 @@ pub fn hydrate_item(item: &HydrateItem) -> Option<(Entry, bool)> {
 /// Viewport-priority hydration patch API (big listings, where pass 2 never
 /// ran). Responses are guarded by listingId on the frontend — the id is
 /// threaded through for symmetry with the channel events.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hydrate_paths(
     app: AppHandle,
     listing_id: String,
@@ -253,7 +253,7 @@ pub fn hydrate_paths(
 /// (watcher upsert batches, search-fallback hydration). `build_entry` mints
 /// icon tokens, so the owner scope is an explicit argument: the listingId for
 /// watcher upserts, the searchId for search hits.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stat_paths(
     app: AppHandle,
     state: State<'_, AppState>,

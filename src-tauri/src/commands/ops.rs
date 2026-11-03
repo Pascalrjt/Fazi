@@ -139,7 +139,7 @@ pub fn respond_conflict(
     state.engine.respond_conflict(&op_id, conflict_id, resolution, apply_to_all);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trash_paths(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
     let mut pairs = Vec::new();
     let mut errors = Vec::new();
@@ -208,7 +208,7 @@ fn trash_volume_name(dir: &Path) -> String {
 /// Item counts across every user trash dir — the confirm dialog's source of
 /// truth ("N items (M on external volumes)"). The sidebar row only browses
 /// `~/.Trash`; the dialog copy covers the rest.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trash_stats() -> TrashStats {
     let home_trash = std::env::var("HOME")
         .map(|h| PathBuf::from(h).join(".Trash"))
@@ -268,7 +268,7 @@ pub fn empty_trash(state: State<'_, AppState>, channel: Channel<EmptyTrashEvent>
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_permanent(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
     let mut errors = Vec::new();
     let mut deleted: Vec<PathBuf> = Vec::new();
@@ -313,7 +313,7 @@ pub struct BatchRenameItem {
 /// All-or-nothing two-phase batch rename. Every `from` must share ONE parent
 /// directory — enforced here at the boundary, not just by UI construction.
 /// Returns the new absolute paths (same order); records a single undo entry.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn batch_rename(
     state: State<'_, AppState>,
     renames: Vec<BatchRenameItem>,
@@ -373,7 +373,7 @@ pub fn batch_rename(
 /// text; returns None when the pasteboard holds neither. Undo trashes the
 /// created file and records the landed path, so redo restores it from the
 /// Trash (the ProducedItems round-trip).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pb_paste_new_file(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -412,7 +412,7 @@ pub fn pb_paste_new_file(
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_path(state: State<'_, AppState>, path: String, new_name: String) -> Result<String> {
     validate_name(&new_name)?;
     let from = PathBuf::from(&path);
@@ -441,7 +441,7 @@ pub fn rename_path(state: State<'_, AppState>, path: String, new_name: String) -
     Ok(to.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn new_folder(state: State<'_, AppState>, parent: String, name: String) -> Result<String> {
     let parent = PathBuf::from(&parent);
     let base = if name.is_empty() { "untitled folder".to_string() } else { name };
@@ -472,7 +472,7 @@ pub struct UndoDescription {
     pub kind: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
     let (outcome, touched) = {
@@ -495,7 +495,7 @@ pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn redo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
     let (outcome, touched) = {

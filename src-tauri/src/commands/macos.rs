@@ -156,12 +156,12 @@ pub fn quicklook_panel(paths: Vec<String>) -> Result<()> {
 // Tags & Get Info
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_tags(path: String) -> Vec<FinderTag> {
     read_tags(Path::new(&path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_tags(path: String, tags: Vec<FinderTag>) -> Result<()> {
     write_tags(Path::new(&path), &tags).map_err(Error::Io)
 }
@@ -198,7 +198,7 @@ fn group_name(gid: u32) -> String {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_info(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -287,9 +287,11 @@ pub fn dir_size(state: State<'_, AppState>, path: String, channel: Channel<DirSi
 // Volumes & default folders
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub fn list_volumes(app: AppHandle) -> Vec<volumes::Volume> {
-    on_main(&app, volumes::list_volumes)
+/// Worker thread, not main: reading each volume's capacity is a statfs that
+/// can block for a long time on an unresponsive network mount.
+#[tauri::command(async)]
+pub fn list_volumes() -> Vec<volumes::Volume> {
+    volumes::list_volumes()
 }
 
 /// Upper bound on waiting for Fazi's own readers on the volume to stop.
@@ -350,7 +352,7 @@ pub fn default_folders() -> DefaultFolders {
 // Full Disk Access
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_full_disk_access() -> bool {
     workspace::probe_full_disk_access()
 }
@@ -461,7 +463,7 @@ pub struct TextPreview {
     pub total_bytes: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_text_head(path: String, max_bytes: u64) -> Result<TextPreview> {
     let max = max_bytes.clamp(1, 4 * 1024 * 1024) as usize;
     let mut file = std::fs::File::open(&path).map_err(Error::Io)?;
