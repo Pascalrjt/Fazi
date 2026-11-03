@@ -402,38 +402,6 @@ fn stage_with_fallback(
     stage(stage_contents, true)
 }
 
-/// Finish an op's journal record from what's actually on disk: every staging
-/// path still recorded (the persisted record — what recovery would see) is
-/// removed again; the record is dropped only once all are confirmed gone,
-/// else it is rewritten to list exactly the survivors so startup recovery
-/// retries them. If that rewrite fails the previous record (a superset)
-/// stays.
-fn retire_journal(journal: &crate::core::journal::Journal, op_id: &str) {
-    let Some(mut entry) = journal.snapshot(op_id) else {
-        journal.remove(op_id);
-        return;
-    };
-    let remaining: Vec<String> = entry
-        .staging
-        .iter()
-        .filter(|p| walker::remove_staging(Path::new(p)).is_err())
-        .cloned()
-        .collect();
-    if remaining.is_empty() {
-        journal.remove(op_id);
-        return;
-    }
-    entry.staging = remaining;
-    let _ = journal.write(&entry);
-}
-
-/// Remove a staging artifact and un-journal it only if it's really gone.
-fn discard_staged(journal_entry: &mut OpJournalEntry, stage: &Path) {
-    if walker::remove_staging(stage).is_ok() {
-        pop_staging(journal_entry, stage);
-    }
-}
-
 /// One staging attempt: create the contents dir and materialize every
 /// source into it (keep-both names for duplicate basenames).
 fn stage_sources(
@@ -726,7 +694,7 @@ fn run_compress_thread(
             Staged::Cancelled => cancelled = true,
             Staged::Failed => staging_failed = true,
             Staged::JournalFailed => {
-                retire_journal(&engine.journal, &op_id);
+                engine.journal.retire(&journal_entry);
                 return;
             }
         }
@@ -734,16 +702,16 @@ fn run_compress_thread(
     let stage_contents = stage_contents;
 
     let cleanup_staging = |journal_entry: &mut OpJournalEntry| {
-        discard_staged(journal_entry, &stage_zip);
+        crate::core::journal::discard_staged(journal_entry, &stage_zip);
         if multi {
-            discard_staged(journal_entry, &stage_contents);
+            crate::core::journal::discard_staged(journal_entry, &stage_contents);
         }
         let _ = engine.journal.write(journal_entry);
     };
 
     if cancelled || staging_failed {
         cleanup_staging(&mut journal_entry);
-        retire_journal(&engine.journal, &op_id);
+        engine.journal.retire(&journal_entry);
         engine.ops.remove(&op_id);
         emitter.emit(OpEvent::Done {
             status: if cancelled { "cancelled" } else { "failed" },
@@ -818,7 +786,10 @@ fn run_compress_thread(
     let child_result = run_child_cancellable(&mut cmd, &handle);
     stop_poll(poll);
 
-    let finish = |status: &'static str, errors: Vec<OpError>, produced: Vec<PathBuf>| {
+    let finish = |status: &'static str,
+                  errors: Vec<OpError>,
+                  produced: Vec<PathBuf>,
+                  journal_entry: &OpJournalEntry| {
         let undoable = !produced.is_empty();
         if undoable {
             engine.push_undo(UndoOp::ProducedItems {
@@ -826,7 +797,7 @@ fn run_compress_thread(
                 pairs: produced.iter().map(|p| (p.clone(), None)).collect(),
             });
         }
-        retire_journal(&engine.journal, &op_id);
+        engine.journal.retire(journal_entry);
         engine.ops.remove(&op_id);
         let touched: Vec<PathBuf> = sources.iter().chain(produced.iter()).cloned().collect();
         (engine.invalidate_fuzzy)(&touched);
@@ -843,7 +814,7 @@ fn run_compress_thread(
     // Cancel flag wins even if ditto exited successfully after the kill.
     if handle.cancel.load(Ordering::SeqCst) {
         cleanup_staging(&mut journal_entry);
-        finish("cancelled", sink.errors.clone(), Vec::new());
+        finish("cancelled", sink.errors.clone(), Vec::new(), &journal_entry);
         return;
     }
 
@@ -860,7 +831,7 @@ fn run_compress_thread(
             cleanup_staging(&mut journal_entry);
             let mut errors = sink.errors.clone();
             errors.push(err);
-            finish("failed", errors, Vec::new());
+            finish("failed", errors, Vec::new(), &journal_entry);
         }
         Ok((status, stderr_tail)) if !status.success() => {
             let err = OpError {
@@ -874,12 +845,12 @@ fn run_compress_thread(
             cleanup_staging(&mut journal_entry);
             let mut errors = sink.errors.clone();
             errors.push(err);
-            finish("failed", errors, Vec::new());
+            finish("failed", errors, Vec::new(), &journal_entry);
         }
         Ok(_) => {
             // Promote the staged zip; contents dir is now disposable.
             if multi {
-                discard_staged(&mut journal_entry, &stage_contents);
+                crate::core::journal::discard_staged(&mut journal_entry, &stage_contents);
                 let _ = engine.journal.write(&journal_entry);
             }
             match promote_unique(&stage_zip, &dest_dir, &zip_name, &keep_both_name) {
@@ -898,7 +869,7 @@ fn run_compress_thread(
                         cloned: false,
                         phase: None,
                     });
-                    finish("success", Vec::new(), vec![dest]);
+                    finish("success", Vec::new(), vec![dest], &journal_entry);
                 }
                 Err(e) => {
                     let err = OpError {
@@ -912,7 +883,7 @@ fn run_compress_thread(
                     cleanup_staging(&mut journal_entry);
                     let mut errors = sink.errors.clone();
                     errors.push(err);
-                    finish("failed", errors, Vec::new());
+                    finish("failed", errors, Vec::new(), &journal_entry);
                 }
             }
         }
@@ -1169,8 +1140,7 @@ fn run_extract_thread(
             }
 
             let cleanup = |journal_entry: &mut OpJournalEntry| {
-                walker::remove_tree_best_effort(&staging);
-                pop_staging(journal_entry, &staging);
+                crate::core::journal::discard_staged(journal_entry, &staging);
                 let _ = engine.journal.write(journal_entry);
             };
 
@@ -1281,7 +1251,7 @@ fn run_extract_thread(
             pairs: produced.iter().map(|p| (p.clone(), None)).collect(),
         });
     }
-    engine.journal.remove(&op_id);
+    engine.journal.retire(&journal_entry);
     engine.ops.remove(&op_id);
 
     let touched: Vec<PathBuf> = archives.iter().chain(produced.iter()).cloned().collect();
@@ -1664,7 +1634,7 @@ mod tests {
         assert_eq!(r, Staged::Done);
         // Op finishes (dest-side stage already cleaned): the leftover is
         // still there, so its record survives listing only it.
-        retire_journal(&journal, "op-left");
+        journal.retire(&journal.snapshot("op-left").unwrap());
         let kept = journal.snapshot("op-left").expect("leftover keeps the record");
         assert_eq!(kept.staging, vec![stage.to_string_lossy().into_owned()]);
 
@@ -1715,25 +1685,25 @@ mod tests {
         journal.write(&entry).unwrap();
 
         // Cancel-path cleanup: only the confirmed removal is un-journaled.
-        discard_staged(&mut entry, &stage_zip);
-        discard_staged(&mut entry, &stage_contents);
+        crate::core::journal::discard_staged(&mut entry, &stage_zip);
+        crate::core::journal::discard_staged(&mut entry, &stage_contents);
         assert_eq!(entry.staging, vec![stage_contents.to_string_lossy().into_owned()]);
         journal.write(&entry).unwrap();
-        retire_journal(&journal, "op-r");
+        journal.retire(&journal.snapshot("op-r").unwrap());
         let kept = journal.snapshot("op-r").expect("stuck staging stays journaled");
         assert_eq!(kept.staging, vec![stage_contents.to_string_lossy().into_owned()]);
 
         // Even a record that still lists everything is narrowed by results.
         entry.staging.push(stage_zip.to_string_lossy().into_owned());
         journal.write(&entry).unwrap();
-        retire_journal(&journal, "op-r");
+        journal.retire(&journal.snapshot("op-r").unwrap());
         assert_eq!(
             journal.snapshot("op-r").unwrap().staging,
             vec![stage_contents.to_string_lossy().into_owned()]
         );
 
         fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
-        retire_journal(&journal, "op-r");
+        journal.retire(&journal.snapshot("op-r").unwrap());
         assert!(journal.snapshot("op-r").is_none());
         assert!(!stage_contents.exists());
         fs::remove_dir_all(&d).ok();

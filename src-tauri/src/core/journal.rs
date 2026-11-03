@@ -45,7 +45,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::walker::{is_staging_name, remove_staging, remove_tree_best_effort};
+use crate::core::walker::{is_staging_name, remove_staging};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,6 +272,28 @@ impl Journal {
         })
     }
 
+    /// Finish an op's record. `entry` is the op's in-memory record: its
+    /// staging paths are ours (paths that may hold a stranded original were
+    /// already un-staged), so each is removed again; the record is dropped
+    /// only once all are confirmed gone, else narrowed to the survivors for
+    /// startup recovery (merge roots are left to recovery's scan, as before).
+    /// If that rewrite fails the previous record, a superset, stays.
+    pub fn retire(&self, entry: &OpJournalEntry) {
+        let remaining: Vec<String> = entry
+            .staging
+            .iter()
+            .filter(|p| remove_staging(Path::new(p)).is_err())
+            .cloned()
+            .collect();
+        if remaining.is_empty() {
+            self.remove(&entry.op_id);
+            return;
+        }
+        let narrowed =
+            OpJournalEntry { staging: remaining, merge_roots: Vec::new(), ..entry.clone() };
+        let _ = self.write(&narrowed);
+    }
+
     pub fn remove(&self, op_id: &str) {
         self.live.lock().unwrap().remove(op_id);
         // Header first: an orphan log without a header is simply deleted by
@@ -308,17 +330,25 @@ impl Journal {
                     .filter(|s| remove_staging(Path::new(s)).is_err())
                     .cloned()
                     .collect();
-                // 2. Scan merge roots for per-entry staging names.
-                for root in &entry.merge_roots {
-                    remove_staging_recursive(Path::new(root), &entry.op_id);
-                }
+                // 2. Scan merge roots for per-entry staging names; a root
+                // whose scan or cleanup failed stays recorded too.
+                let failed_roots: Vec<String> = entry
+                    .merge_roots
+                    .iter()
+                    .filter(|r| !remove_staging_recursive(Path::new(r), &entry.op_id))
+                    .cloned()
+                    .collect();
                 self.live.lock().unwrap().remove(&entry.op_id);
-                if !leftover.is_empty() {
+                if !leftover.is_empty() || !failed_roots.is_empty() {
                     // Keep a record no matter what: narrowed to the survivors
                     // if the rewrite works, else the existing header+log
                     // (a superset — every listed path is a staging name).
                     keep = true;
-                    let retry = OpJournalEntry { staging: leftover, ..entry.clone() };
+                    let retry = OpJournalEntry {
+                        staging: leftover,
+                        merge_roots: failed_roots,
+                        ..entry.clone()
+                    };
                     let _ = self.write(&retry);
                     // Not a live op: just a record for the next launch.
                     self.live.lock().unwrap().remove(&entry.op_id);
@@ -446,24 +476,124 @@ fn load_entry(header: &Path) -> Option<OpJournalEntry> {
     Some(entry)
 }
 
-fn remove_staging_recursive(root: &Path, op_id: &str) {
-    let Ok(rd) = fs::read_dir(root) else {
-        return;
+/// Remove `op_id`'s per-entry staging artifacts under `root`; false when
+/// the root couldn't be scanned (other than being gone) or one survived.
+fn remove_staging_recursive(root: &Path, op_id: &str) -> bool {
+    let rd = match fs::read_dir(root) {
+        Ok(rd) => rd,
+        Err(e) => return e.kind() == std::io::ErrorKind::NotFound,
     };
-    for e in rd.flatten() {
+    let mut ok = true;
+    for e in rd {
+        let Ok(e) = e else {
+            ok = false;
+            continue;
+        };
         let name = e.file_name().to_string_lossy().into_owned();
         let p = e.path();
         if is_staging_name(&name, op_id) {
-            remove_tree_best_effort(&p);
+            ok &= remove_staging(&p).is_ok();
         } else if p.is_dir() && !p.is_symlink() {
-            remove_staging_recursive(&p, op_id);
+            ok &= remove_staging_recursive(&p, op_id);
         }
     }
+    ok
+}
+
+/// Remove a staging artifact and un-journal it only once it's really gone,
+/// so a tree that refused removal stays visible to recovery.
+pub fn discard_staged(entry: &mut OpJournalEntry, stage: &Path) -> bool {
+    if remove_staging(stage).is_err() {
+        return false;
+    }
+    let s = stage.to_string_lossy();
+    entry.staging.retain(|p| p != s.as_ref());
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ro(p: &Path, on: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(if on { 0o555 } else { 0o755 })).unwrap();
+    }
+
+    #[test]
+    fn failed_staging_cleanup_stays_journaled_through_op_completion() {
+        let d = tmp("retire-copy");
+        let journal = Journal::new(d.join("journal")).unwrap();
+        let dest = d.join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        let gone = dest.join(staging_name("a.txt", "op-c"));
+        fs::write(&gone, b"x").unwrap();
+        let locked_dir = d.join("locked");
+        let stuck = locked_dir.join(staging_name("b.txt", "op-c"));
+        fs::create_dir_all(&locked_dir).unwrap();
+        fs::write(&stuck, b"y").unwrap();
+        ro(&locked_dir, true);
+        let mut entry = OpJournalEntry {
+            op_id: "op-c".into(),
+            kind: "copy".into(),
+            sources: vec![],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            staging: vec![gone.to_string_lossy().into_owned(), stuck.to_string_lossy().into_owned()],
+            merge_roots: vec![dest.to_string_lossy().into_owned()],
+            completed: Vec::new(),
+            total: 2,
+            started_at_ms: 0,
+        };
+        journal.write(&entry).unwrap();
+        // Per-item cleanup: only confirmed removals leave the record.
+        assert!(discard_staged(&mut entry, &gone));
+        assert!(!discard_staged(&mut entry, &stuck));
+        assert_eq!(entry.staging, vec![stuck.to_string_lossy().into_owned()]);
+        journal.write(&entry).unwrap();
+        // Op completion keeps exactly the survivor.
+        journal.retire(&entry);
+        let kept = journal.snapshot("op-c").expect("survivor keeps the record");
+        assert_eq!(kept.staging, vec![stuck.to_string_lossy().into_owned()]);
+        ro(&locked_dir, false);
+        journal.retire(&kept);
+        assert!(journal.snapshot("op-c").is_none());
+        assert!(!stuck.exists());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn recovery_keeps_merge_roots_whose_cleanup_failed() {
+        let d = tmp("recover-merge");
+        let journal = Journal::new(d.join("journal")).unwrap();
+        let root = d.join("merged");
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let stuck = sub.join(staging_name("f.txt", "op-m"));
+        fs::write(&stuck, b"half").unwrap();
+        ro(&sub, true);
+        journal
+            .write(&OpJournalEntry {
+                op_id: "op-m".into(),
+                kind: "copy".into(),
+                sources: vec![],
+                dest_dir: d.to_string_lossy().into_owned(),
+                staging: Vec::new(),
+                merge_roots: vec![root.to_string_lossy().into_owned()],
+                completed: Vec::new(),
+                total: 1,
+                started_at_ms: 0,
+            })
+            .unwrap();
+        journal.live.lock().unwrap().clear();
+        assert_eq!(journal.recover().len(), 1);
+        let kept = load_entry(&journal.path_for("op-m")).expect("failed merge root is retained");
+        assert_eq!(kept.merge_roots, vec![root.to_string_lossy().into_owned()]);
+        ro(&sub, false);
+        assert_eq!(journal.recover().len(), 1);
+        assert!(!stuck.exists());
+        assert!(journal.recover().is_empty());
+        fs::remove_dir_all(&d).ok();
+    }
 
     #[test]
     fn recovery_keeps_the_record_when_leftovers_remain_even_if_rewrite_fails() {

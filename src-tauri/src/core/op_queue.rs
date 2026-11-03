@@ -797,7 +797,7 @@ fn run_op_thread(
         engine.push_undo(op);
     }
 
-    engine.journal.remove(&args.op_id);
+    engine.journal.retire(&journal_entry);
     engine.ops.remove(&args.op_id);
 
     let touched: Vec<PathBuf> = args.sources.iter().chain(produced.iter()).cloned().collect();
@@ -868,8 +868,7 @@ fn transfer_toplevel(
 
     let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
-        walker::remove_tree_best_effort(&stage);
-        pop_staging(journal_entry, &stage);
+        crate::core::journal::discard_staged(journal_entry, &stage);
         let _ = engine.journal.write(journal_entry);
         return Ok(false);
     }
@@ -881,8 +880,7 @@ fn transfer_toplevel(
         // stage, so verification fails and the source is preserved.
         let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
-            walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
+            crate::core::journal::discard_staged(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -894,8 +892,7 @@ fn transfer_toplevel(
     match copier::rename_excl(&stage, dest) {
         Ok(()) => {}
         Err(e) => {
-            walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
+            crate::core::journal::discard_staged(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             return Err(e);
         }
@@ -990,16 +987,14 @@ fn replace_item(
 
     let outcome = walker::copy_fresh(source, &stage, sink)?;
     if outcome == Outcome::Cancelled {
-        walker::remove_tree_best_effort(&stage);
-        pop_staging(journal_entry, &stage);
+        crate::core::journal::discard_staged(journal_entry, &stage);
         let _ = engine.journal.write(journal_entry);
         return Ok(false);
     }
     if args.kind == OpKind::Move {
         let report = walker::verify_tree(source, &stage, &HashSet::new(), tol_ms)?;
         if !report.mismatches.is_empty() {
-            walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
+            crate::core::journal::discard_staged(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1059,8 +1054,7 @@ fn replace_item(
         Err(e) => {
             // Only ever a throwaway copy now — the source was never renamed
             // into staging.
-            walker::remove_tree_best_effort(&stage);
-            pop_staging(journal_entry, &stage);
+            crate::core::journal::discard_staged(journal_entry, &stage);
             let _ = engine.journal.write(journal_entry);
             Err(e)
         }
@@ -1181,20 +1175,17 @@ fn run_duplicate_thread(
                     produced.push(dest);
                 }
                 Err(e) => {
-                    walker::remove_tree_best_effort(&stage);
-                    pop_staging(&mut journal_entry, &stage);
+                    crate::core::journal::discard_staged(&mut journal_entry, &stage);
                     sink.item_error(source, &e);
                 }
             },
             Ok(Outcome::Cancelled) => {
-                walker::remove_tree_best_effort(&stage);
-                pop_staging(&mut journal_entry, &stage);
+                crate::core::journal::discard_staged(&mut journal_entry, &stage);
                 cancelled = true;
                 break;
             }
             Err(e) => {
-                walker::remove_tree_best_effort(&stage);
-                pop_staging(&mut journal_entry, &stage);
+                crate::core::journal::discard_staged(&mut journal_entry, &stage);
                 sink.item_error(source, &e);
             }
         }
@@ -1203,7 +1194,7 @@ fn run_duplicate_thread(
     if !produced.is_empty() {
         engine.push_undo(UndoOp::Copy { produced: produced.clone() });
     }
-    engine.journal.remove(&op_id);
+    engine.journal.retire(&journal_entry);
     engine.ops.remove(&op_id);
 
     let touched: Vec<PathBuf> = paths.iter().chain(produced.iter()).cloned().collect();
