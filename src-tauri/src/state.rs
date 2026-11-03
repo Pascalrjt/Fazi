@@ -53,23 +53,33 @@ pub struct OwnerScope {
     local: Option<bool>,
 }
 
-/// `statfs(dir)` → MNT_LOCAL. statfs resolves symlinks and firmlinks, so
-/// `~/share → /Volumes/SMB` is classified by the SMB volume. None when the
-/// call fails.
 /// Mount points directly inside `dir` with their MNT_LOCAL flag, from the
-/// kernel's cached table (`getmntinfo(MNT_NOWAIT)`: never blocks on a
+/// kernel's cached table (`getfsstat(MNT_NOWAIT)`: never blocks on a
 /// mount). A listing of /Volumes uses this so each mounted child is
-/// classified by its own volume, not the parent's.
+/// classified by its own volume, not the parent's. `getfsstat` fills a
+/// caller-owned buffer, so concurrent listings can't race the way they
+/// would on `getmntinfo`'s shared libc buffer.
 pub fn child_mounts(dir: &Path) -> HashMap<std::ffi::OsString, bool> {
     use std::os::unix::ffi::OsStringExt;
     let mut out = HashMap::new();
-    let mut buf: *mut libc::statfs = std::ptr::null_mut();
-    // SAFETY: getmntinfo hands back a libc-owned array of `n` entries.
-    let n = unsafe { libc::getmntinfo(&mut buf, libc::MNT_NOWAIT) };
-    if n <= 0 || buf.is_null() {
+    // SAFETY: a null buffer asks only for the mount count.
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    if count <= 0 {
         return out;
     }
-    for m in unsafe { std::slice::from_raw_parts(buf, n as usize) } {
+    // Headroom for mounts that appear between the two calls.
+    let cap = count as usize + 8;
+    let mut buf: Vec<libc::statfs> = Vec::with_capacity(cap);
+    let bytes = (cap * std::mem::size_of::<libc::statfs>()) as libc::c_int;
+    // SAFETY: `buf` has room for `cap` entries; getfsstat writes at most
+    // `bytes` and returns how many entries it filled.
+    let n = unsafe { libc::getfsstat(buf.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
+    if n <= 0 {
+        return out;
+    }
+    // SAFETY: the first `n` (≤ cap) entries were initialised by getfsstat.
+    unsafe { buf.set_len((n as usize).min(cap)) };
+    for m in &buf {
         let bytes: Vec<u8> = m.f_mntonname.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
         let point = PathBuf::from(std::ffi::OsString::from_vec(bytes));
         if point.parent() == Some(dir) {
@@ -81,6 +91,9 @@ pub fn child_mounts(dir: &Path) -> HashMap<std::ffi::OsString, bool> {
     out
 }
 
+/// `statfs(dir)` → MNT_LOCAL. statfs resolves symlinks and firmlinks, so
+/// `~/share → /Volumes/SMB` is classified by the SMB volume. None when the
+/// call fails.
 pub fn statfs_local(dir: &Path) -> Option<bool> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
@@ -309,6 +322,27 @@ mod tests {
         assert!(child_mounts(Path::new("/nonexistent-dir")).is_empty());
         for (name, _) in child_mounts(Path::new("/Volumes")) {
             assert!(Path::new("/Volumes").join(name).exists());
+        }
+        // "/dev" is a mount point whose parent is "/".
+        assert!(child_mounts(Path::new("/")).contains_key(std::ffi::OsStr::new("dev")));
+    }
+
+    #[test]
+    fn child_mounts_is_safe_under_concurrent_calls() {
+        let expected = child_mounts(Path::new("/"));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let mut last = HashMap::new();
+                    for _ in 0..200 {
+                        last = child_mounts(Path::new("/"));
+                    }
+                    last
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), expected);
         }
     }
 
