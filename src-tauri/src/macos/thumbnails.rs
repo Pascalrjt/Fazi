@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::concurrency::Semaphore;
+use crate::concurrency::{Semaphore, SingleFlight};
 
 use block2::RcBlock;
 use objc2::AllocAnyThread;
@@ -31,6 +31,8 @@ fn cache_hash(path: &Path, meta: &std::fs::Metadata, size: u32) -> u64 {
     let mut h = DefaultHasher::new();
     path.hash(&mut h);
     meta.mtime().hash(&mut h);
+    // Sub-second edits that keep the size must still miss.
+    meta.mtime_nsec().hash(&mut h);
     meta.len().hash(&mut h);
     size.hash(&mut h);
     h.finish()
@@ -43,6 +45,14 @@ fn cache_file_for(cache_dir: &Path, hash: u64) -> PathBuf {
 /// Concurrent Quick Look generations (each can take seconds and hold files
 /// open); further misses wait their turn.
 static QL_PERMITS: Semaphore = Semaphore::new(3);
+
+/// Per-cache-key single-flight: concurrent misses for the same thumbnail
+/// (a grid and the preview overlay, a re-render racing a scroll) wait for
+/// ONE generation instead of each taking a Quick Look permit.
+fn flights() -> &'static SingleFlight<u64, Vec<u8>> {
+    static FLIGHTS: OnceLock<SingleFlight<u64, Vec<u8>>> = OnceLock::new();
+    FLIGHTS.get_or_init(SingleFlight::default)
+}
 
 /// Failed generations, so a file Quick Look can't thumbnail isn't retried on
 /// every scroll. Keyed like the disk cache (a modified file retries); entries
@@ -118,21 +128,25 @@ fn thumbnail_png_with(
     if is_negative(hash) {
         return None;
     }
-    let _permit = QL_PERMITS.acquire();
-    // Another request may have produced it while we waited for a permit.
-    if let Ok(bytes) = std::fs::read(&cache_path) {
-        return Some(bytes);
-    }
-    if is_negative(hash) {
-        return None;
-    }
-    let Some(png) = generate(path, size) else {
-        record_negative(hash);
-        return None;
-    };
-    let _ = std::fs::create_dir_all(cache_dir);
-    let _ = std::fs::write(&cache_path, &png);
-    Some(png)
+    flights().run(hash, || {
+        // A flight that finished just before ours started already settled it.
+        if let Ok(bytes) = std::fs::read(&cache_path) {
+            return Some(bytes);
+        }
+        if is_negative(hash) {
+            return None;
+        }
+        // Only the leader holds a Quick Look permit; followers wait on the
+        // flight without occupying one.
+        let _permit = QL_PERMITS.acquire();
+        let Some(png) = generate(path, size) else {
+            record_negative(hash);
+            return None;
+        };
+        let _ = std::fs::create_dir_all(cache_dir);
+        let _ = std::fs::write(&cache_path, &png);
+        Some(png)
+    })
 }
 
 /// Disk-cache hit only — never asks Quick Look to open the file (used while
@@ -269,6 +283,53 @@ mod tests {
         assert!(r.is_none());
         let r = thumbnail_png_with(&d.join("cache"), &pkg, 64, |_, _| Some(vec![1]));
         assert_eq!(r, Some(vec![1]), "packages may still have thumbnails");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn concurrent_misses_for_one_thumbnail_generate_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        let d = tmp("flight");
+        let cache = d.join("cache");
+        let f = d.join("pic.bin");
+        std::fs::write(&f, b"z").unwrap();
+        let renders = Arc::new(AtomicUsize::new(0));
+        let n = 8;
+        let barrier = Arc::new(Barrier::new(n));
+        let handles: Vec<_> = (0..n)
+            .map(|_| {
+                let (cache, f, renders, barrier) =
+                    (cache.clone(), f.clone(), renders.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    thumbnail_png_with(&cache, &f, 64, |_, _| {
+                        renders.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(80));
+                        Some(vec![4, 2])
+                    })
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), Some(vec![4, 2]));
+        }
+        assert_eq!(renders.load(Ordering::SeqCst), 1, "one Quick Look render per key");
+        assert_eq!(flights().in_flight(), 0);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn content_change_misses_the_cache() {
+        let d = tmp("rev");
+        let cache = d.join("cache");
+        let f = d.join("pic.bin");
+        std::fs::write(&f, b"one").unwrap();
+        assert_eq!(thumbnail_png_with(&cache, &f, 64, |_, _| Some(vec![1])), Some(vec![1]));
+        // Same size, different content, moments later.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&f, b"two").unwrap();
+        assert_eq!(thumbnail_png_with(&cache, &f, 64, |_, _| Some(vec![2])), Some(vec![2]));
         std::fs::remove_dir_all(&d).ok();
     }
 }
