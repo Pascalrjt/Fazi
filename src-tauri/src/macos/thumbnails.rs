@@ -42,6 +42,47 @@ fn cache_file_for(cache_dir: &Path, hash: u64) -> PathBuf {
     cache_dir.join(format!("{hash:016x}.png"))
 }
 
+const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// A cache hit only if the file holds a PNG. Anything else (an empty or
+/// truncated file left by a crash, or by an older non-atomic writer) is
+/// deleted and treated as a miss so it can't become a permanent bad hit.
+fn read_cached(cache_path: &Path) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(cache_path).ok()?;
+    if bytes.len() > PNG_MAGIC.len() && bytes.starts_with(PNG_MAGIC) {
+        return Some(bytes);
+    }
+    let _ = std::fs::remove_file(cache_path);
+    None
+}
+
+/// Publish atomically: write a unique temp file in the cache dir, then
+/// rename over the final name, so concurrent readers see either nothing or
+/// the whole PNG. A failed write leaves no file behind.
+fn write_cached(cache_dir: &Path, cache_path: &Path, png: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    std::fs::create_dir_all(cache_dir)?;
+    let tmp = cache_dir.join(format!(
+        ".{}.{}-{}.tmp",
+        cache_path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let res = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(png)?;
+        f.flush()?;
+        drop(f);
+        std::fs::rename(&tmp, cache_path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
 /// Concurrent Quick Look generations (each can take seconds and hold files
 /// open); further misses wait their turn.
 static QL_PERMITS: Semaphore = Semaphore::new(3);
@@ -122,7 +163,7 @@ fn thumbnail_png_with(
     }
     let hash = cache_hash(path, &meta, size);
     let cache_path = cache_file_for(cache_dir, hash);
-    if let Ok(bytes) = std::fs::read(&cache_path) {
+    if let Some(bytes) = read_cached(&cache_path) {
         return Some(bytes);
     }
     if is_negative(hash) {
@@ -130,7 +171,7 @@ fn thumbnail_png_with(
     }
     flights().run(hash, || {
         // A flight that finished just before ours started already settled it.
-        if let Ok(bytes) = std::fs::read(&cache_path) {
+        if let Some(bytes) = read_cached(&cache_path) {
             return Some(bytes);
         }
         if is_negative(hash) {
@@ -143,8 +184,8 @@ fn thumbnail_png_with(
             record_negative(hash);
             return None;
         };
-        let _ = std::fs::create_dir_all(cache_dir);
-        let _ = std::fs::write(&cache_path, &png);
+        // Best effort: an unwritable cache only costs a re-render later.
+        let _ = write_cached(cache_dir, &cache_path, &png);
         Some(png)
     })
 }
@@ -154,7 +195,7 @@ fn thumbnail_png_with(
 pub fn cached_thumbnail_png(cache_dir: &Path, path: &Path, size: u32) -> Option<Vec<u8>> {
     let size = size.clamp(32, 2048);
     let meta = path.symlink_metadata().ok()?;
-    std::fs::read(cache_file_for(cache_dir, cache_hash(path, &meta, size))).ok()
+    read_cached(&cache_file_for(cache_dir, cache_hash(path, &meta, size)))
 }
 
 fn generate(path: &Path, size: u32) -> Option<Vec<u8>> {
@@ -234,6 +275,12 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    fn png(tag: u8) -> Vec<u8> {
+        let mut v = PNG_MAGIC.to_vec();
+        v.push(tag);
+        v
+    }
+
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("fazi-thumb-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -263,12 +310,12 @@ mod tests {
         for _ in 0..3 {
             let r = thumbnail_png_with(&cache, &ok, 64, |_, _| {
                 calls.set(calls.get() + 1);
-                Some(vec![7])
+                Some(png(7))
             });
-            assert_eq!(r, Some(vec![7]));
+            assert_eq!(r, Some(png(7)));
         }
         assert_eq!(calls.get(), 1);
-        assert_eq!(cached_thumbnail_png(&cache, &ok, 64), Some(vec![7]));
+        assert_eq!(cached_thumbnail_png(&cache, &ok, 64), Some(png(7)));
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -281,8 +328,8 @@ mod tests {
         std::fs::create_dir(&pkg).unwrap();
         let r = thumbnail_png_with(&d.join("cache"), &plain, 64, |_, _| unreachable!("no QL"));
         assert!(r.is_none());
-        let r = thumbnail_png_with(&d.join("cache"), &pkg, 64, |_, _| Some(vec![1]));
-        assert_eq!(r, Some(vec![1]), "packages may still have thumbnails");
+        let r = thumbnail_png_with(&d.join("cache"), &pkg, 64, |_, _| Some(png(1)));
+        assert_eq!(r, Some(png(1)), "packages may still have thumbnails");
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -306,13 +353,13 @@ mod tests {
                     thumbnail_png_with(&cache, &f, 64, |_, _| {
                         renders.fetch_add(1, Ordering::SeqCst);
                         std::thread::sleep(Duration::from_millis(80));
-                        Some(vec![4, 2])
+                        Some(png(42))
                     })
                 })
             })
             .collect();
         for h in handles {
-            assert_eq!(h.join().unwrap(), Some(vec![4, 2]));
+            assert_eq!(h.join().unwrap(), Some(png(42)));
         }
         assert_eq!(renders.load(Ordering::SeqCst), 1, "one Quick Look render per key");
         assert_eq!(flights().in_flight(), 0);
@@ -325,11 +372,49 @@ mod tests {
         let cache = d.join("cache");
         let f = d.join("pic.bin");
         std::fs::write(&f, b"one").unwrap();
-        assert_eq!(thumbnail_png_with(&cache, &f, 64, |_, _| Some(vec![1])), Some(vec![1]));
+        assert_eq!(thumbnail_png_with(&cache, &f, 64, |_, _| Some(png(1))), Some(png(1)));
         // Same size, different content, moments later.
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&f, b"two").unwrap();
-        assert_eq!(thumbnail_png_with(&cache, &f, 64, |_, _| Some(vec![2])), Some(vec![2]));
+        assert_eq!(thumbnail_png_with(&cache, &f, 64, |_, _| Some(png(2))), Some(png(2)));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn cache_writes_are_atomic_and_bad_files_are_not_hits() {
+        let d = tmp("atomic");
+        let cache = d.join("cache");
+        let f = d.join("pic.bin");
+        std::fs::write(&f, b"q").unwrap();
+        let meta = f.symlink_metadata().unwrap();
+        let final_path = cache_file_for(&cache, cache_hash(&f, &meta, 64));
+
+        // An empty / truncated file at the final name (crash mid-write) is
+        // rejected, removed, and regenerated.
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(&final_path, b"").unwrap();
+        assert_eq!(cached_thumbnail_png(&cache, &f, 64), None);
+        assert!(!final_path.exists());
+        std::fs::write(&final_path, &PNG_MAGIC[..4]).unwrap();
+        assert_eq!(thumbnail_png_with(&cache, &f, 64, |_, _| Some(png(5))), Some(png(5)));
+        assert_eq!(std::fs::read(&final_path).unwrap(), png(5));
+        // No temp files left behind after a successful publish.
+        let names: Vec<String> = std::fs::read_dir(&cache)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+
+        // A failed write (destination is a directory) leaves neither a
+        // partial final file nor a temp file.
+        let blocked = cache.join("blocked.png");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_cached(&cache, &blocked, &png(1)).is_err());
+        let tmps = std::fs::read_dir(&cache)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(tmps, 0);
         std::fs::remove_dir_all(&d).ok();
     }
 }
