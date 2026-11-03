@@ -1,5 +1,5 @@
 /**
- * Lazy folder sizes for list view (Settings → Advanced, default off).
+ * Lazy folder sizes for list view (Settings → General, default off).
  *
  * Session LRU keyed by path, computed via the streaming dir_size channel,
  * concurrency-capped at 2, viewport-triggered by the size cell. The value is

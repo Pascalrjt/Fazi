@@ -21,6 +21,7 @@ function symlink(target: string): Entry {
     linkTarget: target,
     tags: [],
     noAccess: false,
+    customIcon: false,
   };
 }
 

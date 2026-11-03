@@ -22,7 +22,7 @@ vi.mock("../../../lib/ipc", () => ({
   revealInFinder: () => Promise.resolve(),
 }));
 
-import { Toolbar } from "../Toolbar";
+import { PathBar } from "../PathBar";
 import {
   beginNativeDragState,
   emitDropHover,
@@ -74,7 +74,7 @@ function crumbButton(path: string): HTMLElement {
 describe("breadcrumb drop zone", () => {
   beforeEach(() => {
     seedPath("/Users/me/Docs");
-    render(<Toolbar />);
+    render(<PathBar paneId="left" />);
     mockRect(crumbButton("/Users"), 0, 60);
     mockRect(crumbButton("/Users/me"), 70, 130);
     mockRect(crumbButton("/Users/me/Docs"), 140, 200);
@@ -89,7 +89,7 @@ describe("breadcrumb drop zone", () => {
     expect(hitTestDropZones(100, 10)).toEqual({
       action: "copyTo",
       destDir: "/Users/me",
-      targetKey: "crumb:/Users/me",
+      targetKey: "crumb:left:/Users/me",
     });
     // Between crumbs → no breadcrumb hit (nothing else registered here).
     expect(hitTestDropZones(65, 10)).toBeNull();
@@ -99,7 +99,7 @@ describe("breadcrumb drop zone", () => {
     const crumb = crumbButton("/Users/me");
     act(() =>
       emitDropHover({
-        hit: { action: "copyTo", destDir: "/Users/me", targetKey: "crumb:/Users/me" },
+        hit: { action: "copyTo", destDir: "/Users/me", targetKey: "crumb:left:/Users/me" },
         x: 100,
         y: 10,
       }),
@@ -115,7 +115,7 @@ describe("breadcrumb drop zone", () => {
     expect(hitTestDropZones(30, 10)).toEqual({
       action: "copyTo",
       destDir: "/Users",
-      targetKey: "crumb:/Users",
+      targetKey: "crumb:left:/Users",
     });
   });
 

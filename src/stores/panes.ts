@@ -79,6 +79,19 @@ export interface Pane {
   activeTabId: string;
 }
 
+/** One pane's tabs as restored from a saved session (see stores/session). */
+export interface RestoredPane {
+  id: PaneId;
+  activeIndex: number;
+  tabs: Array<{
+    path: string;
+    sort: SortSpec;
+    showHidden: boolean;
+    back: HistorySnapshot[];
+    forward: HistorySnapshot[];
+  }>;
+}
+
 interface PanesState {
   panes: Pane[];
   split: boolean;
@@ -88,6 +101,8 @@ interface PanesState {
 
   // --- navigation ------------------------------------------------------
   boot(homePath: string): void;
+  /** Replace all panes with a saved layout and start their listings. */
+  restore(panes: RestoredPane[], split: boolean): void;
   navigate(paneId: PaneId, tabId: string, path: string, opts?: { selectName?: string }): void;
   refresh(paneId: PaneId, tabId: string): void;
   back(paneId: PaneId, tabId: string): void;
@@ -99,6 +114,13 @@ interface PanesState {
   openTab(paneId: PaneId, path: string): void;
   closeTab(paneId: PaneId, tabId: string): void;
   activateTab(paneId: PaneId, tabId: string): void;
+  /**
+   * Drag-reorder: move a tab to insertion index `toIndex` (counted in the
+   * target pane before the move) within its pane or into the other pane.
+   * Emptying the right pane closes dual pane; the left pane's last tab
+   * stays put.
+   */
+  moveTab(fromPane: PaneId, tabId: string, toPane: PaneId, toIndex: number): void;
   cycleTab(paneId: PaneId, delta: 1 | -1): void;
   setSplit(split: boolean, initialPath?: string): void;
 
@@ -320,6 +342,12 @@ function newTab(path: string): Tab {
   };
 }
 
+/** Restart every tab's listing in a pane (after its id changed). */
+function relistPane(get: () => PanesState, paneId: PaneId): void {
+  const pane = findPane(get(), paneId);
+  for (const tab of pane?.tabs ?? []) get().refresh(paneId, tab.id);
+}
+
 function findPane(s: { panes: Pane[] }, paneId: PaneId): Pane | undefined {
   return s.panes.find((p) => p.id === paneId);
 }
@@ -452,6 +480,29 @@ export const usePanes = create<PanesState>()(
       startListing(set, get, "left", pane.activeTabId);
     },
 
+    restore: (restored, split) => {
+      const current = get();
+      for (const pane of current.panes) for (const t of pane.tabs) stopListing(t);
+      set((s) => {
+        s.panes = restored.map((rp) => {
+          const tabs = rp.tabs.map((rt) => {
+            const tab = newTab(rt.path);
+            tab.sort = rt.sort;
+            tab.showHidden = rt.showHidden;
+            tab.back = rt.back;
+            tab.forward = rt.forward;
+            return tab;
+          });
+          const active = tabs[Math.min(Math.max(rp.activeIndex, 0), tabs.length - 1)];
+          return { id: rp.id, tabs, activeTabId: active.id };
+        });
+        s.split = split && s.panes.some((p) => p.id === "right");
+      });
+      for (const pane of get().panes) {
+        for (const t of pane.tabs) startListing(set, get, pane.id, t.id);
+      }
+    },
+
     navigate: (paneId, tabId, path, opts) => {
       set((s) => {
         const tab = findTab(s, paneId, tabId);
@@ -562,7 +613,12 @@ export const usePanes = create<PanesState>()(
         if (!pane) return;
         const tab = newTab(path);
         tabId = tab.id;
-        pane.tabs.push(tab);
+        // Open right below the active tab, so a new tab stays next to the
+        // one it came from (and in view in the vertical tab list). Opening
+        // several folders in a row keeps their order: each lands below the
+        // previous one, which became active.
+        const at = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
+        pane.tabs.splice(at === -1 ? pane.tabs.length : at + 1, 0, tab);
         pane.activeTabId = tab.id;
       });
       if (tabId) startListing(set, get, paneId, tabId);
@@ -577,12 +633,19 @@ export const usePanes = create<PanesState>()(
         if (state.split) {
           const tab = pane.tabs[0];
           stopListing(tab);
+          let renamed = false;
           set((s) => {
             s.panes = s.panes.filter((p) => p.id !== paneId);
             s.split = false;
             // the surviving pane always becomes "left" (PaneArea renders it)
-            if (s.panes.length === 1) s.panes[0].id = "left";
+            if (s.panes.length === 1 && s.panes[0].id !== "left") {
+              s.panes[0].id = "left";
+              renamed = true;
+            }
           });
+          // Listings and watchers are keyed by pane id; restart them under
+          // the new id or the pane stops receiving updates.
+          if (renamed) relistPane(get, "left");
           useApp.getState().setActivePane("left");
         }
         return;
@@ -598,6 +661,58 @@ export const usePanes = create<PanesState>()(
           p.activeTabId = p.tabs[Math.min(idx, p.tabs.length - 1)].id;
         }
       });
+    },
+
+    moveTab: (fromPane, tabId, toPane, toIndex) => {
+      const state = get();
+      const src = findPane(state, fromPane);
+      const dst = findPane(state, toPane);
+      if (!src || !dst) return;
+      const from = src.tabs.findIndex((t) => t.id === tabId);
+      if (from === -1) return;
+      const clamp = (n: number, max: number) => Math.max(0, Math.min(n, max));
+
+      if (fromPane === toPane) {
+        // toIndex is an insertion index into the pre-removal array.
+        const target = from < toIndex ? toIndex - 1 : toIndex;
+        if (target === from) return;
+        set((s) => {
+          const p = findPane(s, fromPane);
+          if (!p) return;
+          const [tab] = p.tabs.splice(from, 1);
+          p.tabs.splice(clamp(target, p.tabs.length), 0, tab);
+        });
+        return;
+      }
+
+      // Moving the left pane's only tab out would leave it empty.
+      if (fromPane === "left" && src.tabs.length === 1) return;
+
+      let renamed = false;
+      set((s) => {
+        const sp = findPane(s, fromPane);
+        const dp = findPane(s, toPane);
+        if (!sp || !dp) return;
+        const [tab] = sp.tabs.splice(from, 1);
+        dp.tabs.splice(clamp(toIndex, dp.tabs.length), 0, tab);
+        dp.activeTabId = tab.id;
+        if (sp.tabs.length === 0) {
+          s.panes = s.panes.filter((p) => p.id !== fromPane);
+          s.split = false;
+          if (s.panes[0].id !== "left") {
+            s.panes[0].id = "left";
+            renamed = true;
+          }
+        } else if (sp.activeTabId === tabId) {
+          sp.activeTabId = sp.tabs[Math.min(from, sp.tabs.length - 1)].id;
+        }
+      });
+      // Listings are keyed by pane id: restart the moved tab (or the whole
+      // renamed pane) under its new pane.
+      const landed: PaneId = renamed ? "left" : toPane;
+      if (renamed) relistPane(get, landed);
+      else get().refresh(landed, tabId);
+      useApp.getState().setActivePane(landed);
     },
 
     activateTab: (paneId, tabId) => {

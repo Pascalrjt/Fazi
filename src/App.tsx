@@ -1,5 +1,6 @@
-/** Fazi application shell: layout grid, boot sequence, global overlays. */
-import { useEffect } from "react";
+/** Fazi application shell: rail layout, boot sequence, global overlays. */
+import { useEffect, useRef } from "react";
+import clsx from "clsx";
 import { rebuildRegistry, registerAllCommands } from "./lib/commands";
 import { getCommand } from "./lib/commands/registry";
 import { runMenuCommand } from "./lib/commands/menuCommand";
@@ -9,21 +10,22 @@ import * as ipc from "./lib/ipc";
 import { setupFinderDragIn } from "./lib/ipc/dnd";
 import { setAltDuringDrag } from "./lib/dnd";
 import { recheckCutMirror } from "./lib/actions";
-import { usePanes } from "./stores/panes";
 import { useVolumes } from "./stores/volumes";
+import { activeTabOf, usePanes } from "./stores/panes";
+import { focusActivePane } from "./lib/keyboardFocus";
 import { useApp } from "./stores/app";
 import { useVim } from "./stores/vim";
 import { startCleanup } from "./stores/cleanup";
+import { restoreOrBoot } from "./stores/session";
 import { pluralize } from "./lib/format";
-import { Toolbar } from "./components/chrome/Toolbar";
-import { StatusBar } from "./components/chrome/StatusBar";
 import { Toasts } from "./components/chrome/Toasts";
+import { FolderTintFilter } from "./components/chrome/FolderTintFilter";
 import { FdaBanner } from "./components/chrome/FdaBanner";
 import { ConfirmDialog } from "./components/chrome/ConfirmDialog";
 import { Sidebar } from "./components/sidebar/Sidebar";
+import { TitleStrip } from "./components/chrome/TitleStrip";
 import { PaneArea } from "./components/panes/PaneArea";
-import { GetInfoPanel } from "./components/info/GetInfoPanel";
-import { SettingsOverlay } from "./components/settings/SettingsOverlay";
+import { SettingsTab } from "./components/settings/SettingsTab";
 import { OpCards } from "./components/ops/OpCards";
 import { ConflictDialog } from "./components/ops/ConflictDialog";
 import { CommandPalette } from "./components/palette/CommandPalette";
@@ -59,6 +61,19 @@ useSettings.subscribe((s, prev) => {
   if (s.vimMode !== prev.vimMode) useVim.getState().reset();
 });
 
+/** Each pane's current tab and folder, plus its tab count. */
+function paneSignature(s: ReturnType<typeof usePanes.getState>): string {
+  return s.panes.map((p) => `${p.activeTabId}\u0000${activeTabOf(p)?.path}\u0000${p.tabs.length}`).join("\n");
+}
+
+// Anything that switches or navigates a pane's tab (the palette, Go to
+// File, Go menu commands, drag-moving tabs) brings the panes back from the
+// Settings tab, the way following a link leaves a browser's settings page.
+usePanes.subscribe((s, prev) => {
+  if (!useApp.getState().settingsActive) return;
+  if (paneSignature(s) !== paneSignature(prev)) useApp.getState().setSettingsActive(false);
+});
+
 /** Apply theme + accent to the document root. */
 function applyAppearance(theme: string, accent: string): void {
   const root = document.documentElement;
@@ -68,7 +83,9 @@ function applyAppearance(theme: string, accent: string): void {
     root.style.setProperty("--accent", accent);
     root.style.setProperty("--accent-dim", `color-mix(in srgb, ${accent} 26%, transparent)`);
     root.style.setProperty("--accent-faint", `color-mix(in srgb, ${accent} 12%, transparent)`);
+    root.dataset.folderTint = "";
   } else {
+    delete root.dataset.folderTint;
     root.style.removeProperty("--accent");
     root.style.removeProperty("--accent-dim");
     root.style.removeProperty("--accent-faint");
@@ -86,7 +103,7 @@ function boot(): void {
     const volumes = useVolumes.getState();
     await volumes.init();
     const home = useVolumes.getState().folders?.home ?? "/";
-    usePanes.getState().boot(home);
+    await restoreOrBoot(home);
     startCleanup();
 
     // journal recovery report
@@ -98,7 +115,7 @@ function boot(): void {
           .getState()
           .pushToast(
             `${kind} interrupted — ${op.completed} of ${pluralize(op.total, "item")} completed`,
-            { sticky: true },
+            { danger: true },
           );
       }
     } catch {
@@ -112,10 +129,19 @@ export default function App() {
   const theme = useSettings((s) => s.theme);
   const accent = useSettings((s) => s.accent);
   const sidebarPosition = useSettings((s) => s.sidebarPosition);
+  const sidebarCollapsed = useSettings((s) => s.sidebarCollapsed);
+  const settingsActive = useApp((s) => s.settingsActive);
 
   useEffect(() => {
     applyAppearance(theme, accent);
   }, [theme, accent]);
+
+  // Leaving the Settings tab hands the keyboard back to the active pane.
+  const wasSettings = useRef(false);
+  useEffect(() => {
+    if (wasSettings.current && !settingsActive) focusActivePane();
+    wasSettings.current = settingsActive;
+  }, [settingsActive]);
 
   useEffect(() => {
     boot();
@@ -162,29 +188,39 @@ export default function App() {
     };
   }, []);
 
+  // Rail layout: a title strip across the window (traffic lights, path,
+  // view controls), then the sidebar and the pane cards side by side on the
+  // window frame. Each card carries its own status footer.
   return (
     <div className="flex h-full flex-col bg-window text-primary">
-      <Toolbar />
-      <FdaBanner />
-      <div className="flex min-h-0 flex-1">
-        {sidebarPosition === "left" && <Sidebar />}
-        <PaneArea />
-        <GetInfoPanel />
-        {sidebarPosition === "right" && <Sidebar />}
+      <TitleStrip />
+      <div
+        className={clsx(
+          "flex min-h-0 flex-1 gap-2 px-2 pb-2",
+          sidebarPosition === "right" && "flex-row-reverse",
+        )}
+      >
+        {!sidebarCollapsed && <Sidebar />}
+        <main className="flex min-w-0 flex-1 flex-col gap-2" data-tauri-drag-region>
+          <FdaBanner />
+          {/* Panes stay mounted under the Settings tab so scroll and
+              selection survive the round trip. */}
+          <PaneArea hidden={settingsActive} />
+          {settingsActive && <SettingsTab />}
+        </main>
       </div>
-      <StatusBar />
 
       {/* overlays & transient chrome */}
       <PreviewOverlay />
       <CommandPalette />
       <FuzzyFinder />
-      <SettingsOverlay />
       <BatchRenameModal />
       <VimCheatSheet />
       <ConflictDialog />
       <ConfirmDialog />
       <OpCards />
       <Toasts />
+      <FolderTintFilter />
       <ContextMenuHost />
     </div>
   );

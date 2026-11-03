@@ -29,6 +29,7 @@ function entry(id: number): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   };
 }
 

@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi auto-cleanup designs</title>
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --card: #ffffff;
+        --text: #1b1e24;
+        --text-2: #545b67;
+        --text-3: #8a919c;
+        --line: #e2e5ea;
+        --accent: #3352d4;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181c;
+          --card: #1f2227;
+          --text: #e8eaee;
+          --text-2: #a3a9b4;
+          --text-3: #6c727d;
+          --line: #2c3037;
+          --accent: #8098ff;
+          color-scheme: dark;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 56px 28px 80px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.2;
+        letter-spacing: -0.015em;
+      }
+      .lede {
+        max-width: 68ch;
+        margin: 12px 0 0;
+        color: var(--text-2);
+      }
+      .lede + .lede {
+        margin-top: 10px;
+      }
+      a {
+        color: var(--accent);
+      }
+      .designs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 22px;
+        margin-top: 40px;
+      }
+      @media (max-width: 860px) {
+        .designs {
+          grid-template-columns: 1fr;
+        }
+      }
+      .design {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--card);
+        overflow: hidden;
+      }
+      .shots {
+        position: relative;
+        display: block;
+        aspect-ratio: 1440 / 900;
+        background: #2b2e35;
+        overflow: hidden;
+      }
+      .shots img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: opacity 0.2s;
+      }
+      .shots img.split {
+        opacity: 0;
+      }
+      .shots:hover img.split,
+      .shots:focus-visible img.split {
+        opacity: 1;
+      }
+      .shots:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: -3px;
+      }
+      .design-body {
+        padding: 18px 20px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+      }
+      .design h2 {
+        margin: 0;
+        font-size: 19px;
+        letter-spacing: -0.01em;
+      }
+      .design h2 span {
+        color: var(--text-3);
+        font-weight: 500;
+      }
+      .design p {
+        margin: 0;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 6px 14px;
+        margin: 4px 0 0;
+        font-size: 13.5px;
+      }
+      dt {
+        color: var(--text-3);
+      }
+      dd {
+        margin: 0;
+        color: var(--text-2);
+      }
+      .open {
+        margin-top: auto;
+        padding-top: 6px;
+        font-weight: 600;
+        font-size: 14px;
+      }
+      h3 {
+        margin: 56px 0 6px;
+        font-size: 19px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      th,
+      td {
+        padding: 10px 14px;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--line);
+      }
+      th {
+        font-weight: 600;
+        color: var(--text);
+      }
+      td {
+        color: var(--text-2);
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td:first-child {
+        color: var(--text);
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .note {
+        max-width: 72ch;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      kbd {
+        font: 12.5px ui-monospace, "SF Mono", Menlo, monospace;
+        padding: 1px 5px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: var(--card);
+      }
+      code {
+        font: 13px ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      ul.keys {
+        columns: 2;
+        column-gap: 32px;
+        padding-left: 18px;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      ul.keys li {
+        margin-bottom: 4px;
+        break-inside: avoid;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Four lighter takes on the auto-cleanup notice</h1>
+      <p class="lede">
+        Today a Downloads pane opens with a full-width banner (“Auto-cleanup is on. Items move to the Trash 14 days after
+        they arrive. 3 items (86 MB) go tomorrow.” plus Select Them, Pause, and ×), and every footer says “⌛ 3 to Trash by
+        tomorrow · next sweep 8:05 pm”. Each design below keeps every action (Select, Keep, Pause, Hide, Settings, and
+        the rule and sweep time) while cutting the words and the height.
+      </p>
+      <p class="lede">
+        All four run in the A2 layout on the shared engine, starting in Downloads with three items leaving tomorrow.
+        Hover a screenshot for a second state. “Reset cleanup” in the bar above each mockup brings the items back after
+        Keep, Pause, or Hide.
+      </p>
+      <section class="designs">
+        <article class="design">
+          <a class="shots" href="a-pill.html">
+            <img src="screens/a-pill.png" alt="Footer pill with its details open, dark" />
+            <img class="split" src="screens/a-pill-alt.png" alt="Footer pill from Projects, offering Show in Downloads, light" />
+          </a>
+          <div class="design-body">
+            <h2>A · Footer pill <span>no banner</span></h2>
+            <p>One red pill in the footer, “⌛ 3 · tomorrow”, shown from any folder. Clicking it opens the details above it: the items and their sizes, the rule, and the actions.</p>
+            <dl>
+              <dt>Banner</dt><dd>Gone; the list starts at the top</dd>
+              <dt>Footer</dt><dd>“⌛ 3 · tomorrow” pill</dd>
+              <dt>Actions</dt><dd>In the popover: Select, Keep, Pause, Settings; “Show in Downloads” from elsewhere</dd>
+              <dt>Trade-off</dt><dd>The notice is small, so the red Cleanup column and the sidebar badge carry more of the warning</dd>
+            </dl>
+            <a class="open" href="a-pill.html">Open A →</a>
+          </div>
+        </article>
+        <article class="design">
+          <a class="shots" href="b-group.html">
+            <img src="screens/b-group.png" alt="List group of leaving items, dark" />
+            <img class="split" src="screens/b-group-alt.png" alt="List group folded, light" />
+          </a>
+          <div class="design-body">
+            <h2>B · List group <span>no banner</span></h2>
+            <p>The items leaving soon gather at the top of the list under a row-height header, “Leaving tomorrow 3 · 86 MB”. The notice is the list itself.</p>
+            <dl>
+              <dt>Banner</dt><dd>Replaced by a 28pt group header inside the list</dd>
+              <dt>Footer</dt><dd>“⌛ 3”; jumps to Downloads from elsewhere</dd>
+              <dt>Actions</dt><dd>On the header: Select, Keep, Pause, Settings; the chevron folds the group</dd>
+              <dt>Trade-off</dt><dd>Moves those items out of your sort order while they’re due</dd>
+            </dl>
+            <a class="open" href="b-group.html">Open B →</a>
+          </div>
+        </article>
+        <article class="design">
+          <a class="shots" href="c-slim.html">
+            <img src="screens/c-slim.png" alt="Slim tinted strip, dark" />
+            <img class="split" src="screens/c-slim-alt.png" alt="Slim tinted strip, light" />
+          </a>
+          <div class="design-body">
+            <h2>C · Slim strip <span>closest to today</span></h2>
+            <p>The banner stays but drops to one 30pt tinted line, “⌛ 3 items leave tomorrow · 86 MB”, with icon buttons. The rule and sweep time move into the hourglass’s tooltip.</p>
+            <dl>
+              <dt>Banner</dt><dd>30pt, edge to edge, no card or border</dd>
+              <dt>Footer</dt><dd>“⌛ 3”</dd>
+              <dt>Actions</dt><dd>Icons with tooltips: Select, Keep, Pause, Hide</dd>
+              <dt>Trade-off</dt><dd>Icon-only actions need a hover to learn</dd>
+            </dl>
+            <a class="open" href="c-slim.html">Open C →</a>
+          </div>
+        </article>
+        <article class="design">
+          <a class="shots" href="d-chip.html">
+            <img src="screens/d-chip.png" alt="Address chip with its details open, dark" />
+            <img class="split" src="screens/d-chip-alt.png" alt="Address chip closed, light" />
+          </a>
+          <div class="design-body">
+            <h2>D · Address chip <span>no banner, no footer note</span></h2>
+            <p>While a pane shows Downloads, the address field ends in a red “⌛ 3 · tomorrow” chip, like a browser’s site badge. It opens the same details as A.</p>
+            <dl>
+              <dt>Banner</dt><dd>Gone</dd>
+              <dt>Footer</dt><dd>Nothing for cleanup</dd>
+              <dt>Actions</dt><dd>In the popover, as in A</dd>
+              <dt>Trade-off</dt><dd>Only visible in Downloads; elsewhere the sidebar badge is the only hint</dd>
+            </dl>
+            <a class="open" href="d-chip.html">Open D →</a>
+          </div>
+        </article>
+      </section>
+
+      <h3>Side by side</h3>
+      <table>
+        <tr><th></th><th>Today</th><th>A · Pill</th><th>B · Group</th><th>C · Slim</th><th>D · Chip</th></tr>
+        <tr><td>Height above the list</td><td>38pt</td><td>0</td><td>28pt, in the list</td><td>30pt</td><td>0</td></tr>
+        <tr><td>Words in view</td><td>~25</td><td>2 (“3 · tomorrow”)</td><td>~6</td><td>~6</td><td>2</td></tr>
+        <tr><td>Footer</td><td>“3 to Trash by tomorrow · next sweep”</td><td>Pill</td><td>“⌛ 3”</td><td>“⌛ 3”</td><td>Nothing</td></tr>
+        <tr><td>Select / Keep</td><td>1 click / ⌥⌘K</td><td>2 clicks</td><td>1 click</td><td>1 click</td><td>2 clicks</td></tr>
+        <tr><td>Rule and sweep time</td><td>Always shown</td><td>Popover</td><td>“Later” header</td><td>Tooltip</td><td>Popover</td></tr>
+        <tr><td>Seen from other folders</td><td>Footer</td><td>Footer pill</td><td>Footer</td><td>Footer</td><td>Sidebar badge only</td></tr>
+      </table>
+      <p class="note">
+        The Cleanup column, the red “Tomorrow” labels, the Downloads badges in the sidebar, Keep (⌥⌘K), and the Put Back
+        toast stay as they are in every design.
+      </p>
+    </main>
+  </body>
+</html>

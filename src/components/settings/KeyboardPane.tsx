@@ -1,56 +1,212 @@
 /**
- * Keybindings editor: per-command recorder with conflict blocking.
+ * Keyboard settings: Vim mode, then every command's shortcut, grouped by
+ * area and filterable. Click a shortcut to record a new one.
  *
  * The recorder captures a window keydown in the capture phase (stopping
  * propagation so nothing else fires), builds the shortcut via
  * shortcutFromEvent (lone modifiers ignored), and checks a PROSPECTIVE
- * registry for conflicts before anything persists — a conflicting capture is
- * blocked with an "unbind the other command" escape hatch.
+ * registry for conflicts before anything persists. A conflicting capture is
+ * blocked, with an offer to move the shortcut from the other command.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
-import { allCommands } from "../../lib/commands/registry";
+import { RotateCcw, Search, X } from "lucide-react";
+import { allCommands, type RegisteredCommand } from "../../lib/commands/registry";
 import { conflictsForOverrides } from "../../lib/commands";
 import { parseShortcut, shortcutFromEvent, shortcutLabel } from "../../lib/keyboard";
 import { isVimReservedShortcut, VIM_CHEATS } from "../../lib/vim";
 import { useSettings } from "../../stores/settings";
-import { SettingRow, Toggle } from "./controls";
+import { SettingGroup, SettingRow, SettingsFilterContext, Toggle } from "./controls";
 import * as ipc from "../../lib/ipc";
 
 interface Capture {
   commandId: string;
   shortcut: string;
   conflictWith: string | null;
-  /** Blocked because Vim mode reserves the key (no unbind escape hatch). */
+  /** Blocked because Vim mode reserves the key (no move escape hatch). */
   vimReserved?: boolean;
 }
 
-function VimSection() {
+/** Shortcut-list groups, in display order. Unlisted commands land in "Other". */
+const CATEGORIES: Array<[string, string[]]> = [
+  [
+    "Files",
+    ["open", "openWith", "contextMenu", "getInfo", "preview", "quicklookPanel", "newFolder", "rename",
+      "batchRename", "duplicate", "compress", "extract", "share", "revealInFinder"],
+  ],
+  ["Edit", ["copy", "cut", "paste", "movePaste", "copyName", "copyPathname", "undo", "redo", "selectAll"]],
+  ["Trash and cleanup", ["trash", "deletePermanent", "emptyTrash", "goTrash", "toggleCleanupKeep",
+    "cleanupNow", "cleanupSettings"]],
+  ["Go", ["back", "forward", "up", "goHome", "goDesktop", "goDocuments", "goDownloads", "goApplications",
+    "openLocation", "eject"]],
+  ["Tabs and panes", ["newTab", "closeTab", "nextTab", "prevTab", "dualPane", "swapPane", "toggleSidebar"]],
+  ["View", ["viewList", "viewGrid", "toggleHidden", "refresh"]],
+  ["Search and commands", ["focusSearch", "fuzzyFinder", "globalSearch", "palette", "toggleVimMode",
+    "vimHelp", "settings"]],
+];
+
+function categoryOf(id: string): string {
+  return CATEGORIES.find(([, ids]) => ids.includes(id))?.[0] ?? "Other";
+}
+
+function VimRows() {
   const vimMode = useSettings((s) => s.vimMode);
+  const focusRing = useSettings((s) => s.paneAccentLine);
+  const query = useContext(SettingsFilterContext);
+  const patch = useSettings((s) => s.patch);
   return (
-    <div className="mb-4 border-b border-edge pb-2">
+    <SettingGroup title="Vim">
       <SettingRow
         label="Vim mode"
-        hint="Browse with hjkl, visual selection, yy/dd/p. Bare letters stop jumping to names; use / to filter instead."
+        hint="Move with hjkl, select with v, copy and paste with yy, dd, and p. Letter keys stop jumping to file names; press / to filter instead."
+        keywords="hjkl modal keys"
+        setting="vimMode"
       >
-        <Toggle checked={vimMode} onChange={(v) => useSettings.getState().patch({ vimMode: v })} />
+        <Toggle label="Vim mode" checked={vimMode} onChange={(v) => patch({ vimMode: v })} />
       </SettingRow>
-      {vimMode && (
-        <div className="mb-2 grid grid-cols-[90px_1fr] gap-x-3 gap-y-1 rounded-md border border-edge bg-pane p-3 text-[12px]">
-          {VIM_CHEATS.map(([keys, what]) => (
-            <div key={keys} className="contents">
-              <span className="tnum text-secondary">{keys}</span>
-              <span className="text-tertiary">{what}</span>
-            </div>
-          ))}
+      <SettingRow
+        label="Focus ring"
+        hint="Outline the pane that receives your keystrokes."
+        keywords="active pane outline accent"
+        setting="paneAccentLine"
+        needs={{ label: "Vim mode", on: vimMode }}
+      >
+        <Toggle
+          label="Focus ring"
+          checked={focusRing}
+          disabled={!vimMode}
+          onChange={(v) => patch({ paneAccentLine: v })}
+        />
+      </SettingRow>
+      {vimMode && query === "" && (
+        <div className="px-3.5 pb-3">
+          <div className="grid grid-cols-[auto_1fr_auto_1fr] gap-x-2.5 gap-y-1.5 rounded-lg bg-pane px-3 py-2.5 text-[12px] text-secondary">
+            {VIM_CHEATS.map(([keys, what]) => (
+              <div key={keys} className="contents">
+                <kbd className="justify-self-start whitespace-nowrap rounded-[5px] bg-raised px-1.5 py-0.5 font-sans text-[11.5px] text-primary shadow-[0_0_0_0.5px_var(--border-strong)]">
+                  {keys}
+                </kbd>
+                <span>{what}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </SettingGroup>
+  );
+}
+
+function ShortcutRow({
+  cmd,
+  overridden,
+  recording,
+  capture,
+  titleOf,
+  onRecord,
+  onCancel,
+  onTakeover,
+}: {
+  cmd: RegisteredCommand;
+  overridden: boolean;
+  recording: boolean;
+  capture: Capture | null;
+  titleOf(id: string): string;
+  onRecord(): void;
+  onCancel(): void;
+  onTakeover(): void;
+}) {
+  const setOverride = useSettings((s) => s.setKeybindingOverride);
+  const clearOverride = useSettings((s) => s.clearKeybindingOverride);
+  const shortcut = cmd.shortcut;
+  return (
+    <div
+      className="settings-row group/cmd flex min-h-8 flex-wrap items-center gap-1.5 rounded-[7px] py-0.5 pl-2 pr-1 hover:bg-hov"
+      data-command-id={cmd.id}
+    >
+      <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13px] text-primary">
+        {cmd.title}
+        {overridden && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" title="Changed from default" />}
+      </span>
+      <span className="invisible flex gap-0.5 group-focus-within/cmd:visible group-hover/cmd:visible">
+        {overridden && (
+          <button
+            className="flex h-[22px] w-[22px] cursor-default items-center justify-center rounded-[5px] text-tertiary hover:bg-hov hover:text-primary"
+            title="Restore the default shortcut"
+            aria-label={`Restore the default shortcut for ${cmd.title}`}
+            onClick={() => clearOverride(cmd.id)}
+          >
+            <RotateCcw size={12} strokeWidth={1.75} />
+          </button>
+        )}
+        {shortcut && (
+          <button
+            className="flex h-[22px] w-[22px] cursor-default items-center justify-center rounded-[5px] text-tertiary hover:bg-hov hover:text-primary"
+            title="Remove the shortcut"
+            aria-label={`Remove the shortcut for ${cmd.title}`}
+            onClick={() => setOverride(cmd.id, null)}
+          >
+            <X size={12} strokeWidth={1.75} />
+          </button>
+        )}
+      </span>
+      <button
+        className={clsx(
+          "focusable flex h-[26px] min-w-[92px] cursor-default items-center rounded-md px-1",
+          recording
+            ? "justify-center bg-accent-faint shadow-[inset_0_0_0_1.5px_var(--accent)]"
+            : "justify-end hover:bg-hov",
+        )}
+        aria-label={recording ? `Recording a shortcut for ${cmd.title}` : `Change the shortcut for ${cmd.title}`}
+        onClick={recording ? onCancel : onRecord}
+      >
+        {capture ? (
+          <kbd className="rounded-[5px] bg-raised px-1.5 py-0.5 font-sans text-[11.5px] text-primary shadow-[0_0_0_1.5px_var(--danger)]">
+            {capture.vimReserved ? capture.shortcut : shortcutLabel(capture.shortcut)}
+          </kbd>
+        ) : recording ? (
+          <span className="animate-pulse text-[12px] font-medium text-accent">Press keys…</span>
+        ) : shortcut ? (
+          <kbd className="rounded-[5px] bg-raised px-1.5 py-0.5 font-sans text-[11.5px] text-primary shadow-[0_0_0_0.5px_var(--border-strong),0_1px_0_var(--border-strong)]">
+            {shortcutLabel(shortcut)}
+          </kbd>
+        ) : (
+          <span className="pr-1 text-[12px] text-tertiary">None</span>
+        )}
+      </button>
+      {capture && (
+        <div
+          className="mb-1.5 mt-0.5 flex basis-full items-center gap-2 rounded-[7px] bg-[color-mix(in_srgb,var(--danger)_11%,transparent)] py-1.5 pl-2.5 pr-1.5 text-[12px]"
+          role="alert"
+        >
+          <span className="flex-1 text-primary">
+            {capture.vimReserved
+              ? `${capture.shortcut} belongs to Vim mode while it's on.`
+              : `${shortcutLabel(capture.shortcut)} already runs “${titleOf(capture.conflictWith ?? "")}”.`}
+          </span>
+          <button
+            className="h-6 cursor-default rounded-md bg-pane px-2.5 text-[12px] font-medium hover:bg-hov"
+            onClick={onCancel}
+          >
+            {capture.vimReserved ? "OK" : "Cancel"}
+          </button>
+          {!capture.vimReserved && (
+            <button
+              className="h-6 cursor-default rounded-md bg-accent px-2.5 text-[12px] font-medium text-white"
+              onClick={onTakeover}
+            >
+              Move it here
+            </button>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-export function KeyboardPane() {
+function Shortcuts() {
   const overrides = useSettings((s) => s.keybindingOverrides);
+  const query = useContext(SettingsFilterContext);
+  const [filter, setFilter] = useState("");
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [capture, setCapture] = useState<Capture | null>(null);
 
@@ -102,7 +258,7 @@ export function KeyboardPane() {
         setRecordingId(null);
         setCapture(null);
       } else {
-        // Blocked: show the conflict, offer to unbind the other command.
+        // Blocked: show the conflict, offer to move the shortcut here.
         setCapture({ commandId: recordingId, shortcut, conflictWith });
       }
     };
@@ -118,120 +274,104 @@ export function KeyboardPane() {
   }, [recordingId]);
 
   const titleOf = (id: string) => commands.find((c) => c.id === id)?.title ?? id;
+  // The settings search narrows to command names; the local filter also
+  // matches areas and shortcut labels (type "⌘D" or "tabs").
+  const q = (query || filter).trim().toLowerCase();
+  const matches = commands.filter((c) =>
+    query !== ""
+      ? c.title.toLowerCase().includes(q)
+      : `${c.title} ${categoryOf(c.id)} ${c.shortcut ? shortcutLabel(c.shortcut) : ""}`
+          .toLowerCase()
+          .includes(q),
+  );
+  const changed = Object.keys(overrides).length;
+  const groups = [...CATEGORIES.map(([name]) => name), "Other"]
+    .map((name) => [name, matches.filter((c) => categoryOf(c.id) === name)] as const)
+    .filter(([, list]) => list.length > 0);
+
+  const rows = groups.map(([name, list]) => (
+    <div key={name} className="mt-2.5 first:mt-0">
+      <div className="px-0.5 py-1 text-[11px] font-semibold text-tertiary">{name}</div>
+      {list.map((cmd) => (
+        <ShortcutRow
+          key={cmd.id}
+          cmd={cmd}
+          overridden={cmd.id in overrides}
+          recording={recordingId === cmd.id}
+          capture={capture?.commandId === cmd.id ? capture : null}
+          titleOf={titleOf}
+          onRecord={() => {
+            setCapture(null);
+            setRecordingId(cmd.id);
+          }}
+          onCancel={() => {
+            setCapture(null);
+            setRecordingId(null);
+          }}
+          onTakeover={() => {
+            if (!capture) return;
+            const settings = useSettings.getState();
+            if (capture.conflictWith) settings.setKeybindingOverride(capture.conflictWith, null);
+            settings.setKeybindingOverride(capture.commandId, [capture.shortcut]);
+            setCapture(null);
+            setRecordingId(null);
+          }}
+        />
+      ))}
+    </div>
+  ));
+
+  // In settings search, matching commands join the results without the
+  // list chrome; a search that matches none leaves the group hidden.
+  if (query !== "") {
+    return groups.length > 0 ? <SettingGroup title="Shortcuts"><div className="p-2">{rows}</div></SettingGroup> : null;
+  }
 
   return (
-    <div>
-      <VimSection />
-      <div className="mb-2 text-[11px] text-tertiary">
-        Click Record, then press the new shortcut. Esc cancels recording.
+    <SettingGroup title="Shortcuts">
+      <div className="settings-row block p-3">
+        <div className="mb-1 text-[11.5px] text-tertiary">
+          Click a shortcut, then press the new keys. Esc cancels.
+        </div>
+        <div className="mb-2 flex items-center gap-2.5">
+          <label className="flex h-7 flex-1 items-center gap-1.5 rounded-[7px] bg-hov px-2.5 text-tertiary focus-within:shadow-[0_0_0_1.5px_var(--accent)]">
+            <Search size={12} strokeWidth={1.75} aria-hidden />
+            <input
+              className="min-w-0 flex-1 bg-transparent text-[12.5px] text-primary outline-none placeholder:text-tertiary"
+              placeholder="Filter by name, area, or keys"
+              aria-label="Filter shortcuts"
+              value={filter}
+              spellCheck={false}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && filter !== "") {
+                  e.preventDefault();
+                  setFilter("");
+                }
+                e.stopPropagation();
+              }}
+            />
+          </label>
+          {changed > 0 && (
+            <button
+              className="cursor-default text-[12px] font-medium text-accent hover:underline"
+              onClick={() => useSettings.getState().patch({ keybindingOverrides: {} })}
+            >
+              Restore {changed} changed
+            </button>
+          )}
+        </div>
+        {rows.length > 0 ? rows : <div className="py-3 text-center text-[12px] text-tertiary">No commands match.</div>}
       </div>
-      <div className="divide-y divide-edge">
-        {commands.map((cmd) => {
-          const overridden = cmd.id in overrides;
-          const unbound = overrides[cmd.id] === null;
-          const recording = recordingId === cmd.id;
-          const rowCapture = capture?.commandId === cmd.id ? capture : null;
-          return (
-            <div key={cmd.id} className="py-1.5">
-              <div className="flex items-center gap-3">
-                <span className="min-w-0 flex-1 truncate text-[13px] text-primary">
-                  {cmd.title}
-                  {overridden && (
-                    <span className="ml-2 rounded bg-accent-faint px-1 text-[10px] text-accent">
-                      custom
-                    </span>
-                  )}
-                </span>
-                <span
-                  className={clsx(
-                    "w-24 shrink-0 text-right text-[12px]",
-                    recording ? "text-accent" : unbound ? "text-tertiary" : "text-secondary",
-                  )}
-                >
-                  {rowCapture
-                    ? `${shortcutLabel(rowCapture.shortcut)} ${rowCapture.vimReserved ? "reserved" : "conflicts"}`
-                    : recording
-                      ? "press keys…"
-                      : unbound
-                        ? "—"
-                        : cmd.shortcut
-                          ? shortcutLabel(cmd.shortcut)
-                          : "—"}
-                </span>
-                <div className="flex shrink-0 gap-1">
-                  <button
-                    className={clsx(
-                      "cursor-default rounded border border-edge px-2 py-0.5 text-[11px] hover:bg-hov",
-                      recording ? "text-accent" : "text-secondary",
-                    )}
-                    onClick={() => {
-                      setCapture(null);
-                      setRecordingId(recording ? null : cmd.id);
-                    }}
-                  >
-                    {recording ? "Cancel" : "Record"}
-                  </button>
-                  <button
-                    className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov disabled:opacity-40"
-                    disabled={unbound}
-                    title="Remove the shortcut"
-                    onClick={() => useSettings.getState().setKeybindingOverride(cmd.id, null)}
-                  >
-                    Unbind
-                  </button>
-                  <button
-                    className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov disabled:opacity-40"
-                    disabled={!overridden}
-                    title="Restore the default shortcut"
-                    onClick={() => useSettings.getState().clearKeybindingOverride(cmd.id)}
-                  >
-                    Reset
-                  </button>
-                </div>
-              </div>
-              {rowCapture && (
-                <div
-                  className="mt-1.5 rounded-md border border-edge bg-pane p-2.5 text-[12px]"
-                  aria-live="polite"
-                >
-                  <span className="text-danger">
-                    {rowCapture.vimReserved
-                      ? `${shortcutLabel(rowCapture.shortcut)} is reserved while Vim mode is on.`
-                      : `${shortcutLabel(rowCapture.shortcut)} is taken by “${titleOf(rowCapture.conflictWith ?? "")}”.`}
-                  </span>
-                  <div className="mt-1.5 flex gap-2">
-                    {!rowCapture.vimReserved && (
-                      <button
-                        className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov"
-                        onClick={() => {
-                          const settings = useSettings.getState();
-                          if (rowCapture.conflictWith) {
-                            settings.setKeybindingOverride(rowCapture.conflictWith, null);
-                          }
-                          settings.setKeybindingOverride(rowCapture.commandId, [rowCapture.shortcut]);
-                          setCapture(null);
-                          setRecordingId(null);
-                        }}
-                      >
-                        Unbind “{titleOf(rowCapture.conflictWith ?? "")}” and use it here
-                      </button>
-                    )}
-                    <button
-                      className="cursor-default rounded border border-edge px-2 py-0.5 text-[11px] text-secondary hover:bg-hov"
-                      onClick={() => {
-                        setCapture(null);
-                        setRecordingId(null);
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    </SettingGroup>
+  );
+}
+
+export function KeyboardPane() {
+  return (
+    <>
+      <VimRows />
+      <Shortcuts />
+    </>
   );
 }

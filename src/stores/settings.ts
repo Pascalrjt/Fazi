@@ -36,6 +36,8 @@ interface SettingsState {
   fdaBannerDismissed: boolean;
   confirmPermanentDelete: boolean;
   confirmEmptyTrash: boolean;
+  /** Reopen the last session's tabs and panes at launch (stores/session). */
+  restoreTabs: boolean;
   // Appearance
   theme: Theme;
   /** Custom accent CSS color; "" = the built-in accent. */
@@ -43,7 +45,8 @@ interface SettingsState {
   density: Density;
   /** Finder-style alternating row colors in list view and search results. */
   zebraStripes: boolean;
-  /** Accent-colored line above the active pane's tab strip. */
+  /** In Vim mode, an accent ring around the pane card that has keyboard
+   *  focus (key name kept for persisted settings). */
   paneAccentLine: boolean;
   // Keyboard
   keybindingOverrides: KeybindingOverrides;
@@ -150,6 +153,7 @@ export const SETTINGS_DEFAULTS: SettingsValues = {
   fdaBannerDismissed: false,
   confirmPermanentDelete: true,
   confirmEmptyTrash: true,
+  restoreTabs: true,
   theme: "system",
   accent: "",
   density: "normal",

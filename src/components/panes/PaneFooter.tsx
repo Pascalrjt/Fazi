@@ -1,34 +1,16 @@
-/** "14 items, 3 selected — 2.4 GB" + hidden-files and Vim-mode indicators. */
+/**
+ * A pane card's footer: "14 items, 3 selected — 2.4 GB" for that pane, plus
+ * hidden-files and sorting notes. The focused pane also carries the
+ * app-wide Vim mode indicator and auto-cleanup pill.
+ */
 import clsx from "clsx";
-import { Hourglass } from "lucide-react";
-import { useApp } from "../../stores/app";
+import { useApp, type PaneId } from "../../stores/app";
 import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
 import { useSettings } from "../../stores/settings";
 import { useVim } from "../../stores/vim";
 import { vimPendingLabel } from "../../lib/vim";
 import { formatBytes, pluralize } from "../../lib/format";
-import { useCleanup } from "../../stores/cleanup";
-import { leavingSoon } from "../../lib/cleanup";
-
-const sweepTimeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-
-/** "⌛ 4 to Trash by tomorrow · next sweep 3:00 pm", from any folder. */
-function CleanupIndicator() {
-  const count = useCleanup((s) => {
-    let n = 0;
-    for (const item of s.items.values()) if (leavingSoon(item, s.now)) n++;
-    return n;
-  });
-  const nextSweepAt = useCleanup((s) => s.nextSweepAt);
-  if (count === 0) return null;
-  return (
-    <span className="tnum flex items-center gap-1 text-tertiary">
-      <Hourglass size={11} strokeWidth={1.75} className="text-danger" aria-hidden />
-      <span className="text-danger">{count} to Trash by tomorrow</span>
-      {nextSweepAt != null && <span>· next sweep {sweepTimeFmt.format(nextSweepAt)}</span>}
-    </span>
-  );
-}
+import { CleanupPill } from "./CleanupPill";
 
 /** NORMAL / VISUAL plus the in-flight count/prefix ("12", "g"); FILTER while
  *  a text field owns the keyboard — the explicit state the feedback loop
@@ -57,19 +39,20 @@ function VimIndicator() {
   );
 }
 
-export function StatusBar() {
+export function PaneFooter({ paneId }: { paneId: PaneId }) {
   const activePaneId = useApp((s) => s.activePaneId);
   const searchActive = useApp((s) => s.globalSearch.active);
   const hitCount = useApp((s) => s.globalSearch.hits.length);
   const searchStatus = useApp((s) => s.globalSearch.status);
   const vimOn = useSettings((s) => s.vimMode);
 
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
+  const pane = usePanes((s) => s.panes.find((p) => p.id === paneId));
   const tab = pane ? activeTabOf(pane) : null;
+  const isActive = activePaneId === paneId;
 
   let text = "";
   let sizeText = "";
-  if (searchActive) {
+  if (searchActive && isActive) {
     text =
       searchStatus === "searching"
         ? `Searching… ${pluralize(hitCount, "result")}`
@@ -91,14 +74,19 @@ export function StatusBar() {
   }
 
   return (
-    <div className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-window px-3 text-[11px] text-secondary">
-      {vimOn && <VimIndicator />}
+    <div
+      className={clsx(
+        "flex h-[26px] shrink-0 items-center gap-3 border-t border-edge px-3 text-[11px]",
+        isActive ? "text-secondary" : "text-tertiary",
+      )}
+    >
+      {vimOn && isActive && <VimIndicator />}
       <span className="tnum">{text}</span>
-      {sizeText && <span className="tnum">— {sizeText}</span>}
+      {sizeText && <span className="tnum text-tertiary">{sizeText}</span>}
       <div className="flex-1" />
-      {tab?.showHidden && <span className="text-tertiary">hidden files shown</span>}
-      {tab?.sorting && <span className="text-tertiary">sorting…</span>}
-      <CleanupIndicator />
+      {tab?.showHidden && <span className="text-tertiary">Hidden files shown</span>}
+      {tab?.sorting && <span className="text-tertiary">Sorting…</span>}
+      {isActive && <CleanupPill paneId={paneId} />}
     </div>
   );
 }

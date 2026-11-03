@@ -7,6 +7,17 @@ import { safeIpc } from "../lib/safeIpc";
 import { parseSearchQuery } from "../lib/searchQuery";
 import { useSettings } from "./settings";
 
+/** Sections of the Settings tab, in section-bar order. */
+export type SettingsSectionId =
+  | "general"
+  | "appearance"
+  | "sidebar"
+  | "keyboard"
+  | "search"
+  | "transfers"
+  | "cleanup"
+  | "reset";
+
 /**
  * Not-indexed fallback: one-shot (live: false) fuzzy query with its own
  * lifecycle — queryId "search-<searchId>", never occupying the ⌘P live slot,
@@ -80,6 +91,9 @@ export interface Toast {
   message: string;
   action?: { label: string; run: () => void };
   danger?: boolean;
+  /** What the countdown ring shows: it drains from `from` (fraction of the
+   *  lifetime left) to empty over `ms`, or stays at `from` while held. */
+  countdown: { from: number; ms: number; held: boolean };
 }
 
 export interface RenameTarget {
@@ -156,9 +170,16 @@ interface AppState {
   toasts: Toast[];
   previewOpen: boolean;
   getInfoOpen: boolean;
+  /** The Settings tab exists in the tab list (⌘, opens it, ⌘W closes it). */
   settingsOpen: boolean;
-  /** Pane the settings overlay should show on open (palette deep-links). */
-  settingsPaneRequest: string | null;
+  /** The Settings tab is showing in place of the panes. */
+  settingsActive: boolean;
+  /** Section shown in the Settings tab. */
+  settingsSection: SettingsSectionId;
+  /** Settings search; non-empty shows results from every section. */
+  settingsQuery: string;
+  /** Bump to request focus on the settings search field. */
+  settingsSearchFocusSeq: number;
   batchRenameOpen: boolean;
   /** Vim cheat-sheet overlay (g? / palette / status-bar indicator). */
   vimHelpOpen: boolean;
@@ -174,13 +195,23 @@ interface AppState {
   setActivePane(id: PaneId): void;
   setPaletteOpen(open: boolean): void;
   setClipboard(clip: { mode: "copy" | "cut"; paths: string[] } | null): void;
-  pushToast(message: string, opts?: { action?: Toast["action"]; danger?: boolean; sticky?: boolean }): void;
+  /** Every toast dismisses itself; see `toastLifetime`. */
+  pushToast(message: string, opts?: { action?: Toast["action"]; danger?: boolean }): void;
   dismissToast(id: number): void;
+  /** Hold a toast while the pointer rests on it; release resumes its countdown. */
+  holdToast(id: number): void;
+  releaseToast(id: number): void;
   setPreviewOpen(open: boolean): void;
   setGetInfoOpen(open: boolean): void;
+  /** Open (and show) the Settings tab, or close it. */
   setSettingsOpen(open: boolean): void;
-  openSettingsPane(pane: string): void;
-  clearSettingsPaneRequest(): void;
+  /** Show the Settings tab, or switch back to the panes (it stays open). */
+  setSettingsActive(active: boolean): void;
+  /** Open the Settings tab at a section (palette deep-links). */
+  openSettingsPane(section: SettingsSectionId): void;
+  setSettingsSection(section: SettingsSectionId): void;
+  setSettingsQuery(query: string): void;
+  requestSettingsSearchFocus(): void;
   setBatchRenameOpen(open: boolean): void;
   setVimHelpOpen(open: boolean): void;
   startRename(target: RenameTarget): void;
@@ -201,7 +232,27 @@ interface AppState {
 }
 
 let toastSeq = 0;
-const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** How long a toast stays up: longer when it offers a button or reports a
+ *  failure, so there's time to act on it or read it. */
+export function toastLifetime(t: Pick<Toast, "action" | "danger">): number {
+  if (t.action) return 10_000;
+  if (t.danger) return 8_000;
+  return 5_000;
+}
+
+/** Per-toast countdown. A run drains the ring from `from` to empty over `ms`
+ *  and ends at `deadline`; `timer` is unset while the toast is held. */
+const toastTimers = new Map<
+  number,
+  { timer?: ReturnType<typeof setTimeout>; deadline: number; from: number; ms: number }
+>();
+
+function clearToastTimer(id: number): void {
+  const t = toastTimers.get(id);
+  if (t?.timer) clearTimeout(t.timer);
+  toastTimers.delete(id);
+}
 
 export const useApp = create<AppState>()(
   immer((set, get) => ({
@@ -212,7 +263,10 @@ export const useApp = create<AppState>()(
     previewOpen: false,
     getInfoOpen: false,
     settingsOpen: false,
-    settingsPaneRequest: null,
+    settingsActive: false,
+    settingsSection: "general",
+    settingsQuery: "",
+    settingsSearchFocusSeq: 0,
     batchRenameOpen: false,
     vimHelpOpen: false,
     renaming: null,
@@ -229,29 +283,38 @@ export const useApp = create<AppState>()(
 
     pushToast: (message, opts) => {
       const id = ++toastSeq;
+      const ms = toastLifetime(opts ?? {});
       set((s) => {
-        s.toasts.push({ id, message, action: opts?.action, danger: opts?.danger });
+        s.toasts.push({ id, message, action: opts?.action, danger: opts?.danger, countdown: { from: 1, ms, held: false } });
         while (s.toasts.length > 3) {
           const evicted = s.toasts.shift();
-          if (evicted) {
-            const t = toastTimers.get(evicted.id);
-            if (t) clearTimeout(t);
-            toastTimers.delete(evicted.id);
-          }
+          if (evicted) clearToastTimer(evicted.id);
         }
       });
-      if (!opts?.sticky) {
-        toastTimers.set(
-          id,
-          setTimeout(() => get().dismissToast(id), 5000),
-        );
-      }
+      runToast(id, 1, ms);
+    },
+
+    holdToast: (id) => {
+      const t = toastTimers.get(id);
+      if (!t?.timer) return;
+      clearTimeout(t.timer);
+      const left = Math.max(0, t.deadline - Date.now());
+      const from = t.ms > 0 ? (t.from * left) / t.ms : 0;
+      toastTimers.set(id, { deadline: t.deadline, from, ms: left });
+      setCountdown(id, { from, ms: left, held: true });
+    },
+
+    releaseToast: (id) => {
+      const t = toastTimers.get(id);
+      if (!t || t.timer) return;
+      // A short floor so a toast doesn't vanish the instant the pointer leaves.
+      const ms = Math.max(t.ms, 2_000);
+      runToast(id, t.from, ms);
+      setCountdown(id, { from: t.from, ms, held: false });
     },
 
     dismissToast: (id) => {
-      const t = toastTimers.get(id);
-      if (t) clearTimeout(t);
-      toastTimers.delete(id);
+      clearToastTimer(id);
       set((s) => {
         s.toasts = s.toasts.filter((toast) => toast.id !== id);
       });
@@ -259,9 +322,24 @@ export const useApp = create<AppState>()(
 
     setPreviewOpen: (open) => set({ previewOpen: open }),
     setGetInfoOpen: (open) => set({ getInfoOpen: open }),
-    setSettingsOpen: (open) => set({ settingsOpen: open }),
-    openSettingsPane: (pane) => set({ settingsOpen: true, settingsPaneRequest: pane }),
-    clearSettingsPaneRequest: () => set({ settingsPaneRequest: null }),
+    setSettingsOpen: (open) =>
+      set(
+        open
+          ? { settingsOpen: true, settingsActive: true }
+          : { settingsOpen: false, settingsActive: false, settingsQuery: "" },
+      ),
+    setSettingsActive: (active) =>
+      set((s) => {
+        s.settingsActive = active && s.settingsOpen;
+      }),
+    openSettingsPane: (section) =>
+      set({ settingsOpen: true, settingsActive: true, settingsSection: section, settingsQuery: "" }),
+    setSettingsSection: (section) => set({ settingsSection: section, settingsQuery: "" }),
+    setSettingsQuery: (query) => set({ settingsQuery: query }),
+    requestSettingsSearchFocus: () =>
+      set((s) => {
+        s.settingsSearchFocusSeq += 1;
+      }),
     setBatchRenameOpen: (open) => set({ batchRenameOpen: open }),
     setVimHelpOpen: (open) => set({ vimHelpOpen: open }),
     startRename: (target) => set({ renaming: target }),
@@ -441,4 +519,20 @@ export const useApp = create<AppState>()(
 /** Convenience for commands. */
 export function toast(message: string, opts?: Parameters<AppState["pushToast"]>[1]): void {
   useApp.getState().pushToast(message, opts);
+}
+
+/** Start (or resume) a toast's countdown run. */
+function runToast(id: number, from: number, ms: number): void {
+  toastTimers.set(id, {
+    timer: setTimeout(() => useApp.getState().dismissToast(id), ms),
+    deadline: Date.now() + ms,
+    from,
+    ms,
+  });
+}
+
+function setCountdown(id: number, countdown: Toast["countdown"]): void {
+  useApp.setState((s) => ({
+    toasts: s.toasts.map((t) => (t.id === id ? { ...t, countdown } : t)),
+  }));
 }

@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · A · Rail</title>
+    <link rel="stylesheet" href="shared/base.css" />
+    <style>
+      /*
+       * A · Rail
+       * One column owns the window chrome: search on top, favorites as tiles,
+       * then the open tabs as a vertical list (Arc-style). Content floats as
+       * an inset card, so the sidebar color reads as the window itself.
+       */
+      :root,
+      :root[data-theme="light"] {
+        --desk: #9aa3b0;
+        --win: #dbe1e9;
+        --side: #dbe1e9;
+        --pane: #ffffff;
+        --raised: #ffffff;
+        --field: rgba(255, 255, 255, 0.7);
+        --hover: rgba(24, 38, 66, 0.06);
+        --stripe: rgba(24, 38, 66, 0.028);
+        --text: #18202e;
+        --text-2: #4f5a6c;
+        --text-3: #8690a0;
+        --accent: #3352d4;
+        --accent-dim: rgba(51, 82, 212, 0.16);
+        --accent-faint: rgba(51, 82, 212, 0.08);
+        --border: rgba(24, 38, 66, 0.1);
+        --border-strong: rgba(24, 38, 66, 0.18);
+        --danger: #d03b33;
+        --shadow: 0 10px 40px rgba(20, 30, 50, 0.18), 0 0 0 0.5px rgba(20, 30, 50, 0.12);
+        --tab-active: #ffffff;
+        --tab-shadow: 0 1px 2px rgba(20, 30, 50, 0.12), 0 0 0 0.5px rgba(20, 30, 50, 0.08);
+        --card-shadow: 0 0 0 0.5px rgba(20, 30, 50, 0.12), 0 1px 3px rgba(20, 30, 50, 0.08);
+        --sel-bg-inactive: rgba(24, 38, 66, 0.07);
+        --gl-page: #fbfbfc;
+        --seg-on: #fff;
+        color-scheme: light;
+      }
+      :root[data-theme="dark"] {
+        --desk: #3a3f48;
+        --win: #15181d;
+        --side: #15181d;
+        --pane: #1f2228;
+        --raised: #2a2e36;
+        --field: rgba(255, 255, 255, 0.05);
+        --hover: rgba(255, 255, 255, 0.06);
+        --stripe: rgba(255, 255, 255, 0.025);
+        --text: #e7eaf0;
+        --text-2: #a0a7b3;
+        --text-3: #666d79;
+        --accent: #7d93ff;
+        --accent-dim: rgba(125, 147, 255, 0.24);
+        --accent-faint: rgba(125, 147, 255, 0.1);
+        --border: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.15);
+        --danger: #ef6b62;
+        --shadow: 0 10px 40px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+        --tab-active: #2a2e36;
+        --tab-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.07);
+        --card-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.07), 0 1px 3px rgba(0, 0, 0, 0.4);
+        --sel-bg-inactive: rgba(255, 255, 255, 0.06);
+        --gl-page: #e9ebef;
+        --seg-on: #3a3f49;
+        color-scheme: dark;
+      }
+
+      .design-rail {
+        flex-direction: row;
+        background: var(--side);
+      }
+
+      /* ------------------------------------------------------------ rail */
+
+      .rail {
+        width: 244px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 0 10px 10px;
+        min-height: 0;
+      }
+      .rail-top {
+        display: flex;
+        align-items: center;
+        height: 46px;
+        padding-left: 6px;
+      }
+      .rail-search .filter {
+        height: 32px;
+        border-radius: 9px;
+        border-color: transparent;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+      }
+      .rail-search .filter:focus-within,
+      .rail-search .filter.is-global {
+        box-shadow: inset 0 0 0 1.5px var(--accent);
+      }
+
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 6px;
+        margin: 12px 0 10px;
+      }
+      .tile-place {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        height: 40px;
+        padding: 0 3px;
+        border-radius: 9px;
+        background: var(--field);
+        box-shadow: inset 0 0 0 0.5px var(--border);
+        color: var(--text-2);
+      }
+      .tile-place:hover {
+        background: var(--hover);
+        color: var(--text);
+      }
+      .tile-place.is-current {
+        background: var(--tab-active);
+        box-shadow: var(--tab-shadow);
+        color: var(--accent);
+      }
+      .pins {
+        margin: -2px 0 8px;
+      }
+      .tile-badge {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        min-width: 15px;
+        height: 15px;
+        padding: 0 4px;
+        border-radius: 8px;
+        background: var(--danger);
+        color: #fff;
+        font-size: 9.5px;
+        font-weight: 700;
+        line-height: 15px;
+        text-align: center;
+      }
+
+      .tab-groups {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        margin: 0 -4px;
+        padding: 6px 4px 4px;
+        border-top: 1px solid var(--border);
+      }
+      .group-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 24px;
+        margin-top: 6px;
+        padding: 0 8px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-3);
+      }
+      .group-head.is-active {
+        color: var(--text-2);
+      }
+      .group-head .side-mark {
+        width: 14px;
+        height: 10px;
+        border-radius: 2px;
+        border: 1.25px solid currentColor;
+        position: relative;
+      }
+      .group-head .side-mark::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 50%;
+        background: currentColor;
+        opacity: 0.55;
+      }
+      .group-head .side-mark.left::after {
+        left: 0;
+      }
+      .group-head .side-mark.right::after {
+        right: 0;
+      }
+
+      .vtab {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 6px 0 9px;
+        border-radius: 8px;
+        color: var(--text-2);
+      }
+      .vtab:hover {
+        background: var(--hover);
+      }
+      .vtab.is-active {
+        color: var(--text);
+      }
+      .vtab.is-focused {
+        background: var(--tab-active);
+        box-shadow: var(--tab-shadow);
+      }
+      .vtab.is-active:not(.is-focused) {
+        background: var(--hover);
+      }
+      .vtab-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+      }
+      .vtab-name small {
+        font-size: 11.5px;
+        color: var(--text-3);
+      }
+      .vtab-badge {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        font-size: 11px;
+        color: var(--danger);
+      }
+      .vtab-x {
+        visibility: hidden;
+      }
+      .vtab:hover .vtab-x,
+      .vtab.is-focused .vtab-x {
+        visibility: visible;
+      }
+      .new-tab {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        height: 30px;
+        padding: 0 9px;
+        border-radius: 8px;
+        color: var(--text-3);
+        font-size: 12.5px;
+      }
+      .new-tab:hover {
+        background: var(--hover);
+        color: var(--text-2);
+      }
+
+      .rail-foot {
+        padding-top: 8px;
+        border-top: 1px solid var(--border);
+      }
+      .loc {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 28px;
+        padding: 0 6px 0 9px;
+        border-radius: 7px;
+        color: var(--text-2);
+        font-size: 12.5px;
+      }
+      .loc:hover {
+        background: var(--hover);
+      }
+      .loc.is-current {
+        background: var(--accent-dim);
+        color: var(--text);
+      }
+      .loc .grow {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .loc-meta {
+        font-size: 11px;
+        color: var(--text-3);
+      }
+      .loc .eject {
+        display: none;
+      }
+      .loc:hover .eject {
+        display: flex;
+      }
+      .loc:hover .loc-meta.vol {
+        display: none;
+      }
+
+      /* ------------------------------------------------------------ cards */
+
+      .main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 8px 8px 8px 0;
+        gap: 8px;
+      }
+      .no-sidebar .main {
+        padding-left: 8px;
+      }
+      .cards {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        gap: 8px;
+      }
+      .card {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-radius: 10px;
+        background: var(--pane);
+        box-shadow: var(--card-shadow);
+        outline: none;
+      }
+      .is-split .card.is-active {
+        box-shadow:
+          0 0 0 1.5px var(--accent),
+          var(--card-shadow);
+      }
+      .card-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 44px;
+        padding: 0 8px 0 10px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .card-head .crumb {
+        font-size: 13px;
+      }
+      .card-head .crumb.is-current {
+        font-size: 14px;
+      }
+      .head-tools {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        flex-shrink: 0;
+      }
+      .head-tools .seg {
+        margin-right: 4px;
+      }
+      .card-foot {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 26px;
+        padding: 0 12px;
+        border-top: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--text-2);
+        flex-shrink: 0;
+      }
+      .card-foot .dim {
+        color: var(--text-3);
+      }
+      .vim-label {
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: var(--text-3);
+      }
+      .vim-label.visual {
+        color: var(--accent);
+      }
+      .card .info-panel {
+        border-radius: 10px;
+      }
+      .info-card {
+        width: 260px;
+        flex-shrink: 0;
+        display: flex;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: var(--card-shadow);
+        background: var(--pane);
+      }
+      .info-card .info-panel {
+        border: 0;
+        background: var(--pane);
+        width: 100%;
+      }
+      .head-search {
+        width: 200px;
+        margin-right: 6px;
+      }
+      .head-traffic {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-right: 6px;
+      }
+
+      .op-stack,
+      .toast-stack {
+        bottom: 44px;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="shared/core.js"></script>
+    <script>
+      const TRAFFIC = '<div class="traffic"><i></i><i></i><i></i></div>';
+
+      function tile(R, p) {
+        return `<div class="tile-place ${p.current ? "is-current" : ""}" ${R.placeAttrs(p)}>
+          ${R.icon(p.icon, 17)}
+          ${p.badge ? `<span class="tile-badge" title="${p.badge} go to the Trash by tomorrow">${p.badge}</span>` : ""}
+        </div>`;
+      }
+
+      function loc(R, p, meta = "") {
+        return `<div class="loc ${p.current ? "is-current" : ""}" ${R.placeAttrs(p)}>
+          ${R.icon(p.icon, 15)}<span class="grow">${R.esc(p.label)}</span>${meta}
+          ${p.ejectable ? `<button class="btn-x eject" data-act="toast" data-msg="Ejected “${R.esc(p.label)}”" title="Eject">${R.icon("eject", 12)}</button>` : ""}
+        </div>`;
+      }
+
+      function tabGroup(R, S, paneId) {
+        const head = S.split
+          ? `<div class="group-head ${S.activePane === paneId ? "is-active" : ""}"><span class="side-mark ${paneId}"></span>${paneId === "left" ? "Left pane" : "Right pane"}</div>`
+          : "";
+        const rows = R.tabs(paneId)
+          .map(
+            (t) => `<div class="vtab ${t.active ? "is-active" : ""} ${t.focused ? "is-focused" : ""}" ${R.tabAttrs(t)}>
+              ${R.glyph({ dir: true }, 16)}
+              <span class="vtab-name">${R.esc(t.name)}${t.hint ? ` <small>${R.esc(t.hint)}</small>` : ""}</span>
+              ${t.leaving ? `<span class="vtab-badge">${R.icon("hourglass", 11)}${t.leaving}</span>` : ""}
+              <button class="btn-x vtab-x" data-act="closeTab" data-pane-id="${paneId}" data-tab-id="${t.id}" title="Close tab (⌘W)">${R.icon("x", 11)}</button>
+            </div>`,
+          )
+          .join("");
+        return `${head}${rows}<button class="new-tab" data-act="newTab" data-pane-id="${paneId}">${R.icon("plus", 14)}New tab</button>`;
+      }
+
+      function card(R, S, paneId, isLast) {
+        const active = S.activePane === paneId;
+        const searching = S.search.active && active;
+        const tools = isLast
+          ? `<div class="head-tools">${S.sidebar ? "" : `<div class="head-search">${R.filterField()}</div>`}${R.viewToggle()}${R.infoButton()}${R.splitButton()}${R.moreButton()}</div>`
+          : "";
+        const lead =
+          !S.sidebar && paneId === "left"
+            ? `<div class="head-traffic">${TRAFFIC}${R.navButtons(paneId)}<button class="icon-btn" data-act="sidebar" title="Show sidebar (⌥⌘S)">${R.icon("panelExpand", 15)}</button></div>`
+            : "";
+        const st = R.status();
+        const foot = active
+          ? `${st.vim ? `<button class="vim-label ${st.vim.visual ? "visual" : ""}" data-act="vimHelp" title="Vim keys (g?)">${st.vim.label}${st.vim.pending ? ` ${st.vim.pending}` : ""}</button>` : ""}
+             <span class="tnum">${st.text}</span>${st.size ? `<span class="tnum dim">${st.size}</span>` : ""}
+             <span class="grow"></span>
+             ${st.hidden ? `<span class="dim">Hidden files shown</span>` : ""}
+             ${st.cleanup ? `<span class="danger">${st.cleanup}</span><span class="dim">${st.sweep}</span>` : ""}`
+          : `<span class="tnum dim">${R.plural(R.tabs(paneId).find((t) => t.active).count, "item")}</span>`;
+        return `<section class="card pane zebra ${active ? "is-active" : ""}" data-pane="${paneId}">
+          ${active ? R.loadingBar() : ""}
+          <div class="card-head">${lead}${
+            searching
+              ? `${R.searchScopes()}<span class="grow"></span>`
+              : R.crumbs(paneId, { max: S.split ? 2 : 4 })
+          }${tools}</div>
+          ${R.body(paneId)}
+          <div class="card-foot">${foot}</div>
+        </section>`;
+      }
+
+      Fazi.mount({
+        id: "rail",
+        defaultTheme: "light",
+        layout(R, S) {
+          const pl = R.places();
+          const panes = S.split ? ["left", "right"] : ["left"];
+          const rail = S.sidebar
+            ? `<aside class="rail" data-vim-surface="sidebar">
+                <div class="rail-top">${TRAFFIC}<span class="grow"></span>${R.navButtons()}
+                  <button class="icon-btn" data-act="sidebar" title="Hide sidebar (⌥⌘S)">${R.icon("panelCollapse", 15)}</button></div>
+                <div class="rail-search">${R.filterField()}</div>
+                <div class="tiles">${pl.favorites.filter((p) => !p.favorite).map((p) => tile(R, p)).join("")}</div>
+                <div class="pins">${pl.favorites.filter((p) => p.favorite).map((p) => loc(R, p)).join("")}</div>
+                <div class="tab-groups">${panes.map((id) => tabGroup(R, S, id)).join("")}</div>
+                <div class="rail-foot">
+                  ${loc(R, pl.trash, pl.trash.count ? `<span class="loc-meta tnum">${pl.trash.count}</span>` : "")}
+                  ${pl.volumes.map((v) => loc(R, v, `<span class="loc-meta vol tnum">${v.free}</span>`)).join("")}
+                </div>
+              </aside>`
+            : "";
+          return `${rail}<div class="main">${R.fdaBanner()}
+            <div class="cards">${panes.map((id, i) => card(R, S, id, i === panes.length - 1)).join("")}
+            ${S.info ? `<div class="info-card">${R.info()}</div>` : ""}</div></div>`;
+        },
+      });
+    </script>
+  </body>
+</html>

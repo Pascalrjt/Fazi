@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · C · Trail</title>
+    <link rel="stylesheet" href="shared/base.css" />
+    <style>
+      /*
+       * C · Trail
+       * Locations shrink to an icon rail; the tab column gets the room. The
+       * active tab unfolds into its own path, drawn as a trail from the
+       * nearest ancestors down to the current folder, so the breadcrumb bar
+       * disappears and every ancestor stays one click (or one drop) away.
+       * Inactive tabs fold back to a single line.
+       */
+      :root,
+      :root[data-theme="dark"] {
+        --desk: #33403d;
+        --win: #111615;
+        --side: #111615;
+        --pane: #172020;
+        --raised: #212b2a;
+        --field: #172020;
+        --hover: rgba(214, 255, 244, 0.055);
+        --stripe: rgba(214, 255, 244, 0.022);
+        --text: #e1eae7;
+        --text-2: #97a7a3;
+        --text-3: #5d6d69;
+        --accent: #4cb39d;
+        --on-accent: #062520;
+        --accent-dim: rgba(76, 179, 157, 0.24);
+        --accent-faint: rgba(76, 179, 157, 0.1);
+        --border: rgba(214, 255, 244, 0.075);
+        --border-strong: rgba(214, 255, 244, 0.15);
+        --danger: #ef7468;
+        --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(214, 255, 244, 0.06);
+        --trail: rgba(214, 255, 244, 0.16);
+        --gl-folder: #64b8d6;
+        --gl-folder-back: #4497b6;
+        --gl-page: #e3ebe9;
+        --seg-bg: rgba(214, 255, 244, 0.05);
+        --seg-on: #2a3635;
+        color-scheme: dark;
+      }
+      :root[data-theme="light"] {
+        --desk: #a2b2ad;
+        --win: #e6eeeb;
+        --side: #e6eeeb;
+        --pane: #fbfdfc;
+        --raised: #ffffff;
+        --field: #ffffff;
+        --hover: rgba(16, 52, 44, 0.055);
+        --stripe: rgba(16, 52, 44, 0.026);
+        --text: #13211e;
+        --text-2: #4b5e5a;
+        --text-3: #879a95;
+        --accent: #1f7f6c;
+        --on-accent: #fff;
+        --accent-dim: rgba(31, 127, 108, 0.17);
+        --accent-faint: rgba(31, 127, 108, 0.08);
+        --border: rgba(16, 52, 44, 0.1);
+        --border-strong: rgba(16, 52, 44, 0.18);
+        --danger: #c8392f;
+        --shadow: 0 10px 40px rgba(16, 40, 34, 0.2), 0 0 0 1px rgba(16, 52, 44, 0.08);
+        --trail: rgba(16, 52, 44, 0.2);
+        --gl-folder: #5bb2d2;
+        --gl-folder-back: #3e93b3;
+        --gl-page: #fbfdfc;
+        --seg-bg: rgba(16, 52, 44, 0.055);
+        --seg-on: #fff;
+        color-scheme: light;
+      }
+
+      .design-trail {
+        flex-direction: row;
+      }
+
+      /* ----------------------------------------------------- left block */
+
+      .left {
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        border-right: 1px solid var(--border);
+        background: var(--side);
+      }
+      .left-top {
+        display: flex;
+        align-items: center;
+        height: 46px;
+        padding: 0 10px 0 18px;
+      }
+      .left-body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+
+      .rail {
+        width: 52px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 4px 0 10px;
+      }
+      .rail hr {
+        width: 22px;
+        margin: 6px 0;
+        border: 0;
+        border-top: 1px solid var(--border);
+      }
+      .rail-btn {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 34px;
+        border-radius: 9px;
+        color: var(--text-3);
+      }
+      .rail-btn:hover {
+        background: var(--hover);
+        color: var(--text);
+      }
+      .rail-btn.is-current {
+        background: var(--accent-dim);
+        color: var(--accent);
+      }
+      .rail-btn .pin {
+        position: absolute;
+        top: 13px;
+        font-size: 9.5px;
+        font-weight: 800;
+        color: #fff;
+      }
+      .rail-btn:not(.is-current) .gl {
+        opacity: 0.75;
+      }
+      .rail-badge {
+        position: absolute;
+        top: 2px;
+        right: 1px;
+        min-width: 14px;
+        height: 14px;
+        padding: 0 3px;
+        border-radius: 7px;
+        background: var(--danger);
+        color: #fff;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 14px;
+        text-align: center;
+      }
+      .rail-label {
+        /* tooltip-style label on hover */
+        position: absolute;
+        left: 42px;
+        top: 50%;
+        transform: translateY(-50%);
+        padding: 3px 8px;
+        border-radius: 6px;
+        background: var(--raised);
+        box-shadow: var(--shadow);
+        color: var(--text);
+        font-size: 12px;
+        white-space: nowrap;
+        pointer-events: none;
+        opacity: 0;
+        z-index: 40;
+      }
+      .rail-btn:hover .rail-label {
+        opacity: 1;
+        transition: opacity 0.1s 0.25s;
+      }
+
+      /* ------------------------------------------------------- tab column */
+
+      .tabcol {
+        width: 236px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 4px 10px 8px 2px;
+        min-height: 0;
+      }
+      .tabcol.solo {
+        padding-left: 10px;
+      }
+      .tabcol-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      .group-head {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        height: 26px;
+        padding: 0 8px;
+        margin-top: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-3);
+      }
+      .group-head + .group-head,
+      .group + .group {
+        margin-top: 10px;
+      }
+      .group-head i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        border: 1.5px solid currentColor;
+      }
+      .group-head.is-active {
+        color: var(--accent);
+      }
+      .group-head.is-active i {
+        background: currentColor;
+      }
+
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 30px;
+        padding: 0 4px 0 8px;
+        border-radius: 7px;
+        color: var(--text-2);
+        font-size: 13px;
+      }
+      .tab:hover {
+        background: var(--hover);
+      }
+      .tab .grow {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tab small {
+        color: var(--text-3);
+        font-size: 11px;
+      }
+      .tab .btn-x {
+        visibility: hidden;
+      }
+      .tab:hover .btn-x {
+        visibility: visible;
+      }
+
+      /* the unfolded active tab */
+      .trail {
+        position: relative;
+        margin: 2px 0 4px;
+        padding: 6px 4px 4px 0;
+        border-radius: 9px;
+        background: var(--hover);
+      }
+      .is-focused-group .trail {
+        background: var(--pane);
+        box-shadow: 0 0 0 1px var(--border);
+      }
+      .trail .path-edit {
+        margin: 0 4px 4px 8px;
+        width: calc(100% - 12px);
+      }
+      .node {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        height: 24px;
+        padding: 0 6px 0 30px;
+        border-radius: 6px;
+        text-align: left;
+        color: var(--text-3);
+        font-size: 12px;
+      }
+      .node:hover {
+        color: var(--text);
+      }
+      .node:hover span {
+        text-decoration: underline;
+        text-decoration-color: var(--trail);
+        text-underline-offset: 3px;
+      }
+      .node span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* the line + stops */
+      .node::before {
+        content: "";
+        position: absolute;
+        left: 16px;
+        top: 0;
+        bottom: 0;
+        width: 1.5px;
+        background: var(--trail);
+      }
+      .node:first-child::before {
+        top: 50%;
+      }
+      .node::after {
+        content: "";
+        position: absolute;
+        left: 13px;
+        top: 50%;
+        width: 7.5px;
+        height: 7.5px;
+        margin-top: -3.75px;
+        border-radius: 50%;
+        background: var(--pane);
+        box-shadow: inset 0 0 0 1.5px var(--trail);
+      }
+      .node.elided::after {
+        background: none;
+        box-shadow: none;
+      }
+      .node.elided {
+        height: 18px;
+        letter-spacing: 0.15em;
+      }
+      .node.current {
+        height: 34px;
+        padding-right: 4px;
+        color: var(--text);
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .node.current::before {
+        bottom: 50%;
+      }
+      .node.current::after {
+        left: 11px;
+        width: 12px;
+        height: 12px;
+        margin-top: -6px;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-faint);
+      }
+      .node.current:hover span {
+        text-decoration: none;
+      }
+      .node.current .grow {
+        flex: 1;
+      }
+      .node-count {
+        font-weight: 400;
+        font-size: 11px;
+        color: var(--text-3);
+      }
+      .node-badge {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--danger);
+      }
+
+      .add-tab {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        height: 28px;
+        padding: 0 8px;
+        border-radius: 7px;
+        color: var(--text-3);
+        font-size: 12.5px;
+      }
+      .add-tab:hover {
+        background: var(--hover);
+        color: var(--text-2);
+      }
+
+      /* ------------------------------------------------------------ right */
+
+      .right {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--pane);
+      }
+      .toolbar {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 46px;
+        padding: 0 10px 0 8px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .toolbar .filter {
+        width: 280px;
+      }
+      .toolbar .traffic {
+        margin: 0 10px 0 10px;
+      }
+      .tools {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .search-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+        height: 38px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .panes {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+      .pane {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        outline: none;
+      }
+      .pane + .pane {
+        border-left: 1px solid var(--border);
+      }
+      .is-split .pane.is-active::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: var(--accent);
+        z-index: 5;
+      }
+      .is-split .pane:not(.is-active) .pane-content {
+        opacity: 0.82;
+      }
+
+      .statusbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 26px;
+        padding: 0 12px;
+        border-top: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--text-2);
+        flex-shrink: 0;
+      }
+      .statusbar .dim {
+        color: var(--text-3);
+      }
+      .vim-label {
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: var(--text-3);
+      }
+      .vim-label.visual {
+        color: var(--accent);
+      }
+      .fda-wrap {
+        padding: 10px 10px 0;
+      }
+      .fda-wrap .banner-fda {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="shared/core.js"></script>
+    <script>
+      const TRAFFIC = '<div class="traffic"><i></i><i></i><i></i></div>';
+
+      function railBtn(R, p, glyphHtml) {
+        return `<div class="rail-btn ${p.current ? "is-current" : ""}" ${R.placeAttrs(p)} title="">
+          ${glyphHtml || R.icon(p.icon, 17)}
+          ${p.badge ? `<span class="rail-badge">${p.badge}</span>` : ""}
+          <span class="rail-label">${R.esc(p.label)}${p.free ? ` · ${p.free} free` : ""}</span>
+        </div>`;
+      }
+
+      /** Root → current, keeping the last few levels. */
+      function segments(path, R) {
+        const out = [];
+        let p = path;
+        const inHome = path === R.HOME || path.startsWith(R.HOME + "/");
+        while (true) {
+          out.unshift({ path: p, name: p === R.HOME ? "Home" : R.basename(p) });
+          if (p === "/" || (inHome && p === R.HOME)) break;
+          const i = p.lastIndexOf("/");
+          p = i <= 0 ? "/" : p.slice(0, i);
+        }
+        return out;
+      }
+
+      function trail(R, S, t) {
+        if (S.pathEdit === t.paneId) return `<div class="trail">${R.crumbs(t.paneId)}</div>`;
+        const segs = segments(t.path, R);
+        const max = 5;
+        const shown = segs.slice(-max);
+        const ancestors = shown.slice(0, -1);
+        const cur = shown[shown.length - 1];
+        return `<div class="trail" data-crumbs="${t.paneId}" ${R.tabAttrs(t)}>
+          ${segs.length > max ? `<div class="node elided"><span>···</span></div>` : ""}
+          ${ancestors
+            .map(
+              (s) => `<button class="node" data-act="navigate" data-pane-id="${t.paneId}" data-path="${R.esc(s.path)}"><span>${R.esc(s.name)}</span></button>`,
+            )
+            .join("")}
+          <div class="node current"><span class="grow">${R.esc(cur.name)}</span>
+            ${t.leaving ? `<span class="node-badge" title="${t.leaving} go to the Trash by tomorrow">${R.icon("hourglass", 11)}${t.leaving}</span>` : `<span class="node-count tnum">${t.count}</span>`}
+            <button class="btn-x" data-act="closeTab" data-pane-id="${t.paneId}" data-tab-id="${t.id}" title="Close tab (⌘W)">${R.icon("x", 11)}</button>
+          </div>
+        </div>`;
+      }
+
+      function group(R, S, paneId) {
+        const head = S.split
+          ? `<div class="group-head ${S.activePane === paneId ? "is-active" : ""}"><i></i>${paneId === "left" ? "Left pane" : "Right pane"}</div>`
+          : "";
+        const rows = R.tabs(paneId)
+          .map((t) =>
+            t.active
+              ? trail(R, S, t)
+              : `<div class="tab" ${R.tabAttrs(t)}>${R.glyph({ dir: true }, 15)}<span class="grow">${R.esc(t.name)}${t.hint ? ` <small>${R.esc(t.hint)}</small>` : ""}</span>
+                  <button class="btn-x" data-act="closeTab" data-pane-id="${paneId}" data-tab-id="${t.id}" title="Close tab">${R.icon("x", 11)}</button></div>`,
+          )
+          .join("");
+        return `<div class="group ${S.activePane === paneId ? "is-focused-group" : ""}">${head}${rows}
+          <button class="add-tab" data-act="newTab" data-pane-id="${paneId}">${R.icon("plus", 14)}New tab</button></div>`;
+      }
+
+      Fazi.mount({
+        id: "trail",
+        defaultTheme: "dark",
+        layout(R, S) {
+          const pl = R.places();
+          const st = R.status();
+          const panes = S.split ? ["left", "right"] : ["left"];
+          const pins = pl.favorites.filter((p) => p.favorite);
+          const left = `<aside class="left">
+                <div class="left-top">${TRAFFIC}<span class="grow"></span>
+                  <button class="icon-btn" data-act="sidebar" title="${S.sidebar ? "Hide" : "Show"} locations (⌥⌘S)">${R.icon(S.sidebar ? "panelCollapse" : "panelExpand", 15)}</button></div>
+                <div class="left-body">
+                  ${S.sidebar ? `<nav class="rail" data-vim-surface="sidebar">
+                    ${pl.favorites.filter((p) => !p.favorite).map((p) => railBtn(R, p)).join("")}
+                    <hr />
+                    ${pins.map((p) => railBtn(R, p, `${R.glyph({ dir: true }, 22)}<span class="pin">${R.esc(p.label.slice(0, 1))}</span>`)).join("")}
+                    ${railBtn(R, pl.trash)}
+                    <span class="grow"></span>
+                    ${pl.volumes.map((p) => railBtn(R, p)).join("")}
+                  </nav>` : ""}
+                  <div class="tabcol ${S.sidebar ? "" : "solo"}"><div class="tabcol-scroll">${panes.map((id) => group(R, S, id)).join("")}</div></div>
+                </div>
+              </aside>`;
+          return `${left}
+            <div class="right">
+              <header class="toolbar">${R.loadingBar()}
+                ${R.navButtons()}
+                <button class="icon-btn" data-act="up" title="Enclosing folder (⌘↑)">${R.icon("arrowUp", 15)}</button>
+                ${R.filterField()}
+                <span class="grow"></span>
+                <div class="tools">${R.viewToggle()}${R.infoButton()}${R.splitButton()}${R.moreButton()}</div>
+              </header>
+              ${S.search.active ? `<div class="search-row">${R.searchScopes()}</div>` : ""}
+              ${S.fda ? `<div class="fda-wrap">${R.fdaBanner()}</div>` : ""}
+              <div class="panes">
+                ${panes.map((id) => `<section class="pane zebra ${S.activePane === id ? "is-active" : ""}" data-pane="${id}">${R.body(id)}</section>`).join("")}
+                ${R.info()}
+              </div>
+              <footer class="statusbar">
+                ${st.vim ? `<button class="vim-label ${st.vim.visual ? "visual" : ""}" data-act="vimHelp" title="Vim keys (g?)">${st.vim.label}${st.vim.pending ? ` ${st.vim.pending}` : ""}</button>` : ""}
+                <span class="tnum">${st.text}</span>${st.size ? `<span class="tnum dim">${st.size}</span>` : ""}
+                <span class="grow"></span>
+                ${st.hidden ? `<span class="dim">Hidden files shown</span>` : ""}
+                ${st.cleanup ? `<span class="danger">${st.cleanup}</span><span class="dim">${st.sweep}</span>` : ""}
+              </footer>
+            </div>`;
+        },
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · D · Console</title>
+    <link rel="stylesheet" href="shared/base.css" />
+    <style>
+      /*
+       * D · Console
+       * For the keyboard. Dense rows, a mode line, and a command line at the
+       * bottom where the filter lives (/ to focus, ⏎ to search everywhere).
+       * Each pane carries its own path header, commander-style, and its own
+       * tab column on its outer edge, so dual pane reads as two mirrored
+       * halves. Shortcuts sit next to the things they open.
+       */
+      :root,
+      :root[data-theme="dark"] {
+        --desk: #3a3d45;
+        --win: #15171d;
+        --side: #15171d;
+        --pane: #1a1d24;
+        --raised: #252932;
+        --field: transparent;
+        --hover: rgba(255, 255, 255, 0.05);
+        --stripe: rgba(255, 255, 255, 0.022);
+        --text: #e0e3ea;
+        --text-2: #9aa0ad;
+        --text-3: #5f6572;
+        --accent: #e6a93e;
+        --on-accent: #1f1606;
+        --accent-dim: rgba(230, 169, 62, 0.2);
+        --accent-faint: rgba(230, 169, 62, 0.09);
+        --border: rgba(255, 255, 255, 0.07);
+        --border-strong: rgba(255, 255, 255, 0.14);
+        --danger: #ec6a5e;
+        --shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.07);
+        --gl-page: #dfe2e8;
+        --seg-bg: transparent;
+        --seg-on: rgba(255, 255, 255, 0.08);
+        color-scheme: dark;
+      }
+      :root[data-theme="light"] {
+        --desk: #a8a9a3;
+        --win: #ecebe6;
+        --side: #ecebe6;
+        --pane: #f8f8f5;
+        --raised: #ffffff;
+        --field: transparent;
+        --hover: rgba(40, 36, 20, 0.055);
+        --stripe: rgba(40, 36, 20, 0.028);
+        --text: #1e1d1a;
+        --text-2: #5d5b53;
+        --text-3: #98958a;
+        --accent: #a8690a;
+        --on-accent: #fff;
+        --accent-dim: rgba(196, 128, 18, 0.18);
+        --accent-faint: rgba(196, 128, 18, 0.08);
+        --border: rgba(40, 36, 20, 0.11);
+        --border-strong: rgba(40, 36, 20, 0.2);
+        --danger: #c4352a;
+        --shadow: 0 10px 40px rgba(40, 36, 20, 0.2), 0 0 0 1px rgba(40, 36, 20, 0.1);
+        --gl-page: #fdfdfb;
+        --seg-bg: transparent;
+        --seg-on: rgba(40, 36, 20, 0.08);
+        color-scheme: light;
+      }
+      .design-console {
+        --row-h: 21px;
+        --radius: 4px;
+        --list-pad: 8px;
+        font-size: 12px;
+      }
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+      }
+
+      /* ------------------------------------------------------------ title */
+
+      .titlebar {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 38px;
+        padding: 0 8px 0 16px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .titlebar .traffic {
+        margin-right: 12px;
+      }
+      .chip {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 24px;
+        padding: 0 8px;
+        border-radius: 4px;
+        color: var(--text-2);
+        font-size: 11.5px;
+      }
+      .chip kbd {
+        font: 11px var(--font-mono);
+        color: var(--text-3);
+      }
+      .chip:hover {
+        background: var(--hover);
+        color: var(--text);
+      }
+      .titlebar .icon-btn {
+        width: 26px;
+        height: 26px;
+      }
+
+      /* ------------------------------------------------------------ body */
+
+      .body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+      .col {
+        width: 196px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        padding: 6px 0;
+        background: var(--side);
+      }
+      .col.left {
+        border-right: 1px solid var(--border);
+      }
+      .col.right {
+        border-left: 1px solid var(--border);
+      }
+      .col-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 22px;
+        margin-top: 8px;
+        padding: 0 12px;
+        font-size: 11px;
+        color: var(--text-3);
+      }
+      .col-head:first-child {
+        margin-top: 0;
+      }
+      .col-head kbd {
+        font: 10.5px var(--font-mono);
+      }
+      .item {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 24px;
+        margin: 0 6px;
+        padding: 0 6px;
+        border-radius: 4px;
+        color: var(--text-2);
+        font-size: 12.5px;
+      }
+      .item:hover {
+        background: var(--hover);
+        color: var(--text);
+      }
+      .item .grow {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .item kbd {
+        font: 10.5px var(--font-mono);
+        color: var(--text-3);
+        opacity: 0;
+      }
+      .col:hover .item kbd,
+      .vim-on .item kbd {
+        opacity: 1;
+      }
+      .item.is-current {
+        color: var(--text);
+        background: var(--accent-faint);
+      }
+      .item .badge {
+        font: 600 10.5px var(--font-mono);
+        color: var(--danger);
+      }
+      .item .eject {
+        display: none;
+      }
+      .item:hover .eject {
+        display: flex;
+      }
+      .item:hover .vol-free {
+        display: none;
+      }
+      .vol-free {
+        font: 10.5px var(--font-mono);
+        color: var(--text-3);
+      }
+
+      .tab-item {
+        height: 26px;
+      }
+      .tab-item .marker {
+        width: 8px;
+        flex-shrink: 0;
+        color: var(--accent);
+        font: 700 10px var(--font-mono);
+      }
+      .tab-item small {
+        font-size: 11px;
+        color: var(--text-3);
+      }
+      .tab-item.is-active {
+        color: var(--text);
+        background: var(--hover);
+      }
+      .tab-item.is-focused {
+        background: var(--accent-dim);
+      }
+      .tab-item .btn-x {
+        visibility: hidden;
+        width: 18px;
+        height: 18px;
+      }
+      .tab-item:hover .btn-x {
+        visibility: visible;
+      }
+      .col.right .tab-item {
+        flex-direction: row-reverse;
+        text-align: right;
+      }
+      .col.right .col-head {
+        flex-direction: row-reverse;
+      }
+      .add-tab {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 24px;
+        margin: 0 6px;
+        padding: 0 6px;
+        border-radius: 4px;
+        color: var(--text-3);
+        font-size: 12px;
+      }
+      .add-tab:hover {
+        background: var(--hover);
+        color: var(--text-2);
+      }
+      .add-tab kbd {
+        margin-left: auto;
+        font: 10.5px var(--font-mono);
+      }
+      .col.right .add-tab {
+        flex-direction: row-reverse;
+      }
+      .col.right .add-tab kbd {
+        margin-left: 0;
+        margin-right: auto;
+      }
+
+      /* ------------------------------------------------------------ panes */
+
+      .panes {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+      }
+      .pane {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--pane);
+        outline: none;
+      }
+      .pane + .pane {
+        border-left: 1px solid var(--border-strong);
+      }
+      .pane-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+        padding: 0 6px 0 8px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+        background: var(--win);
+      }
+      .is-active .pane-head {
+        box-shadow: inset 0 -2px 0 var(--accent);
+      }
+      .pane-head .crumbs {
+        height: 24px;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+      }
+      .pane-head .crumb {
+        padding: 1px 3px;
+      }
+      .pane-head .crumb.is-current {
+        font-weight: 600;
+      }
+      .pane-head .crumb-sep {
+        font-size: 11.5px;
+        padding: 0;
+      }
+      .pane-head .path-edit {
+        height: 22px;
+      }
+      .pane-count {
+        font: 10.5px var(--font-mono);
+        color: var(--text-3);
+      }
+      .pane-head .icon-btn {
+        width: 22px;
+        height: 22px;
+      }
+      .list-head {
+        height: 22px;
+        font-size: 11px;
+      }
+      .row {
+        font-size: 12px;
+      }
+      .row .gl {
+        width: 14px;
+        height: 14px;
+      }
+      .is-active .row.is-lead {
+        box-shadow: inset 2px 0 0 var(--lead);
+      }
+      .row.is-sel {
+        background: var(--accent-dim);
+      }
+
+      /* ------------------------------------------------- mode + command line */
+
+      .modeline {
+        display: flex;
+        align-items: stretch;
+        height: 22px;
+        border-top: 1px solid var(--border);
+        font: 11px var(--font-mono);
+        color: var(--text-2);
+        flex-shrink: 0;
+        background: var(--win);
+      }
+      .modeline > * {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 10px;
+      }
+      .modeline .mode {
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        background: var(--accent);
+        color: var(--on-accent);
+      }
+      .modeline .mode.off {
+        background: var(--hover);
+        color: var(--text-3);
+      }
+      .modeline .mode.visual {
+        background: var(--text);
+        color: var(--win);
+      }
+      .modeline .seg-path {
+        border-right: 1px solid var(--border);
+        color: var(--text);
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      .modeline .dim {
+        color: var(--text-3);
+      }
+      .modeline .warn {
+        color: var(--danger);
+      }
+
+      .cmdline {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 30px;
+        padding: 0 8px 0 4px;
+        border-top: 1px solid var(--border);
+        flex-shrink: 0;
+        background: var(--pane);
+      }
+      .cmdline .filter {
+        flex: 1;
+        height: 26px;
+        border: 0;
+        background: transparent;
+        padding-left: 6px;
+      }
+      .cmdline .filter .ic {
+        display: none;
+      }
+      .cmdline .filter::before {
+        content: "/";
+        font: 700 13px var(--font-mono);
+        color: var(--accent);
+      }
+      .cmdline .filter.is-global::before {
+        content: "?";
+      }
+      .cmdline .filter input {
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .cmdline .hint {
+        font: 11px var(--font-mono);
+        color: var(--text-3);
+        white-space: nowrap;
+      }
+      .cmdline .seg button {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        height: 20px;
+      }
+      .cmdline .seg button.is-on {
+        color: var(--accent);
+        box-shadow: none;
+      }
+
+      .fda-wrap {
+        padding: 8px 8px 0;
+        background: var(--pane);
+      }
+      .fda-wrap .banner-fda {
+        margin: 0;
+      }
+      .info-panel .info-head {
+        height: 28px;
+      }
+      .op-stack,
+      .toast-stack {
+        bottom: 64px;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="shared/core.js"></script>
+    <script>
+      function place(R, p) {
+        return `<div class="item ${p.current ? "is-current" : ""}" ${R.placeAttrs(p)}>
+          ${R.icon(p.icon, 14)}<span class="grow">${R.esc(p.label)}</span>
+          ${p.badge ? `<span class="badge" title="${p.badge} go to the Trash by tomorrow">⌛${p.badge}</span>` : ""}
+          ${p.free ? `<span class="vol-free">${p.free}</span>` : ""}
+          ${p.ejectable ? `<button class="btn-x eject" data-act="toast" data-msg="Ejected “${R.esc(p.label)}”" title="Eject">${R.icon("eject", 11)}</button>` : ""}
+          ${p.sc ? `<kbd>${R.kbd(p.sc)}</kbd>` : ""}
+        </div>`;
+      }
+
+      function tabList(R, S, paneId) {
+        const head = `<div class="col-head"><span>${S.split ? (paneId === "left" ? "Left tabs" : "Right tabs") : "Tabs"}</span><kbd>⌃⇥</kbd></div>`;
+        const rows = R.tabs(paneId)
+          .map(
+            (t) => `<div class="item tab-item ${t.active ? "is-active" : ""} ${t.focused ? "is-focused" : ""}" ${R.tabAttrs(t)}>
+              <span class="marker">${t.active ? (paneId === "right" ? "◂" : "▸") : ""}</span>
+              <span class="grow">${R.esc(t.name)}${t.hint ? ` <small>${R.esc(t.hint)}</small>` : ""}</span>
+              ${t.leaving ? `<span class="badge">⌛${t.leaving}</span>` : ""}
+              <button class="btn-x" data-act="closeTab" data-pane-id="${paneId}" data-tab-id="${t.id}" title="Close tab (⌘W)">${R.icon("x", 10)}</button>
+            </div>`,
+          )
+          .join("");
+        return `${head}${rows}<button class="add-tab" data-act="newTab" data-pane-id="${paneId}">${R.icon("plus", 13)}<span>New tab</span><kbd>⌘T</kbd></button>`;
+      }
+
+      function paneView(R, S, paneId) {
+        const active = S.activePane === paneId;
+        const t = R.tabs(paneId).find((x) => x.active);
+        return `<section class="pane zebra ${active ? "is-active" : ""}" data-pane="${paneId}">
+          <div class="pane-head">
+            ${R.crumbs(paneId, { max: S.split ? 3 : 6, sep: "/", home: true })}
+            <span class="pane-count">${t.count}</span>
+          </div>
+          ${R.body(paneId)}
+        </section>`;
+      }
+
+      Fazi.mount({
+        id: "console",
+        defaultTheme: "dark",
+        layout(R, S) {
+          const pl = R.places();
+          const st = R.status();
+          const leftCol = `<nav class="col left" data-vim-surface="sidebar">
+                ${S.sidebar ? `<div class="col-head"><span>Places</span><kbd>gs</kbd></div>
+                ${pl.favorites.map((p) => place(R, p)).join("")}
+                ${place(R, pl.trash)}
+                <div class="col-head"><span>Volumes</span></div>
+                ${pl.volumes.map((p) => place(R, p)).join("")}` : ""}
+                ${tabList(R, S, "left")}
+              </nav>`;
+          const rightCol = S.split ? `<nav class="col right">${tabList(R, S, "right")}</nav>` : "";
+          const mode = st.vim
+            ? `<button class="mode ${st.vim.visual ? "visual" : ""}" data-act="vimHelp" title="Vim keys (g?)">${st.vim.label}${st.vim.pending ? ` ${st.vim.pending}` : ""}</button>`
+            : `<button class="mode off" data-act="vim" title="Turn on Vim mode">VIM OFF</button>`;
+          return `
+            <header class="titlebar">${R.loadingBar()}
+              <div class="traffic"><i></i><i></i><i></i></div>
+              ${R.navButtons()}
+              <button class="icon-btn" data-act="up" title="Enclosing folder (⌘↑)">${R.icon("arrowUp", 14)}</button>
+              <span class="grow"></span>
+              <button class="chip" data-act="palette">Commands <kbd>⌘K</kbd></button>
+              <button class="chip" data-act="fuzzy">Go to file <kbd>⌘P</kbd></button>
+              ${R.viewToggle()}
+              <button class="icon-btn" data-act="sidebar" title="Toggle places (⌥⌘S)">${R.icon("sidebar", 14)}</button>
+              ${R.infoButton()}${R.splitButton()}${R.moreButton()}
+            </header>
+            ${S.fda ? `<div class="fda-wrap">${R.fdaBanner()}</div>` : ""}
+            <div class="body">
+              ${leftCol}
+              <div class="panes">${(S.split ? ["left", "right"] : ["left"]).map((id) => paneView(R, S, id)).join("")}</div>
+              ${rightCol}
+              ${R.info()}
+            </div>
+            <div class="modeline">
+              ${mode}
+              <span class="seg-path">${R.esc(st.path)}</span>
+              <span>${st.text}${st.size ? ` · ${st.size}` : ""}</span>
+              <span class="grow"></span>
+              ${st.hidden ? `<span class="dim">hidden shown</span>` : ""}
+              ${st.cleanup ? `<span class="warn">⌛ ${st.cleanup}</span><span class="dim">${st.sweep}</span>` : ""}
+              ${S.split ? `<span class="dim">${S.activePane === "left" ? "◧ left" : "◨ right"} · ⇥ switch</span>` : ""}
+            </div>
+            <div class="cmdline">
+              ${R.filterField({ placeholder: S.search.active ? "search everywhere" : "filter this folder" })}
+              ${S.search.active ? R.searchScopes() : `<span class="hint">⏎ search everywhere · ⌘⇧F</span>`}
+            </div>`;
+        },
+      });
+    </script>
+  </body>
+</html>

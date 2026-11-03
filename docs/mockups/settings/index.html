@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi settings designs</title>
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --card: #ffffff;
+        --text: #1b1e24;
+        --text-2: #545b67;
+        --text-3: #8a919c;
+        --line: #e2e5ea;
+        --accent: #3352d4;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181c;
+          --card: #1f2227;
+          --text: #e8eaee;
+          --text-2: #a3a9b4;
+          --text-3: #6c727d;
+          --line: #2c3037;
+          --accent: #8098ff;
+          color-scheme: dark;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 56px 28px 80px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.2;
+        letter-spacing: -0.015em;
+      }
+      .lede {
+        max-width: 68ch;
+        margin: 12px 0 0;
+        color: var(--text-2);
+      }
+      .lede + .lede {
+        margin-top: 10px;
+      }
+      a {
+        color: var(--accent);
+      }
+      .designs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 22px;
+        margin-top: 40px;
+      }
+      @media (max-width: 860px) {
+        .designs {
+          grid-template-columns: 1fr;
+        }
+      }
+      .design {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--card);
+        overflow: hidden;
+      }
+      .shots {
+        position: relative;
+        display: block;
+        aspect-ratio: 1440 / 900;
+        background: #2b2e35;
+        overflow: hidden;
+      }
+      .shots img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: opacity 0.2s;
+      }
+      .shots img.split {
+        opacity: 0;
+      }
+      .shots:hover img.split,
+      .shots:focus-visible img.split {
+        opacity: 1;
+      }
+      .shots:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: -3px;
+      }
+      .design-body {
+        padding: 18px 20px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+      }
+      .design h2 {
+        margin: 0;
+        font-size: 19px;
+        letter-spacing: -0.01em;
+      }
+      .design h2 span {
+        color: var(--text-3);
+        font-weight: 500;
+      }
+      .design p {
+        margin: 0;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 6px 14px;
+        margin: 4px 0 0;
+        font-size: 13.5px;
+      }
+      dt {
+        color: var(--text-3);
+      }
+      dd {
+        margin: 0;
+        color: var(--text-2);
+      }
+      .open {
+        margin-top: auto;
+        padding-top: 6px;
+        font-weight: 600;
+        font-size: 14px;
+      }
+      h3 {
+        margin: 56px 0 6px;
+        font-size: 19px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      th,
+      td {
+        padding: 10px 14px;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--line);
+      }
+      th {
+        font-weight: 600;
+        color: var(--text);
+      }
+      td {
+        color: var(--text-2);
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td:first-child {
+        color: var(--text);
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .note {
+        max-width: 72ch;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      kbd {
+        font: 12.5px ui-monospace, "SF Mono", Menlo, monospace;
+        padding: 1px 5px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: var(--card);
+      }
+      code {
+        font: 13px ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      ul.keys {
+        columns: 2;
+        column-gap: 32px;
+        padding-left: 18px;
+        color: var(--text-2);
+        font-size: 14px;
+      }
+      ul.keys li {
+        margin-bottom: 4px;
+        break-inside: avoid;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Four ways to do Fazi’s settings</h1>
+      <p class="lede">
+        Every mockup runs on the same engine (<code>shared/settings-core.js</code>): the same settings, the same
+        shortcut recorder, cleanup rules, pinned folders, search, and reset. Only the layout and styling change, so
+        each design behaves identically. Settings persist between designs, so a change you make in one shows up in the others.
+      </p>
+      <p class="lede">
+        Hover a screenshot for a second state. In each design, the bar above the window switches designs and theme,
+        opens or closes settings, and resets the demo.
+      </p>
+      <section class="designs">
+        <article class="design">
+          <a class="shots" href="a-sheet.html" aria-label="Open A, Sheet">
+            <img src="screens/a-sheet.png" alt="Sheet settings" />
+            <img class="split" src="screens/a-sheet-alt.png" alt="Sheet, Keyboard section in dark with a blocked shortcut" />
+          </a>
+          <div class="design-body">
+            <h2>Sheet <span>A</span></h2>
+            <p>The closest step from today. Settings stays a modal over the window, but it is larger and grouped into inset cards like macOS System Settings. Each section has a tinted icon and a count of what you changed, and Appearance opens with a live preview.</p>
+            <dl><dt>Navigation</dt><dd>Sidebar list; ⌘↑ and ⌘↓ step through sections</dd><dt>Strength</dt><dd>Familiar to every Mac user; lowest build cost</dd><dt>Tradeoff</dt><dd>Covers the window, so you see Appearance changes in the preview, then in the app after closing</dd></dl>
+            <a class="open" href="a-sheet.html">Open Sheet</a>
+          </div>
+        </article>
+        <article class="design">
+          <a class="shots" href="b-tab.html" aria-label="Open B, Tab">
+            <img src="screens/b-tab.png" alt="Tab settings" />
+            <img class="split" src="screens/b-tab-alt.png" alt="Tab, dark, sidebar docked right, Auto-cleanup section" />
+          </a>
+          <div class="design-body">
+            <h2>Tab <span>B</span></h2>
+            <p>Settings opens as a tab in the rail, like a browser’s settings page. Nothing is modal: the sidebar, tabs, and strip stay live, so theme, accent, row height, pinned folders, Trash, and the sidebar side change in the real window as you edit. Sections run along the top of the card.</p>
+            <dl><dt>Navigation</dt><dd>Section bar in the card; Settings › Section in the address field; search replaces the view controls</dd><dt>Strength</dt><dd>Fits the Rail and its vertical tabs; every change is visible in place</dd><dt>Tradeoff</dt><dd>⌘, opens a tab, which is less conventional; ⌘W closes it</dd></dl>
+            <a class="open" href="b-tab.html">Open Tab</a>
+          </div>
+        </article>
+        <article class="design">
+          <a class="shots" href="c-page.html" aria-label="Open C, Page">
+            <img src="screens/c-page.png" alt="Page settings" />
+            <img class="split" src="screens/c-page-alt.png" alt="Page, dark, searching for trash" />
+          </a>
+          <div class="design-body">
+            <h2>Page <span>C</span></h2>
+            <p>Every setting on one scrolling page, like a well-made preferences document. A contents column tracks where you are and jumps between sections. Rows are a two-column form, with label and explanation on the left and the control on the right.</p>
+            <dl><dt>Navigation</dt><dd>Scroll, or the contents column; ⌘↑ and ⌘↓ jump sections</dd><dt>Strength</dt><dd>Easiest to scan and to compare related settings across sections</dd><dt>Tradeoff</dt><dd>A long page; the Keyboard list makes it longer still</dd></dl>
+            <a class="open" href="c-page.html">Open Page</a>
+          </div>
+        </article>
+        <article class="design">
+          <a class="shots" href="d-panel.html" aria-label="Open D, Panel">
+            <img src="screens/d-panel.png" alt="Panel settings" />
+            <img class="split" src="screens/d-panel-alt.png" alt="Panel, dark, Keyboard section" />
+          </a>
+          <div class="design-body">
+            <h2>Panel <span>D</span></h2>
+            <p>A popover that drops from the strip, like Control Center. The six settings people flip most sit up top as tiles, and each section shows a one-line summary of its state. A section opens in place with a back button, and the window stays visible beside it.</p>
+            <dl><dt>Navigation</dt><dd>Arrow keys walk the list; → or Return opens; ← goes back</dd><dt>Strength</dt><dd>Fastest for quick changes; summaries show state without opening anything</dd><dt>Tradeoff</dt><dd>Narrow; Keyboard and Auto-cleanup widen the panel to fit</dd></dl>
+            <a class="open" href="d-panel.html">Open Panel</a>
+          </div>
+        </article>
+      </section>
+
+      <h3>Changes shared by all four</h3>
+      <table>
+        <thead><tr><th>Area</th><th>Today</th><th>In every design</th></tr></thead>
+        <tbody>
+          <tr><td>Grouping</td><td>Folder sizes, drag-out, and share sit in Advanced; sidebar position in Sidebar; the focus ring in Appearance</td><td>Folder sizes moves to General (it’s a list view choice), sidebar position to Appearance › Layout, the focus ring next to Vim mode, and drag-out and share to Transfers › Other apps. Advanced becomes Reset.</td></tr>
+          <tr><td>Wording</td><td>Engine terms: BLAKE3, kMDItem, “fuzzy-index entry cap”, milliseconds</td><td>Plain labels and hints: “Verify copies”, “Skip when indexing”, “Index size limit”, “Hide finished transfers after 4 s”</td></tr>
+          <tr><td>Changed settings</td><td>No indication</td><td>A dot on each changed setting, a restore button on hover, and a per-section count</td></tr>
+          <tr><td>Reset all</td><td>One click, no confirmation</td><td>Shows how many settings will change and asks first; disabled when everything is at its default</td></tr>
+          <tr><td>Shortcuts</td><td>One flat list with Record, Unbind, and Reset buttons on every row</td><td>Grouped by area, with its own filter. Click the shortcut to record. Clear and restore appear on hover. A conflict offers “Move it here”.</td></tr>
+          <tr><td>Search</td><td>Matches labels and hints; Keyboard is a pointer row</td><td>Also matches synonyms (“dotfiles”, “dark mode”, “node_modules”) and command names, so “rename” finds its shortcut</td></tr>
+          <tr><td>Index excludes</td><td>A textarea that saves on blur</td><td>Chips: Return adds, × removes, Backspace removes the last one</td></tr>
+          <tr><td>Auto-cleanup</td><td>Rules without feedback</td><td>Each folder previews what the next check would move, with a Run now link; rules stay editable while cleanup is off</td></tr>
+          <tr><td>Pinned folders</td><td>Remove only</td><td>Drag to reorder, or use the arrows; Pin a Folder… adds one</td></tr>
+          <tr><td>Accent</td><td>The Default swatch shows the old blue</td><td>The Default swatch shows the Rail accent for the current theme</td></tr>
+          <tr><td>Placeholders</td><td>“Per-directory view settings: Coming later”</td><td>Removed</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Things to try in every design</h3>
+      <ul class="keys">
+        <li><kbd>⌘,</kbd> opens and closes settings; <kbd>Esc</kbd> clears search, then closes</li>
+        <li><kbd>⌘F</kbd> searches; try “trash”, “dark”, “rename”, or “node”</li>
+        <li>Keyboard: click New Folder’s shortcut and press <kbd>⌘D</kbd> to see a conflict</li>
+        <li>Turn on Vim mode, then try to record <kbd>j</kbd></li>
+        <li>Change the theme, accent, or row height and watch the preview (or, in B, the whole window)</li>
+        <li>Change something, hover it, and click the restore arrow</li>
+        <li>Drag pinned folders to reorder them</li>
+        <li>Auto-cleanup: change the days and watch the forecast update</li>
+      </ul>
+      <p class="note">
+        Demo states also load from the URL, for example <code>a-sheet.html#section=keyboard&amp;theme=dark</code>,
+        <code>q=trash</code>, <code>vim</code>, <code>conflict=newFolder:cmd+d</code>, or <code>sidebar=right</code>.
+      </p>
+    </main>
+  </body>
+</html>

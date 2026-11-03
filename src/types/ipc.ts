@@ -50,6 +50,8 @@ export interface Entry {
   tags: FinderTag[];
   /** True if the current user lacks read permission (renders lock badge). */
   noAccess: boolean;
+  /** Finder's custom-icon flag; such folders skip the accent tint. */
+  customIcon: boolean;
 }
 
 /** Streamed over the Channel passed to `list_dir`. */

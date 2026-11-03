@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · B · Strip</title>
+    <link rel="stylesheet" href="shared/base.css" />
+    <style>
+      /*
+       * B · Strip
+       * Today's Fazi, with the tab strip turned on its side. Each pane owns a
+       * vertical tab column; the active tab breaks the column's edge and
+       * flows into the list, the way Finder's horizontal tabs connect to
+       * their content. Two-line tabs show where each folder lives, so
+       * duplicate names need no hints. The column folds to monograms.
+       */
+      :root,
+      :root[data-theme="dark"] {
+        --desk: #3b4049;
+        --win: #1a1c20;
+        --side: #1a1c20;
+        --pane: #212429;
+        --raised: #2b2f37;
+        --field: #212429;
+        --hover: rgba(255, 255, 255, 0.05);
+        --stripe: rgba(255, 255, 255, 0.028);
+        --text: #e8eaed;
+        --text-2: #9ca2ac;
+        --text-3: #636871;
+        --accent: #4f8ef7;
+        --accent-dim: rgba(79, 142, 247, 0.28);
+        --accent-faint: rgba(79, 142, 247, 0.14);
+        --border: rgba(255, 255, 255, 0.085);
+        --border-strong: rgba(255, 255, 255, 0.16);
+        --danger: #e5534b;
+        --shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+        --gl-page: #e9ebef;
+        --seg-bg: #212429;
+        --seg-on: #343943;
+        color-scheme: dark;
+      }
+      :root[data-theme="light"] {
+        --desk: #a3abb7;
+        --win: #eef0f3;
+        --side: #eef0f3;
+        --pane: #ffffff;
+        --raised: #ffffff;
+        --field: #ffffff;
+        --hover: rgba(0, 0, 0, 0.045);
+        --stripe: rgba(0, 0, 0, 0.028);
+        --text: #1c1e22;
+        --text-2: #5c626c;
+        --text-3: #9aa0aa;
+        --accent: #3478f6;
+        --accent-dim: rgba(52, 120, 246, 0.2);
+        --accent-faint: rgba(52, 120, 246, 0.1);
+        --border: rgba(0, 0, 0, 0.1);
+        --border-strong: rgba(0, 0, 0, 0.18);
+        --danger: #d0342c;
+        --shadow: 0 8px 40px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.08);
+        --gl-page: #fbfbfc;
+        --seg-bg: rgba(0, 0, 0, 0.05);
+        --seg-on: #fff;
+        color-scheme: light;
+      }
+
+      /* ---------------------------------------------------------- toolbar */
+
+      .toolbar {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 48px;
+        padding: 0 12px 0 16px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .toolbar .traffic {
+        margin-right: 10px;
+      }
+      .toolbar .filter {
+        width: 210px;
+      }
+      .toolbar .crumb.is-current {
+        font-size: 13.5px;
+      }
+      .tool-group {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+
+      .shell {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+
+      /* ---------------------------------------------------------- sidebar */
+
+      .sidebar {
+        width: 196px;
+        flex-shrink: 0;
+        overflow-y: auto;
+        padding: 4px 0 10px;
+        border-right: 1px solid var(--border);
+        background: var(--side);
+      }
+      .sec {
+        margin: 14px 16px 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-3);
+      }
+      .loc {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 28px;
+        margin: 0 8px;
+        padding: 0 8px;
+        border-radius: 6px;
+        font-size: 13px;
+        color: var(--text-2);
+      }
+      .loc:hover {
+        background: var(--hover);
+      }
+      .loc.is-current {
+        background: var(--accent-dim);
+        color: var(--text);
+      }
+      .loc .grow {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .loc-badge {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        font-size: 11px;
+        color: var(--danger);
+      }
+      .loc .eject {
+        display: none;
+      }
+      .loc:hover .eject {
+        display: flex;
+      }
+
+      /* ------------------------------------------------------------ panes */
+
+      .panes {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+      }
+      .pane {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        background: var(--win);
+        outline: none;
+      }
+      .pane + .pane {
+        border-left: 1px solid var(--border);
+      }
+      .tabcol {
+        width: 176px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 8px 0 6px 6px;
+        border-right: 1px solid var(--border);
+        position: relative;
+        z-index: 1;
+      }
+      .collapsed .tabcol {
+        width: 48px;
+      }
+      .tabcol-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: visible;
+        margin-right: -1px; /* lets the active tab sit over the border */
+      }
+      .vtab {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 42px;
+        margin-bottom: 2px;
+        padding: 0 6px 0 10px;
+        border-radius: 7px 0 0 7px;
+        color: var(--text-2);
+      }
+      .vtab:hover:not(.is-active) {
+        background: var(--hover);
+        margin-right: 6px;
+        border-radius: 7px;
+      }
+      .vtab.is-active {
+        background: var(--pane);
+        color: var(--text);
+        box-shadow:
+          inset 0 1px 0 var(--border),
+          inset 0 -1px 0 var(--border),
+          inset 1px 0 0 var(--border);
+      }
+      .pane.is-active .vtab.is-active::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 9px;
+        bottom: 9px;
+        width: 3px;
+        border-radius: 0 2px 2px 0;
+        background: var(--accent);
+      }
+      .vtab-text {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        line-height: 1.25;
+      }
+      .vtab-text b,
+      .vtab-text small {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .vtab-text b {
+        font-weight: 500;
+        font-size: 12.5px;
+      }
+      .vtab-text small {
+        font-size: 11px;
+        color: var(--text-3);
+      }
+      .vtab-x {
+        visibility: hidden;
+      }
+      .vtab:hover .vtab-x,
+      .vtab.is-active .vtab-x {
+        visibility: visible;
+      }
+      .vtab-badge {
+        position: absolute;
+        right: 6px;
+        top: 5px;
+        font-size: 10px;
+        color: var(--danger);
+      }
+      .vtab:hover .vtab-badge,
+      .vtab.is-active .vtab-badge {
+        display: none;
+      }
+      .collapsed .vtab {
+        justify-content: center;
+        padding: 0;
+        height: 36px;
+      }
+      .mono {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        background: var(--gl-folder);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .vtab:not(.is-active) .mono {
+        background: color-mix(in srgb, var(--gl-folder) 55%, var(--win));
+      }
+      .collapsed .vtab-text,
+      .collapsed .vtab-x,
+      .collapsed .tabcol-foot span {
+        display: none;
+      }
+      .collapsed .vtab-badge {
+        display: block;
+        top: 2px;
+        right: 4px;
+      }
+      .tabcol-foot {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding-right: 6px;
+        padding-top: 6px;
+      }
+      .tabcol-foot .add {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        height: 28px;
+        padding: 0 9px;
+        border-radius: 6px;
+        color: var(--text-3);
+        font-size: 12px;
+      }
+      .tabcol-foot .add:hover {
+        background: var(--hover);
+        color: var(--text-2);
+      }
+      .collapsed .tabcol-foot {
+        flex-direction: column;
+      }
+      .collapsed .tabcol-foot .add {
+        justify-content: center;
+        padding: 0;
+        width: 34px;
+        flex: none;
+      }
+
+      .content {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--pane);
+      }
+      .search-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 36px;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--text-3);
+        flex-shrink: 0;
+      }
+      .pane:not(.is-active) .content {
+        opacity: 0.86;
+      }
+
+      /* ------------------------------------------------------- status bar */
+
+      .statusbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 24px;
+        padding: 0 12px;
+        border-top: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--text-2);
+        flex-shrink: 0;
+      }
+      .statusbar .dim {
+        color: var(--text-3);
+      }
+      .vim-label {
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: var(--text-3);
+      }
+      .vim-label.visual {
+        color: var(--accent);
+      }
+      .fda-wrap {
+        padding: 8px 12px 0;
+      }
+      .fda-wrap .banner-fda {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="shared/core.js"></script>
+    <script>
+      function loc(R, p) {
+        return `<div class="loc ${p.current ? "is-current" : ""}" ${R.placeAttrs(p)}>
+          ${R.icon(p.icon, 15)}<span class="grow">${R.esc(p.label)}</span>
+          ${p.badge ? `<span class="loc-badge" title="${p.badge} go to the Trash by tomorrow">${R.icon("hourglass", 11)}${p.badge}</span>` : ""}
+          ${p.ejectable ? `<button class="btn-x eject" data-act="toast" data-msg="Ejected “${R.esc(p.label)}”" title="Eject">${R.icon("eject", 12)}</button>` : ""}
+        </div>`;
+      }
+
+      function tabColumn(R, S, paneId) {
+        const rows = R.tabs(paneId)
+          .map(
+            (t) => `<div class="vtab ${t.active ? "is-active" : ""}" ${R.tabAttrs(t)}>
+              ${S.ui.collapsed ? `<span class="mono">${R.esc(t.mono)}</span>` : R.glyph({ dir: true }, 18)}
+              <span class="vtab-text"><b>${R.esc(t.name)}</b><small>${R.esc(t.where)}</small></span>
+              ${t.leaving ? `<span class="vtab-badge">${t.leaving}</span>` : ""}
+              <button class="btn-x vtab-x" data-act="closeTab" data-pane-id="${paneId}" data-tab-id="${t.id}" title="Close tab (⌘W)">${R.icon("x", 11)}</button>
+            </div>`,
+          )
+          .join("");
+        const collapsed = S.ui.collapsed;
+        return `<div class="tabcol">
+          <div class="tabcol-list">${rows}</div>
+          <div class="tabcol-foot">
+            <button class="add" data-act="newTab" data-pane-id="${paneId}" title="New tab (⌘T)">${R.icon("plus", 14)}<span>New tab</span></button>
+            <button class="icon-btn" data-act="ui" data-value="collapsed" title="${collapsed ? "Expand" : "Collapse"} tabs">${R.icon(collapsed ? "panelExpand" : "panelCollapse", 14)}</button>
+          </div>
+        </div>`;
+      }
+
+      function paneView(R, S, paneId) {
+        const active = S.activePane === paneId;
+        const search =
+          S.search.active && active
+            ? `<div class="search-bar">${R.searchScopes()}<span class="grow"></span><span>Searching with Spotlight</span></div>`
+            : "";
+        return `<section class="pane zebra ${active ? "is-active" : ""}" data-pane="${paneId}">
+          ${tabColumn(R, S, paneId)}
+          <div class="content">${search}${R.body(paneId)}</div>
+        </section>`;
+      }
+
+      Fazi.mount({
+        id: "strip",
+        defaultTheme: "dark",
+        layout(R, S) {
+          const pl = R.places();
+          const st = R.status();
+          const sidebar = S.sidebar
+            ? `<nav class="sidebar" data-vim-surface="sidebar">
+                <div class="sec">Favorites</div>${pl.favorites.map((p) => loc(R, p)).join("")}
+                ${loc(R, pl.trash)}
+                <div class="sec">Volumes</div>${pl.volumes.map((p) => loc(R, p)).join("")}
+              </nav>`
+            : "";
+          const panes = S.split ? ["left", "right"] : ["left"];
+          return `
+            <header class="toolbar">${R.loadingBar()}
+              <div class="traffic"><i></i><i></i><i></i></div>
+              <button class="icon-btn" data-act="sidebar" title="Toggle sidebar (⌥⌘S)">${R.icon("sidebar", 15)}</button>
+              ${R.navButtons()}
+              ${R.crumbs(S.activePane, { max: 4 })}
+              ${R.filterField()}
+              ${R.viewToggle()}
+              <div class="tool-group">${R.infoButton()}${R.splitButton()}${R.moreButton()}</div>
+            </header>
+            ${S.fda ? `<div class="fda-wrap">${R.fdaBanner()}</div>` : ""}
+            <div class="shell ${S.ui.collapsed ? "collapsed" : ""}">
+              ${sidebar}
+              <div class="panes">${panes.map((id) => paneView(R, S, id)).join("")}</div>
+              ${R.info()}
+            </div>
+            <footer class="statusbar">
+              ${st.vim ? `<button class="vim-label ${st.vim.visual ? "visual" : ""}" data-act="vimHelp" title="Vim keys (g?)">${st.vim.label}${st.vim.pending ? ` ${st.vim.pending}` : ""}</button>` : ""}
+              <span class="tnum">${st.text}</span>${st.size ? `<span class="tnum">— ${st.size}</span>` : ""}
+              <span class="grow"></span>
+              ${st.hidden ? `<span class="dim">hidden files shown</span>` : ""}
+              ${st.cleanup ? `<span class="danger">${R.icon("hourglass", 11).replace('class="ic ', 'style="display:inline;vertical-align:-1px;margin-right:3px" class="ic ')}${st.cleanup}</span><span class="dim">· ${st.sweep}</span>` : ""}
+            </footer>`;
+        },
+      });
+    </script>
+  </body>
+</html>

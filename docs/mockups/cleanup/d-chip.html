@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · Cleanup · D · Address chip</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/a2.css" />
+    <link rel="stylesheet" href="shared/cleanup.css" />
+  </head>
+  <body>
+    <script src="../shared/core.js"></script>
+    <script src="../shared/a2.js"></script>
+    <script src="shared/cleanup.js"></script>
+    <script>
+      /*
+       * D · Address chip. No banner and nothing in the footer. While a pane
+       * shows the cleanup folder, the address field ends in a red "⌛ 3"
+       * chip, like a browser's site-info badge; it opens the same details
+       * as A. Elsewhere, the Downloads badge in the sidebar does the job.
+       */
+      Cleanup.mount({
+        id: "cleanup-d",
+        cleanupBanner: () => "",
+        footCleanup: () => "",
+        addressEnd(R, S) {
+          const c = R.cleanup();
+          if (!c.here || !c.count) return "";
+          const open = S.ui.pop === "address";
+          return `<button class="due-token ${open ? "is-open" : ""}" data-act="pop" data-value="address" title="Auto-cleanup">${R.icon("hourglass", 12)}<span class="tnum">${c.count}</span><span class="when">· ${c.when}</span></button>
+            ${open ? Cleanup.details(R, S, { place: "address" }) : ""}`;
+        },
+      });
+    </script>
+  </body>
+</html>

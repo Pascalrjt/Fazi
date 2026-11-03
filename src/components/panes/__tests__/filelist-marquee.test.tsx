@@ -45,6 +45,7 @@ function entry(id: number, name: string): Entry {
     linkTarget: null,
     tags: [],
     noAccess: false,
+    customIcon: false,
   } as Entry;
 }
 
