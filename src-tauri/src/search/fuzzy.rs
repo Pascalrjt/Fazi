@@ -1053,7 +1053,7 @@ fn filter_matches(
     }
     // date/size need a stat — budgeted; overflow excludes and reports capped.
     if stat_budget
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| b.checked_sub(1))
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |b| b.checked_sub(1))
         .is_err()
     {
         filters_capped.store(true, Ordering::SeqCst);
