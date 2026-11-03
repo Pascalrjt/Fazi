@@ -60,25 +60,46 @@ fn cache_key(path: &Path) -> String {
     format!("ext:{}", ext)
 }
 
+/// Per-path keys (custom icons, apps, packages, special folders) render
+/// from the item itself, so they carry the content revision: an edited item
+/// misses instead of serving the PNG drawn before the change. Extension- and
+/// generic-shared keys don't depend on any one file's content.
+fn revisioned_key(key: String, rev: &str) -> String {
+    let per_path = key.starts_with("path:") || (key.starts_with("dir:") && key != "dir:generic");
+    if per_path && !rev.is_empty() {
+        format!("{key}@{rev}")
+    } else {
+        key
+    }
+}
+
+type KeyMemo = DashMap<PathBuf, (String, String)>;
+
 /// Path → classification memo: `cache_key` costs a stat + FinderInfo xattr
 /// per request, and result bursts repeat the same paths (refine ticks,
-/// scrolling). Staleness envelope matches the PNG cache itself — a custom
-/// icon added mid-session shows up after eviction or restart.
-fn cached_key(path: &Path) -> String {
-    static KEYS: OnceLock<DashMap<PathBuf, String>> = OnceLock::new();
-    let keys = KEYS.get_or_init(DashMap::new);
+/// scrolling). Entries remember the content revision they were classified
+/// at (`rev`, from the URL's `v=`), so a changed item — e.g. one that just
+/// gained a custom icon — is re-classified and re-rendered.
+fn cached_key_in(keys: &KeyMemo, path: &Path, rev: &str, classify: impl FnOnce(&Path) -> String) -> String {
     if let Some(k) = keys.get(path) {
-        return k.clone();
+        if k.0 == rev {
+            return k.1.clone();
+        }
     }
-    let key = cache_key(path);
+    let key = revisioned_key(classify(path), rev);
     if keys.len() > 16_384 {
         let victims: Vec<PathBuf> = keys.iter().take(4096).map(|e| e.key().clone()).collect();
         for v in victims {
             keys.remove(&v);
         }
     }
-    keys.insert(path.to_path_buf(), key.clone());
+    keys.insert(path.to_path_buf(), (rev.to_string(), key.clone()));
     key
+}
+
+fn cached_key(path: &Path, rev: &str) -> String {
+    static KEYS: OnceLock<KeyMemo> = OnceLock::new();
+    cached_key_in(KEYS.get_or_init(DashMap::new), path, rev, cache_key)
 }
 
 /// Render the icon PNG. MUST run on the main thread.
@@ -198,9 +219,10 @@ pub fn icon_png<R: tauri::Runtime>(
     cache: &IconCache,
     path: &Path,
     size: u32,
+    rev: &str,
 ) -> Option<Arc<Vec<u8>>> {
     let size = size.clamp(8, 1024);
-    let key = (cached_key(path), size);
+    let key = (cached_key(path, rev), size);
     cached_or_render(cache, flights(), key, || {
         let p = path.to_path_buf();
         let bitmap =
@@ -245,7 +267,7 @@ pub fn prewarm_common<R: tauri::Runtime>(app: &tauri::AppHandle<R>, cache: &Icon
     }
     for &size in PREWARM_SIZES {
         for p in &paths {
-            let _ = icon_png(app, cache, p, size);
+            let _ = icon_png(app, cache, p, size, "");
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
@@ -303,5 +325,30 @@ mod tests {
         assert!(cached_or_render(&cache, &flights, ("k".into(), 16), || None).is_none());
         assert!(cache.is_empty());
         assert!(cached_or_render(&cache, &flights, ("k".into(), 16), || Some(vec![9])).is_some());
+    }
+
+    #[test]
+    fn per_path_keys_follow_the_content_revision() {
+        let memo = KeyMemo::new();
+        let p = Path::new("/Applications/Foo.app");
+        let classified = std::cell::Cell::new(0);
+        let classify = |_: &Path| {
+            classified.set(classified.get() + 1);
+            "path:/Applications/Foo.app".to_string()
+        };
+        let a = cached_key_in(&memo, p, "100-1", classify);
+        assert_eq!(cached_key_in(&memo, p, "100-1", classify), a);
+        assert_eq!(classified.get(), 1, "same revision is a memo hit");
+        let b = cached_key_in(&memo, p, "200-1", classify);
+        assert_ne!(a, b, "an edited item gets a fresh PNG cache key");
+        assert_eq!(classified.get(), 2, "and is re-classified (custom icon may have changed)");
+
+        // Shared keys stay shared across revisions.
+        let txt = Path::new("/x/a.txt");
+        let ext = |_: &Path| "ext:txt".to_string();
+        assert_eq!(cached_key_in(&memo, txt, "1-1", ext), "ext:txt");
+        assert_eq!(cached_key_in(&memo, txt, "2-2", ext), "ext:txt");
+        assert_eq!(revisioned_key("dir:generic".into(), "9"), "dir:generic");
+        assert_eq!(revisioned_key("dir:/Users/me".into(), "9"), "dir:/Users/me@9");
     }
 }

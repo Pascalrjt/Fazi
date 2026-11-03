@@ -8,7 +8,7 @@ import clsx from "clsx";
 import { Hourglass, Lock, Pin } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
-import { iconUrl } from "../../types/ipc";
+import { entryIconUrl } from "../../lib/imageRev";
 import { isPlainFolder } from "../../lib/folderTint";
 import { usePanes, tabView, type GhostEntry, type Tab } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
@@ -281,7 +281,7 @@ const FileRow = memo(function FileRow({
       }}
     >
       <img
-        src={iconUrl(entry.icon, 32)}
+        src={entryIconUrl(entry, 32)}
         alt=""
         className={clsx("h-4 w-4 shrink-0", isPlainFolder(entry) && "folder-tint")}
         draggable={false}

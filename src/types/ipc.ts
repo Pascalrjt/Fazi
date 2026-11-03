@@ -559,14 +559,21 @@ export const EVENTS = {
 // origin form (the `http://scheme.localhost/…` form is Windows/Android).
 // Fazi is macOS-only, so the scheme form is used directly.
 
+// `rev` is a content revision appended as `&v=` purely for cache-busting:
+// tokens are reused per (owner, path) and responses are cacheable, so an
+// edited file needs a different URL to re-fetch. See lib/imageRev.ts.
+function revParam(rev: string | undefined): string {
+  return rev ? `&v=${rev}` : "";
+}
+
 /** Icon image URL for an entry's token at a given pixel size. */
-export function iconUrl(token: string, size: number): string {
-  return `icon://localhost/${token}?size=${size}`;
+export function iconUrl(token: string, size: number, rev?: string): string {
+  return `icon://localhost/${token}?size=${size}${revParam(rev)}`;
 }
 
 /** Thumbnail URL (falls back to icon server-side when generation fails). */
-export function thumbUrl(token: string, size: number): string {
-  return `thumb://localhost/${token}?size=${size}`;
+export function thumbUrl(token: string, size: number, rev?: string): string {
+  return `thumb://localhost/${token}?size=${size}${revParam(rev)}`;
 }
 
 /** Raw file bytes for a registered preview token (supports Range for AV). */

@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
-import { iconUrl, thumbUrl } from "../../types/ipc";
+import { entryIconUrl, entryThumbUrl } from "../../lib/imageRev";
 import { isPlainFolder } from "../../lib/folderTint";
 import { usePanes, tabView } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
@@ -114,7 +114,7 @@ const GridCell = memo(function GridCell({
         <img
           // Plain folders have no content preview: ask for the icon directly
           // instead of a Quick Look thumbnail request that falls back to it.
-          src={isNavigableDir ? iconUrl(entry.icon, 128) : thumbUrl(entry.icon, 128)}
+          src={isNavigableDir ? entryIconUrl(entry, 128) : entryThumbUrl(entry, 128)}
           alt=""
           className={clsx("h-14 w-14 object-contain", isPlainFolder(entry) && "folder-tint")}
           draggable={false}

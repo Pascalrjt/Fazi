@@ -5,7 +5,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Entry } from "../../types/ipc";
-import { previewUrl, thumbUrl } from "../../types/ipc";
+import { previewUrl } from "../../types/ipc";
+import { entryThumbUrl } from "../../lib/imageRev";
 import * as ipc from "../../lib/ipc";
 import { useApp } from "../../stores/app";
 import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
@@ -163,7 +164,7 @@ function FallbackPreview({ entry }: { entry: Entry }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4">
       <img
-        src={thumbUrl(entry.icon, 1024)}
+        src={entryThumbUrl(entry, 1024)}
         alt=""
         className="max-h-[60vh] max-w-[70vw] object-contain"
         draggable={false}
@@ -230,7 +231,7 @@ function PreviewContent({ entry }: { entry: Entry }) {
     case "audio":
       return (
         <div className="flex h-full flex-col items-center justify-center gap-6">
-          <img src={thumbUrl(entry.icon, 512)} alt="" className="h-40 w-40 object-contain" />
+          <img src={entryThumbUrl(entry, 512)} alt="" className="h-40 w-40 object-contain" />
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
           <audio src={previewUrl(token as string)} controls autoPlay className="w-[420px]" />
         </div>

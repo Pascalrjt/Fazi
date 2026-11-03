@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { Entry, GetInfoResult } from "../../types/ipc";
-import { iconUrl } from "../../types/ipc";
+import { entryIconUrl } from "../../lib/imageRev";
 import { isPlainFolder } from "../../lib/folderTint";
 import * as ipc from "../../lib/ipc";
 import { safeIpc } from "../../lib/safeIpc";
@@ -128,7 +128,7 @@ function SingleInfo({ entry }: { entry: Entry }) {
     <>
       <div className="flex items-center gap-3 px-4 pb-3">
         <img
-          src={iconUrl(entry.icon, 128)}
+          src={entryIconUrl(entry, 128)}
           alt=""
           className={clsx("h-12 w-12", isPlainFolder(entry) && "folder-tint")}
           draggable={false}

@@ -51,27 +51,40 @@ fn png_response(bytes: Vec<u8>) -> Response<Vec<u8>> {
         .unwrap()
 }
 
-/// Parse `scheme://localhost/<token>?size=NN`.
-fn parse_token_and_size(uri: &tauri::http::Uri) -> (String, u32) {
+/// Parsed `scheme://localhost/<token>?size=NN&v=REV`.
+struct ImageRequest {
+    token: String,
+    size: u32,
+    /// Content revision the webview put in the URL (cache-busting only; the
+    /// token alone names the file). Empty when absent.
+    rev: String,
+}
+
+fn query_param<'a>(uri: &'a tauri::http::Uri, key: &str) -> Option<&'a str> {
+    uri.query()?.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then_some(v)
+    })
+}
+
+fn parse_image_request(uri: &tauri::http::Uri) -> ImageRequest {
     let token = uri.path().trim_start_matches('/').to_string();
-    let size = uri
-        .query()
-        .and_then(|q| {
-            q.split('&')
-                .find_map(|kv| kv.strip_prefix("size="))
-                .and_then(|v| v.parse::<u32>().ok())
-        })
-        .unwrap_or(32);
-    (token, size)
+    let size = query_param(uri, "size").and_then(|v| v.parse::<u32>().ok()).unwrap_or(32);
+    // Bounded and charset-limited: it becomes part of an in-memory cache key.
+    let rev = query_param(uri, "v")
+        .filter(|v| v.len() <= 64 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .unwrap_or_default()
+        .to_string();
+    ImageRequest { token, size, rev }
 }
 
 pub fn handle_icon<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     let state = app.state::<AppState>();
-    let (token, size) = parse_token_and_size(request.uri());
+    let ImageRequest { token, size, rev } = parse_image_request(request.uri());
     let Some(path) = state.tokens.resolve(&token) else {
         return not_found();
     };
-    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size) {
+    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size, &rev) {
         Some(png) => png_response(png.as_ref().clone()),
         None => not_found(),
     }
@@ -79,7 +92,7 @@ pub fn handle_icon<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) ->
 
 pub fn handle_thumb<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     let state = app.state::<AppState>();
-    let (token, size) = parse_token_and_size(request.uri());
+    let ImageRequest { token, size, rev } = parse_image_request(request.uri());
     let Some(path) = state.tokens.resolve(&token) else {
         return not_found();
     };
@@ -94,7 +107,7 @@ pub fn handle_thumb<R: Runtime>(app: &AppHandle<R>, request: Request<Vec<u8>>) -
         return png_response(png);
     }
     // Fallback: the plain icon at the requested size.
-    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size) {
+    match crate::macos::icons::icon_png(app, &state.icon_cache, &path, size, &rev) {
         Some(png) => png_response(png.as_ref().clone()),
         None => not_found(),
     }
@@ -257,7 +270,22 @@ fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{allowed_fetch_origin, parse_range};
+    use super::{allowed_fetch_origin, parse_image_request, parse_range};
+
+    #[test]
+    fn image_urls_tolerate_the_revision_param() {
+        let uri: tauri::http::Uri = "thumb://localhost/abc123?size=128&v=1700000000123-42".parse().unwrap();
+        let r = parse_image_request(&uri);
+        assert_eq!((r.token.as_str(), r.size, r.rev.as_str()), ("abc123", 128, "1700000000123-42"));
+        let uri: tauri::http::Uri = "icon://localhost/abc123?v=7-1&size=64".parse().unwrap();
+        let r = parse_image_request(&uri);
+        assert_eq!((r.token.as_str(), r.size, r.rev.as_str()), ("abc123", 64, "7-1"));
+        let uri: tauri::http::Uri = "icon://localhost/abc123?size=16".parse().unwrap();
+        assert_eq!(parse_image_request(&uri).rev, "");
+        // Junk revisions are ignored, never put in a cache key.
+        let uri: tauri::http::Uri = "icon://localhost/t?v=a%2Fb&size=16".parse().unwrap();
+        assert_eq!(parse_image_request(&uri).rev, "");
+    }
 
     #[test]
     fn range_parsing() {
