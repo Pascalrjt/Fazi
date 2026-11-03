@@ -19,8 +19,6 @@ import { PaneFooter } from "./PaneFooter";
 import { FileList } from "./FileList";
 import { GridView } from "./GridView";
 import { SearchResults } from "./SearchResults";
-import { CleanupBanner } from "./CleanupBanner";
-import { useCleanup } from "../../stores/cleanup";
 
 /** Shown while browsing ~/.Trash. The count is this listing only; the Empty
  *  Trash confirm dialog totals every volume's trash. */
@@ -95,14 +93,12 @@ export function Pane({ paneId }: { paneId: PaneId }) {
   // address-field chip already mark the active pane.
   const focusRing = useSettings((s) => s.paneAccentLine && s.vimMode);
   const trashPath = useVolumes((s) => s.folders?.trash ?? null);
-  const cleanupFolders = useCleanup((s) => s.folders);
 
   if (!pane) return null;
   const isActive = activePaneId === pane.id;
   const showSearch = searchActive && isActive;
   const tab = activeTabOf(pane);
   const inTrash = !showSearch && trashPath != null && tab?.path === trashPath;
-  const inCleanupFolder = !showSearch && tab != null && cleanupFolders.has(tab.path);
 
   return (
     <div
@@ -149,9 +145,6 @@ export function Pane({ paneId }: { paneId: PaneId }) {
           loading={tab?.loading ?? true}
           error={tab?.error ?? null}
         />
-      )}
-      {inCleanupFolder && tab && (
-        <CleanupBanner paneId={pane.id} tabId={tab.id} folder={tab.path} />
       )}
       <div className="min-h-0 flex-1">
         {showSearch ? (

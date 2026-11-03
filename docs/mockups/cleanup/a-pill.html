@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · Cleanup · A · Footer pill</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/a2.css" />
+    <link rel="stylesheet" href="shared/cleanup.css" />
+  </head>
+  <body>
+    <script src="../shared/core.js"></script>
+    <script src="../shared/a2.js"></script>
+    <script src="shared/cleanup.js"></script>
+    <script>
+      /*
+       * A · Footer pill. No banner. The footer carries one red pill, "⌛ 3 ·
+       * tomorrow", from any folder; clicking it opens the details above it:
+       * what leaves, how big, the rule, and Select / Keep (or "Show in
+       * Downloads" from elsewhere), with Pause and Settings as icons.
+       */
+      Cleanup.mount({
+        id: "cleanup-a",
+        cleanupBanner: () => "",
+        footCleanup(R, S) {
+          const c = R.cleanup();
+          if (!c.count) return "";
+          const open = S.ui.pop === "foot";
+          return `<button class="due-token ${open ? "is-open" : ""}" data-act="pop" data-value="foot" title="Auto-cleanup">${R.icon("hourglass", 11)}<span class="tnum">${c.count}</span><span class="when">· ${c.when}</span></button>
+            ${open ? Cleanup.details(R, S, { place: "foot" }) : ""}`;
+        },
+      });
+    </script>
+  </body>
+</html>

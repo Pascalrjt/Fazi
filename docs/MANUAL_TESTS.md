@@ -320,6 +320,12 @@ in `npm run tauri dev`.
 - [ ] Auto-cleanup: each folder shows what goes to the Trash by tomorrow, and
       Run now sweeps; Sidebar: the arrows reorder pins and Pin a Folder…
       adds one.
+- [ ] Auto-cleanup pill: with items leaving by tomorrow, the focused pane's
+      footer shows "⌛ N · tomorrow" from any folder (no banner). Clicking it
+      lists the items and "Cleared after N days"; Select picks them in the
+      rule folder, "Show in Downloads" appears elsewhere, Keep pins them,
+      Pause turns auto-cleanup off, the gear opens Settings → Auto-cleanup,
+      and Esc or a click outside closes it.
 
 ## Batch rename & paste-as-file
 - [x] Select 5 files → ⌘⇧R: live preview updates per keystroke; a colliding

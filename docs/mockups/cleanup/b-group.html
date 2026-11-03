@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · Cleanup · B · List group</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/a2.css" />
+    <link rel="stylesheet" href="shared/cleanup.css" />
+  </head>
+  <body>
+    <script src="../shared/core.js"></script>
+    <script src="../shared/a2.js"></script>
+    <script src="shared/cleanup.js"></script>
+    <script>
+      /*
+       * B · List group. No banner. In the cleanup folder, items leaving soon
+       * gather under a group header at the top of the list, styled like a
+       * row: "Leaving tomorrow  3 · 28.6 MB". Select and Keep show on hover;
+       * the chevron folds the group away. The footer keeps a bare "⌛ 3"
+       * that jumps to Downloads from any other folder.
+       */
+      Cleanup.mount({
+        id: "cleanup-b",
+        cleanupBanner: () => "",
+        cleanupRows(R, S, paneId, list, row) {
+          const c = R.cleanup(paneId);
+          if (!c.count) return list.map(row).join("");
+          const due = new Set(c.leaving.map((it) => it.name));
+          const soon = list.filter((e) => due.has(e.name));
+          const rest = list.filter((e) => !due.has(e.name));
+          const folded = !!S.ui.dueCollapsed;
+          return `<div class="group-row is-due ${folded ? "is-collapsed" : ""}">
+              <button class="chev" data-act="ui" data-value="dueCollapsed" aria-label="${folded ? "Show" : "Hide"} these items">${R.icon("chevronDown", 12)}</button>
+              ${R.icon("hourglass", 12)}
+              <span class="g-title">Leaving ${c.when}</span>
+              <span class="g-meta tnum">${c.count} · ${c.size}</span>
+              <span class="g-actions">
+                <button class="g-btn" data-act="cleanupSelect" data-pane-id="${paneId}">Select</button>
+                <button class="g-btn" data-act="cleanupKeep" title="Never clean these up (⌥⌘K)">Keep</button>
+                <button class="g-btn quiet" data-act="cleanupPause" title="Pause auto-cleanup">${R.icon("pause", 12)}</button>
+                <button class="g-btn quiet" data-act="cleanupSettings" title="Auto-cleanup settings">${R.icon("settings", 12)}</button>
+              </span>
+            </div>
+            ${folded ? "" : soon.map(row).join("")}
+            <div class="group-row is-later"><span class="g-title">Later</span><span class="g-meta">${c.days}-day rule · next sweep ${c.sweep}</span></div>
+            ${rest.map(row).join("")}`;
+        },
+        footCleanup(R) {
+          const c = R.cleanup();
+          if (!c.count) return "";
+          return `<button class="due-token" data-act="cleanupGo" title="${R.plural(c.count, "item")} leave ${c.folderName} ${c.when} · next sweep ${c.sweep}">${R.icon("hourglass", 11)}<span class="tnum">${c.count}</span></button>`;
+        },
+      });
+    </script>
+  </body>
+</html>

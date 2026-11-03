@@ -1,0 +1,267 @@
+/* Auto-cleanup mockups. Loaded after base.css and a2.css. */
+
+:root,
+:root[data-theme="light"] {
+  --danger-faint: rgba(208, 59, 51, 0.09);
+  --danger-dim: rgba(208, 59, 51, 0.16);
+}
+:root[data-theme="dark"] {
+  --danger-faint: rgba(239, 107, 98, 0.1);
+  --danger-dim: rgba(239, 107, 98, 0.18);
+}
+
+/* -------------------------------------------------------- details popover */
+
+.pop {
+  position: absolute;
+  z-index: 60;
+  width: 300px;
+  padding: 12px;
+  border-radius: 11px;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text);
+  animation: pop-in 0.12s ease-out;
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+.shot .pop {
+  animation: none;
+}
+.pop-foot {
+  right: 8px;
+  bottom: 32px;
+  transform-origin: bottom right;
+}
+.pop-address {
+  top: 42px;
+  right: 178px;
+  transform-origin: top right;
+}
+.pop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.pop-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 13px;
+}
+.pop-total {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.pop-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 -4px;
+}
+.pop-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: 6px;
+}
+.pop-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pop-size {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.pop-rule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.pop-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pop-actions .icon-btn {
+  width: 26px;
+  height: 26px;
+}
+
+/* --------------------------------------------- shared: a red count token */
+
+.due-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border-radius: 999px;
+  color: var(--danger);
+  background: var(--danger-faint);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+}
+.due-token:hover,
+.due-token.is-open {
+  background: var(--danger-dim);
+}
+.due-token .when {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+/* ------------------------------------------------------- A · footer pill */
+
+.card-foot .due-token {
+  height: 18px;
+  margin-right: -6px;
+}
+
+/* -------------------------------------------------------- B · list group */
+
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--pane);
+}
+.group-row + .row,
+.group-row.is-later {
+  border-top: 0;
+}
+.group-row .chev {
+  display: flex;
+  color: var(--text-3);
+  transition: transform 0.12s;
+}
+.group-row.is-collapsed .chev {
+  transform: rotate(-90deg);
+}
+.group-row .g-title {
+  font-weight: 600;
+  color: var(--text);
+}
+.group-row.is-due .g-title {
+  color: var(--danger);
+}
+.group-row .g-meta {
+  color: var(--text-3);
+}
+.group-row .g-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.group-row:hover .g-actions,
+.group-row:focus-within .g-actions,
+.shot .group-row.is-due .g-actions {
+  opacity: 1;
+}
+.g-btn {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: default;
+}
+.g-btn:hover {
+  background: var(--accent-faint);
+}
+.g-btn.quiet {
+  color: var(--text-3);
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+}
+.g-btn.quiet:hover {
+  color: var(--text-2);
+  background: var(--hover);
+}
+.group-rule {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--border);
+}
+
+/* ------------------------------------------------------- C · slim strip */
+
+.slim {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  flex-shrink: 0;
+  padding: 0 6px 0 12px;
+  background: var(--danger-faint);
+  color: var(--danger);
+  font-size: 12px;
+}
+.slim .s-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slim .s-text b {
+  font-weight: 600;
+}
+.slim .s-text .s-size {
+  color: var(--text-3);
+}
+.slim .s-icon {
+  display: flex;
+  cursor: help;
+}
+.slim .icon-btn {
+  width: 24px;
+  height: 24px;
+  color: var(--text-2);
+}
+.slim .icon-btn:hover {
+  color: var(--text);
+  background: var(--danger-faint);
+}
+.slim .s-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--border-strong);
+}
+
+/* ----------------------------------------------------- D · address chip */
+
+.address .due-token {
+  flex-shrink: 0;
+  height: 22px;
+  margin-left: auto;
+}

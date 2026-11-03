@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fazi · Cleanup · C · Slim strip</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="../shared/a2.css" />
+    <link rel="stylesheet" href="shared/cleanup.css" />
+  </head>
+  <body>
+    <script src="../shared/core.js"></script>
+    <script src="../shared/a2.js"></script>
+    <script src="shared/cleanup.js"></script>
+    <script>
+      /*
+       * C · Slim strip. The banner stays but shrinks to one 30pt tinted
+       * line, "⌛ 3 items leave tomorrow · 28.6 MB", with icon buttons for
+       * Select, Keep, Pause, and Hide. The rule moves into the hourglass's
+       * tooltip. The footer shrinks to "⌛ 3".
+       */
+      Cleanup.mount({
+        id: "cleanup-c",
+        cleanupBanner(R, S, paneId) {
+          const c = R.cleanup(paneId);
+          if (!c.on || c.dismissed || !c.count) return "";
+          return `<div class="slim">
+            <span class="s-icon" title="${R.esc(c.folderName)} empties ${c.days} days after arrival. Next sweep ${c.sweep}.">${R.icon("hourglass", 13)}</span>
+            <span class="s-text"><b>${R.plural(c.count, "item")}</b> leave ${c.when} <span class="s-size tnum">· ${c.size}</span></span>
+            <button class="icon-btn" data-act="cleanupSelect" data-pane-id="${paneId}" title="Select them">${R.icon("listChecks", 14)}</button>
+            <button class="icon-btn" data-act="cleanupKeep" title="Keep them (⌥⌘K)">${R.icon("pin", 14)}</button>
+            <button class="icon-btn" data-act="cleanupPause" title="Pause auto-cleanup">${R.icon("pause", 14)}</button>
+            <span class="s-sep"></span>
+            <button class="icon-btn" data-act="cleanupDismiss" title="Hide until the list changes">${R.icon("x", 13)}</button>
+          </div>`;
+        },
+        footCleanup(R) {
+          const c = R.cleanup();
+          if (!c.count) return "";
+          return `<button class="due-token" data-act="cleanupGo" title="${R.plural(c.count, "item")} leave ${c.folderName} ${c.when} · next sweep ${c.sweep}">${R.icon("hourglass", 11)}<span class="tnum">${c.count}</span></button>`;
+        },
+      });
+    </script>
+  </body>
+</html>

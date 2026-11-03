@@ -37,12 +37,9 @@ interface CleanupState {
   now: number;
   nextSweepAt: number | null;
   sweeping: boolean;
-  /** Banner dismissals: folder → the leaving-soon set it was dismissed for. */
-  dismissed: Record<string, string>;
 
   scan(): Promise<void>;
   sweep(opts?: { manual?: boolean }): Promise<void>;
-  dismissBanner(folder: string, signature: string): void;
 }
 
 export function cleanupOptions(s: SettingsValues = useSettings.getState()): CleanupOptions {
@@ -103,7 +100,6 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
   now: Date.now(),
   nextSweepAt: null,
   sweeping: false,
-  dismissed: {},
 
   scan: async () => {
     if (!useSettings.getState().cleanupEnabled) return;
@@ -155,9 +151,6 @@ export const useCleanup = create<CleanupState>()((set, get) => ({
       set({ sweeping: false });
     }
   },
-
-  dismissBanner: (folder, signature) =>
-    set((s) => ({ dismissed: { ...s.dismissed, [folder]: signature } })),
 }));
 
 /** Restore a sweep and keep what came back: those items are past their rule,

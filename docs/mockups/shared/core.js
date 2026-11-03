@@ -51,6 +51,12 @@ window.Fazi = (() => {
     hourglass:
       '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
     info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+    play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+    pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
+    listChecks: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+    settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
     columns: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>',
     sidebar: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
     sidebarRight: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
@@ -352,6 +358,24 @@ window.Fazi = (() => {
       const c = cleanupInfo(e, join(CLEANUP.folder, e.name));
       return c && c.tone === "due";
     });
+  }
+  /** Everything a cleanup UI needs, for designs that draw their own. */
+  function cleanup(paneId = S.activePane) {
+    const leaving = S.cleanupOn ? leavingSoon() : [];
+    return {
+      on: S.cleanupOn,
+      dismissed: S.cleanupDismissed,
+      folder: CLEANUP.folder,
+      folderName: basename(CLEANUP.folder),
+      days: CLEANUP.days,
+      here: tabOf(paneId).path === CLEANUP.folder,
+      leaving: leaving.map((e) => ({ name: e.name, size: bytes(e.size), entry: e })),
+      count: leaving.length,
+      size: bytes(leaving.reduce((a, e) => a + (e.size || 0), 0)),
+      when: "tomorrow",
+      sweep: "11:00 am",
+      kept: S.kept.size,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -917,6 +941,7 @@ window.Fazi = (() => {
       const n = (FS[tab.path] || []).length;
       return `<div class="banner banner-trash"><span>${n === 0 ? "The Trash is empty" : plural(n, "item")}</span><span class="grow"></span><button class="btn" data-act="emptyTrash" ${n ? "" : "disabled"}>Empty Trash…</button></div>`;
     }
+    if (tab.path === CLEANUP.folder && design.cleanupBanner) return design.cleanupBanner(R, S, paneId);
     if (tab.path === CLEANUP.folder && S.cleanupOn && !S.cleanupDismissed) {
       const leaving = leavingSoon();
       if (!leaving.length) return "";
@@ -941,11 +966,17 @@ window.Fazi = (() => {
     if (list.length === 0) return emptyState(tab);
     return `<div class="list ${cleanup ? "has-cleanup" : ""}">
       <div class="list-head">${head("Name", "name", "c-name")}${head("Kind", "kind", "c-kind")}${head("Size", "size", "c-size")}${head("Date Modified", "date", "c-date")}${head("Tags", null, "c-tags")}${cleanup ? head("Cleanup", null, "c-clean") : ""}</div>
-      <div class="list-body" data-scroll-key="${paneId}:${tab.id}">${list
-        .map((e) => {
-          const path = join(tab.path, e.name);
-          const c = cleanupInfo(e, path);
-          return `<div class="row ${tab.sel.has(e.name) ? "is-sel" : ""} ${tab.lead === e.name ? "is-lead" : ""}" data-row="${esc(e.name)}" data-pane-id="${paneId}">
+      <div class="list-body" data-scroll-key="${paneId}:${tab.id}">${
+        cleanup && design.cleanupRows
+          ? design.cleanupRows(R, S, paneId, list, (e) => listRow(paneId, tab, e, cleanup))
+          : list.map((e) => listRow(paneId, tab, e, cleanup)).join("")
+      }</div></div>`;
+  }
+
+  function listRow(paneId, tab, e, cleanup) {
+    const path = join(tab.path, e.name);
+    const c = cleanupInfo(e, path);
+    return `<div class="row ${tab.sel.has(e.name) ? "is-sel" : ""} ${tab.lead === e.name ? "is-lead" : ""} ${c && c.tone === "due" ? "is-due" : ""}" data-row="${esc(e.name)}" data-pane-id="${paneId}">
             <span class="c-name">${glyph(e, 16)}<span class="name">${esc(e.name)}</span></span>
             <span class="c-kind">${esc(e.kind)}</span>
             <span class="c-size tnum">${e.dir && !e.app ? "--" : bytes(e.size)}</span>
@@ -953,8 +984,6 @@ window.Fazi = (() => {
             <span class="c-tags">${tagDots(e.tags)}</span>
             ${cleanup ? `<span class="c-clean tnum ${c ? `tone-${c.tone}` : ""}">${c ? c.label : "Never"}</span>` : ""}
           </div>`;
-        })
-        .join("")}</div></div>`;
   }
 
   function gridView(paneId) {
@@ -1157,7 +1186,7 @@ window.Fazi = (() => {
   }
 
   function harness() {
-    const designs = [
+    const designs = design.nav || [
       ["a-rail.html", "A · Rail"],
       ["b-strip.html", "B · Strip"],
       ["c-trail.html", "C · Trail"],
@@ -1165,7 +1194,7 @@ window.Fazi = (() => {
       ["a-rail-address.html", "A2 · Rail + address bar"],
     ];
     const here = location.pathname.split("/").pop();
-    return `<a class="h-home" href="index.html">Fazi layouts</a><nav class="h-designs">${designs
+    return `<a class="h-home" href="index.html">${design.home || "Fazi layouts"}</a><nav class="h-designs">${designs
       .map(([f, l]) => `<a href="${f}" class="${here === f ? "is-on" : ""}">${l}</a>`)
       .join("")}</nav><span class="h-grow"></span>
       ${design.harnessExtra ? design.harnessExtra(S) : ""}
@@ -1260,16 +1289,44 @@ window.Fazi = (() => {
     },
     emptyTrash: () => confirmEmptyTrash(),
     cleanupSelect: (el) => {
-      const tab = tabOf(el.dataset.paneId);
+      S.ui.pop = null;
+      const tab = tabOf(el.dataset.paneId || S.activePane);
       const names = leavingSoon().map((e) => e.name);
       tab.sel = new Set(names);
       tab.lead = names[0];
     },
     cleanupPause: () => {
       S.cleanupOn = false;
+      S.ui.pop = null;
       toast("Auto-cleanup is off", { action: "Turn On" });
     },
-    cleanupDismiss: () => (S.cleanupDismissed = true),
+    cleanupDismiss: () => {
+      S.cleanupDismissed = true;
+      S.ui.pop = null;
+    },
+    cleanupKeep: () => {
+      const names = leavingSoon().map((e) => join(CLEANUP.folder, e.name));
+      names.forEach((n) => S.kept.add(n));
+      S.ui.pop = null;
+      toast(`Kept ${plural(names.length, "item")}`, { action: "Undo" });
+    },
+    cleanupResume: () => (S.cleanupOn = true),
+    cleanupReset: () => {
+      S.cleanupOn = true;
+      S.cleanupDismissed = false;
+      S.kept.clear();
+      S.ui.pop = null;
+      S.ui.dueCollapsed = false;
+    },
+    cleanupGo: () => {
+      S.ui.pop = null;
+      navigate(S.activePane, CLEANUP.folder);
+    },
+    cleanupSettings: () => {
+      S.ui.pop = null;
+      toast("Opens Settings → Auto-cleanup");
+    },
+    pop: (el) => (S.ui.pop = S.ui.pop === el.dataset.value ? null : el.dataset.value),
     fdaDismiss: () => (S.fda = false),
     fda: () => (S.fda = !S.fda),
     opDemo: () => startOp(),
@@ -1306,6 +1363,10 @@ window.Fazi = (() => {
 
   function onClick(e) {
     const t = e.target;
+    if (S.ui.pop && !t.closest(".pop, [data-act='pop']")) {
+      S.ui.pop = null;
+      if (!t.closest("[data-act]")) return render();
+    }
     if (S.menu && !t.closest(".menu")) {
       S.menu = null;
       if (!t.closest("[data-act]")) return render();
@@ -1438,6 +1499,7 @@ window.Fazi = (() => {
 
   function onKey(e) {
     const target = e.target;
+    if (e.key === "Escape" && S.ui.pop) return run(() => (S.ui.pop = null));
     if (target.id === "filter") {
       if (e.key === "Enter" && !S.search.active && target.value.trim()) {
         e.preventDefault();
@@ -1607,6 +1669,7 @@ window.Fazi = (() => {
     splitButton,
     loadingBar,
     fdaBanner,
+    cleanup,
     body,
     status,
     info,
@@ -1625,7 +1688,9 @@ window.Fazi = (() => {
     if (params.has("nosidebar")) S.sidebar = false;
     if (params.has("fda")) S.fda = true;
     if (params.has("novim")) S.vim = false;
-    if (params.has("go")) navigate(S.activePane, params.get("go").replace(/^~/, HOME));
+    const go = params.get("go") || design.startPath;
+    if (go) navigate(S.activePane, go.replace(/^~/, HOME));
+    if (params.has("pop")) S.ui.pop = params.get("pop");
     if (params.has("search")) S.search = { ...S.search, active: true, query: params.get("search"), scope: params.get("scope") || "home" };
     if (params.has("palette")) openOverlay("palette");
     if (params.has("menu")) S.menu = { x: 520, y: 220, items: rowMenu(S.activePane, activeTab().lead || visible(activeTab())[0].name) };
