@@ -31,14 +31,46 @@ use crate::search::fuzzy::FuzzyIndex;
 pub struct TokenTable {
     key: RandomState,
     next: AtomicU64,
-    tokens: DashMap<u64, Arc<Path>>,
+    tokens: DashMap<u64, Minted>,
     owners: DashMap<String, OwnerScope>,
+    /// Classifies a directory's volume (statfs; follows symlinks/firmlinks).
+    locality: fn(&Path) -> Option<bool>,
+    /// dir → (local, classified at): search/fuzzy owners mint across many
+    /// directories; repeats within the TTL skip the statfs.
+    dir_locality: DashMap<PathBuf, (bool, std::time::Instant)>,
+}
+
+const DIR_LOCALITY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A token's target plus whether it lives on a local volume — decided at
+/// mint time (listing/search threads, off-main), so protocol dispatch can
+/// route remote items to their own pool without touching the filesystem.
+struct Minted {
+    path: Arc<Path>,
+    local: bool,
 }
 
 /// One owner's tokens, keyed by path for reuse.
 #[derive(Default)]
 pub struct OwnerScope {
     by_path: HashMap<Arc<Path>, u64>,
+    /// Last parent dir classified for this owner: a listing mints every
+    /// token from one directory, so this is one statfs per listing.
+    last_parent: Option<(PathBuf, bool)>,
+}
+
+/// `statfs(dir)` → MNT_LOCAL. statfs resolves symlinks and firmlinks, so
+/// `~/share → /Volumes/SMB` is classified by the SMB volume. None when the
+/// call fails.
+pub fn statfs_local(dir: &Path) -> Option<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut sfs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: valid path, out-pointer to a zeroed statfs.
+    if unsafe { libc::statfs(c.as_ptr(), &mut sfs) } != 0 {
+        return None;
+    }
+    Some(sfs.f_flags & libc::MNT_LOCAL as u32 != 0)
 }
 
 impl OwnerScope {
@@ -58,6 +90,8 @@ impl Default for TokenTable {
             next: AtomicU64::new(1),
             tokens: DashMap::new(),
             owners: DashMap::new(),
+            locality: statfs_local,
+            dir_locality: DashMap::new(),
         }
     }
 }
@@ -97,13 +131,49 @@ impl TokenTable {
         (mac == self.mac(id)).then_some(id)
     }
 
+    /// Test constructor with an injected volume classifier.
+    #[cfg(test)]
+    pub fn with_locality(locality: fn(&Path) -> Option<bool>) -> Self {
+        TokenTable { locality, ..TokenTable::default() }
+    }
+
+    fn local_for(&self, scope: &mut OwnerScope, path: &Path) -> bool {
+        let parent = path.parent().unwrap_or(path);
+        if let Some((p, local)) = &scope.last_parent {
+            // Byte compare: Path's == walks components (hot listing loop).
+            if p.as_os_str() == parent.as_os_str() {
+                return *local;
+            }
+        }
+        let cached = self
+            .dir_locality
+            .get(parent)
+            .filter(|e| e.1.elapsed() < DIR_LOCALITY_TTL)
+            .map(|e| e.0);
+        let local = match cached {
+            Some(l) => l,
+            None => {
+                // Unknown (statfs failed) → remote: the conservative routing.
+                let l = (self.locality)(parent).unwrap_or(false);
+                if self.dir_locality.len() > 4096 {
+                    self.dir_locality.clear();
+                }
+                self.dir_locality.insert(parent.to_path_buf(), (l, std::time::Instant::now()));
+                l
+            }
+        };
+        scope.last_parent = Some((parent.to_path_buf(), local));
+        local
+    }
+
     fn register_in(&self, scope: &mut OwnerScope, path: &Path) -> u64 {
         if let Some(&id) = scope.by_path.get(path) {
             return id;
         }
+        let local = self.local_for(scope, path);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let shared: Arc<Path> = Arc::from(path);
-        self.tokens.insert(id, shared.clone());
+        self.tokens.insert(id, Minted { path: shared.clone(), local });
         scope.by_path.insert(shared, id);
         id
     }
@@ -125,7 +195,14 @@ impl TokenTable {
     /// Unknown token → None → the protocol handler 404s.
     pub fn resolve(&self, token: &str) -> Option<Arc<Path>> {
         let id = self.decode(token)?;
-        self.tokens.get(&id).map(|p| p.clone())
+        self.tokens.get(&id).map(|m| m.path.clone())
+    }
+
+    /// Whether the token's item was on a local volume when minted. None for
+    /// unknown tokens. In-memory only — safe on the protocol dispatch thread.
+    pub fn is_local(&self, token: &str) -> Option<bool> {
+        let id = self.decode(token)?;
+        self.tokens.get(&id).map(|m| m.local)
     }
 
     /// Revoke ONE token from `owner` (the fuzzy icon-token cache eviction
@@ -134,7 +211,7 @@ impl TokenTable {
         let Some(id) = self.decode(token) else {
             return;
         };
-        let Some((_, path)) = self.tokens.remove(&id) else {
+        let Some((_, Minted { path, .. })) = self.tokens.remove(&id) else {
             return;
         };
         if let Some(mut scope) = self.owners.get_mut(owner) {
@@ -213,6 +290,42 @@ pub struct AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_carry_the_locality_of_their_directory() {
+        fn fake(dir: &Path) -> Option<bool> {
+            if dir.starts_with("/Users/me/share") {
+                Some(false) // what statfs says behind the symlink
+            } else if dir.starts_with("/gone") {
+                None
+            } else {
+                Some(true)
+            }
+        }
+        let t = TokenTable::with_locality(fake);
+        let local = t.register("l1", Path::new("/Users/me/a.txt"));
+        let remote = t.register("l2", Path::new("/Users/me/share/b.txt"));
+        let unknown = t.register("l3", Path::new("/gone/c.txt"));
+        assert_eq!(t.is_local(&local), Some(true));
+        assert_eq!(t.is_local(&remote), Some(false));
+        assert_eq!(t.is_local(&unknown), Some(false), "unknown is treated as remote");
+        assert_eq!(t.is_local("nope"), None);
+    }
+
+    #[test]
+    fn statfs_locality_follows_symlinks() {
+        let d = std::env::temp_dir().join(format!("fazi-loc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let link = d.join("dev-link");
+        std::os::unix::fs::symlink("/dev", &link).unwrap();
+        assert_eq!(statfs_local(&d), Some(true));
+        // statfs on the link resolves to the target's filesystem (devfs),
+        // never the volume the link itself sits on.
+        assert_eq!(statfs_local(&link), statfs_local(Path::new("/dev")));
+        assert_eq!(statfs_local(Path::new("/definitely/missing")), None);
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     #[test]
     fn tokens_are_opaque_and_unforgeable() {

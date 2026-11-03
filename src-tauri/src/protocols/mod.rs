@@ -7,8 +7,8 @@
 
 use std::borrow::Cow;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::path::Path;
+use std::sync::OnceLock;
 
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, Runtime};
@@ -33,68 +33,10 @@ pub fn remote_image_pool() -> &'static WorkerPool {
     POOL.get_or_init(|| WorkerPool::new("fazi-remote-img", 2))
 }
 
-/// Mount points with their MNT_LOCAL flag, from `getmntinfo(MNT_NOWAIT)`
-/// (the kernel's cached table — never touches a mount, so a dead server
-/// can't block it). Locality lookup is then a pure longest-prefix match.
-pub struct MountTable {
-    /// (mount point, is_local), longest mount point first.
-    mounts: Vec<(PathBuf, bool)>,
-}
-
-impl MountTable {
-    pub fn new(mut mounts: Vec<(PathBuf, bool)>) -> Self {
-        mounts.sort_by_key(|(m, _)| std::cmp::Reverse(m.as_os_str().len()));
-        MountTable { mounts }
-    }
-
-    pub fn current() -> Self {
-        let mut buf: *mut libc::statfs = std::ptr::null_mut();
-        // SAFETY: getmntinfo hands back a libc-owned array of `n` entries.
-        let n = unsafe { libc::getmntinfo(&mut buf, libc::MNT_NOWAIT) };
-        let mut mounts = Vec::new();
-        if n > 0 && !buf.is_null() {
-            let all = unsafe { std::slice::from_raw_parts(buf, n as usize) };
-            for m in all {
-                let bytes: Vec<u8> =
-                    m.f_mntonname.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
-                use std::os::unix::ffi::OsStringExt;
-                let point = PathBuf::from(std::ffi::OsString::from_vec(bytes));
-                mounts.push((point, m.f_flags & libc::MNT_LOCAL as u32 != 0));
-            }
-        }
-        MountTable::new(mounts)
-    }
-
-    /// Unknown paths count as local (the root volume always matches "/").
-    pub fn is_local(&self, path: &Path) -> bool {
-        self.mounts
-            .iter()
-            .find(|(m, _)| path.starts_with(m))
-            .map(|(_, local)| *local)
-            .unwrap_or(true)
-    }
-}
-
-/// Cached [`MountTable`], refreshed every few seconds (mounts come and go).
-pub fn path_is_local(path: &Path) -> bool {
-    static TABLE: std::sync::Mutex<Option<(std::time::Instant, Arc<MountTable>)>> =
-        std::sync::Mutex::new(None);
-    let table = {
-        let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
-        match &*t {
-            Some((at, table)) if at.elapsed() < std::time::Duration::from_secs(5) => table.clone(),
-            _ => {
-                let table = Arc::new(MountTable::current());
-                *t = Some((std::time::Instant::now(), table.clone()));
-                table
-            }
-        }
-    };
-    table.is_local(path)
-}
-
-/// Pick the worker pool for an icon/thumb request: the remote pool when the
-/// token's item lives on a non-local volume. Token resolution is in-memory.
+/// Pick the worker pool for an icon/thumb request: the local pool only when
+/// the token was minted for an item on a local volume (decided by statfs at
+/// listing/search time). Unknown tokens 404 quickly either way. In-memory
+/// lookup only — never touches the filesystem on the dispatch thread.
 pub fn image_pool_for<R: Runtime>(
     app: &AppHandle<R>,
     request: &Request<Vec<u8>>,
@@ -102,9 +44,13 @@ pub fn image_pool_for<R: Runtime>(
 ) -> &'static WorkerPool {
     let state = app.state::<AppState>();
     let token = request.uri().path().trim_start_matches('/');
-    match state.tokens.resolve(token) {
-        Some(path) if !path_is_local(&path) => remote_image_pool(),
-        _ => local,
+    pick_pool(state.tokens.is_local(token), local, remote_image_pool())
+}
+
+fn pick_pool<'a>(local_flag: Option<bool>, local: &'a WorkerPool, remote: &'a WorkerPool) -> &'a WorkerPool {
+    match local_flag {
+        Some(false) => remote,
+        _ => local, // local, or unknown token (cheap 404)
     }
 }
 
@@ -380,22 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn mount_table_isolates_remote_volumes_by_longest_prefix() {
-        use std::path::{Path, PathBuf};
-        let t = super::MountTable::new(vec![
-            (PathBuf::from("/"), true),
-            (PathBuf::from("/Volumes/share"), false),
-            (PathBuf::from("/Volumes/share/nested-local"), true),
-            (PathBuf::from("/Volumes/USB"), true),
-        ]);
-        assert!(t.is_local(Path::new("/Users/me/a.txt")));
-        assert!(!t.is_local(Path::new("/Volumes/share/docs/a.txt")));
-        assert!(t.is_local(Path::new("/Volumes/share/nested-local/x")));
-        assert!(t.is_local(Path::new("/Volumes/USB/x")));
-        // Component-wise prefix: /Volumes/shared is not under /Volumes/share.
-        assert!(t.is_local(Path::new("/Volumes/shared/x")));
-        // The live table knows the root volume is local.
-        assert!(super::MountTable::current().is_local(Path::new("/")));
+    fn remote_tokens_route_to_the_remote_pool() {
+        let local = super::WorkerPool::new("t-local", 1);
+        let remote = super::WorkerPool::new("t-remote", 1);
+        assert!(std::ptr::eq(super::pick_pool(Some(false), &local, &remote), &remote));
+        assert!(std::ptr::eq(super::pick_pool(Some(true), &local, &remote), &local));
+        assert!(std::ptr::eq(super::pick_pool(None, &local, &remote), &local));
     }
 
     #[test]
