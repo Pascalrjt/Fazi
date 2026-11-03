@@ -119,14 +119,118 @@ pub struct UndoOutcome {
 pub struct UndoStack {
     undo: Vec<UndoOp>,
     redo: Vec<UndoOp>,
+    /// Bumped by every `push` — lets an inverse applied outside the stack
+    /// lock (`undo_shared`/`redo_shared`) see that a new op landed meanwhile.
+    push_epoch: u64,
+    /// True while a popped record is being applied outside the lock.
+    in_flight: bool,
+    /// Purges requested while a record was in flight — replayed over the
+    /// stacks once its outcome is pushed back.
+    pending_purges: Vec<PathBuf>,
+}
+
+/// Serializes inverse application (undo/redo must apply in stack order) —
+/// separate from the stack mutex so stack reads and op pushes never wait
+/// on a slow inverse (an EXDEV move-back copies and verifies whole trees).
+static APPLY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Undo,
+    Redo,
+}
+
+/// Undo the top record without holding `stack`'s lock while the inverse
+/// runs: pop under the lock, apply unlocked, re-lock to push the outcome.
+/// Returns the outcome plus every path the record touched.
+pub fn undo_shared(
+    stack: &std::sync::Mutex<UndoStack>,
+    trasher: &dyn Trasher,
+) -> io::Result<Option<(UndoOutcome, Vec<PathBuf>)>> {
+    run_shared(stack, trasher, Side::Undo)
+}
+
+/// Redo counterpart of [`undo_shared`].
+pub fn redo_shared(
+    stack: &std::sync::Mutex<UndoStack>,
+    trasher: &dyn Trasher,
+) -> io::Result<Option<(UndoOutcome, Vec<PathBuf>)>> {
+    run_shared(stack, trasher, Side::Redo)
+}
+
+fn run_shared(
+    stack: &std::sync::Mutex<UndoStack>,
+    trasher: &dyn Trasher,
+    side: Side,
+) -> io::Result<Option<(UndoOutcome, Vec<PathBuf>)>> {
+    let _apply = APPLY.lock().unwrap_or_else(|e| e.into_inner());
+    let (op, undo_len, redo_len, epoch) = {
+        let mut s = stack.lock().unwrap();
+        let popped = match side {
+            Side::Undo => s.undo.pop(),
+            Side::Redo => s.redo.pop(),
+        };
+        let Some(op) = popped else {
+            return Ok(None);
+        };
+        s.in_flight = true;
+        (op, s.undo.len(), s.redo.len(), s.push_epoch)
+    };
+    let touched = op.touched_paths();
+
+    let result = apply_inverse(&op, trasher);
+
+    let mut s = stack.lock().unwrap();
+    s.in_flight = false;
+    // A push meanwhile cleared redo; sequentially it would have landed
+    // AFTER this undo/redo, so place outcomes as if it had.
+    let pushed = s.push_epoch != epoch;
+    let out = match (side, result) {
+        (Side::Undo, Ok(outcome)) => {
+            if !pushed {
+                s.redo.push(outcome.inverse.clone());
+            }
+            Ok(Some((outcome, touched)))
+        }
+        (Side::Undo, Err(e)) => {
+            // A failed undo must not silently drop the record.
+            let at = undo_len.min(s.undo.len());
+            s.undo.insert(at, op);
+            s.trim();
+            Err(e)
+        }
+        (Side::Redo, Ok(outcome)) => {
+            let at = undo_len.min(s.undo.len());
+            s.undo.insert(at, outcome.inverse.clone());
+            s.trim();
+            Ok(Some((outcome, touched)))
+        }
+        (Side::Redo, Err(e)) => {
+            if !pushed {
+                let at = redo_len.min(s.redo.len());
+                s.redo.insert(at, op);
+            }
+            Err(e)
+        }
+    };
+    let purges = std::mem::take(&mut s.pending_purges);
+    if !purges.is_empty() {
+        s.purge_records_under(&purges);
+    }
+    out
 }
 
 impl UndoStack {
     /// Record a completed op (clears the redo stack, caps at 50).
     pub fn push(&mut self, op: UndoOp) {
+        self.push_epoch += 1;
         self.redo.clear();
         self.undo.push(op);
-        if self.undo.len() > CAP {
+        self.trim();
+    }
+
+    fn trim(&mut self) {
+        while self.undo.len() > CAP {
             self.undo.remove(0);
         }
     }
@@ -179,6 +283,11 @@ impl UndoStack {
     /// trash content can only fail or, worse, act on an unrelated file that
     /// later lands at the same trash path.
     pub fn purge_records_under(&mut self, purged: &[PathBuf]) {
+        if self.in_flight {
+            // The in-flight record (or its inverse) isn't on either stack
+            // yet — re-run this purge once it lands.
+            self.pending_purges.extend_from_slice(purged);
+        }
         let references = |p: &Path| {
             purged.iter().any(|root| p == root || p.starts_with(root))
         };
@@ -677,6 +786,104 @@ mod tests {
         assert!(stack.redo_top().is_some());
         stack.push(UndoOp::NewFolder { path: d.join("g") });
         assert!(stack.redo_top().is_none());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    /// Trasher that parks until released — stands in for a slow inverse
+    /// (an EXDEV move-back copying + verifying a whole tree).
+    struct GateTrasher {
+        inner: DirTrasher,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Trasher for GateTrasher {
+        fn trash(&self, path: &Path) -> io::Result<PathBuf> {
+            let _ = self.entered.send(());
+            let _ = self.release.lock().unwrap().recv();
+            self.inner.trash(path)
+        }
+    }
+
+    fn gate(d: &Path) -> (Arc<GateTrasher>, std::sync::mpsc::Receiver<()>, std::sync::mpsc::SyncSender<()>) {
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let t = Arc::new(GateTrasher {
+            inner: DirTrasher(d.join("trash")),
+            entered: entered_tx,
+            release: std::sync::Mutex::new(release_rx),
+        });
+        (t, entered_rx, release_tx)
+    }
+
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn shared_undo_releases_the_stack_lock_while_the_inverse_runs() {
+        let d = tmp("lockfree");
+        let f = d.join("copy.txt");
+        fs::write(&f, b"x").unwrap();
+        let stack = Arc::new(Mutex::new(UndoStack::default()));
+        stack.lock().unwrap().push(UndoOp::NewFolder { path: d.join("older") });
+        stack.lock().unwrap().push(UndoOp::Copy { produced: vec![f.clone()] });
+        let (trasher, entered, release) = gate(&d);
+
+        let worker = {
+            let stack = stack.clone();
+            let trasher = trasher.clone();
+            std::thread::spawn(move || undo_shared(&stack, trasher.as_ref()))
+        };
+        entered.recv().unwrap(); // the inverse is now running
+        // The stack mutex is free: menu sync / stack-top reads don't block.
+        let top = stack.try_lock().expect("stack lock must be free mid-undo").undo_top().map(|o| o.label());
+        assert_eq!(top.as_deref(), Some("New Folder"));
+        release.send(()).unwrap();
+        let (outcome, touched) = worker.join().unwrap().unwrap().unwrap();
+        assert_eq!(outcome.label, "Copy of 1 Item");
+        assert_eq!(touched, vec![f.clone()]);
+        let s = stack.lock().unwrap();
+        assert_eq!(s.redo_top().map(|o| o.kind_wire()), Some("trash"));
+        assert!(!f.exists());
+        drop(s);
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn op_pushed_during_shared_undo_wins_over_the_redo_entry() {
+        let d = tmp("pushmid");
+        let f = d.join("copy.txt");
+        fs::write(&f, b"x").unwrap();
+        let stack = Arc::new(Mutex::new(UndoStack::default()));
+        stack.lock().unwrap().push(UndoOp::Copy { produced: vec![f.clone()] });
+        let (trasher, entered, release) = gate(&d);
+        let worker = {
+            let stack = stack.clone();
+            let trasher = trasher.clone();
+            std::thread::spawn(move || undo_shared(&stack, trasher.as_ref()))
+        };
+        entered.recv().unwrap();
+        stack.lock().unwrap().push(UndoOp::NewFolder { path: d.join("new") });
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap().unwrap();
+        let s = stack.lock().unwrap();
+        // Sequential semantics: the new op's push cleared redo after the undo.
+        assert!(s.redo_top().is_none());
+        assert_eq!(s.undo_top().map(|o| o.kind_wire()), Some("newFolder"));
+        drop(s);
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn failed_shared_undo_restores_the_record_below_newer_pushes() {
+        let d = tmp("failmid");
+        let missing = d.join("gone.txt"); // validate_exists fails
+        let stack = Mutex::new(UndoStack::default());
+        stack.lock().unwrap().push(UndoOp::Copy { produced: vec![missing] });
+        assert!(undo_shared(&stack, &DirTrasher(d.join("trash"))).is_err());
+        let s = stack.lock().unwrap();
+        assert_eq!(s.undo_top().map(|o| o.kind_wire()), Some("copy"));
+        assert!(!s.in_flight);
+        drop(s);
+        assert!(redo_shared(&stack, &DirTrasher(d.join("trash"))).unwrap().is_none());
         fs::remove_dir_all(&d).ok();
     }
 }

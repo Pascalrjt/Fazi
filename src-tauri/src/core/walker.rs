@@ -150,10 +150,30 @@ fn split_name(name: &str) -> (&str, String) {
     }
 }
 
+/// True when name lookups in `dir`'s volume are case-insensitive (the APFS
+/// and HFS+ default) — then a failed `lstat` already proves no
+/// case-variant exists and the directory scan can be skipped. Unknown
+/// (pathconf error) counts as case-sensitive: the scan stays the fallback.
+/// One `pathconf(2)` per call instead of a per-device cache: device ids are
+/// reused across mounts, and the call is as cheap as the `lstat` beside it.
+pub fn case_insensitive_dir(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: valid NUL-terminated path; pathconf has no other inputs.
+    unsafe { libc::pathconf(c.as_ptr(), libc::_PC_CASE_SENSITIVE) == 0 }
+}
+
 /// Case-insensitive existence check (APFS default semantics on every volume).
+/// O(1) syscalls on case-insensitive volumes; one directory scan otherwise.
+/// Loops probing many candidates in one dir should use [`DirNames`].
 pub fn exists_ci(dir: &Path, name: &str) -> bool {
     if dir.join(name).symlink_metadata().is_ok() {
         return true;
+    }
+    if case_insensitive_dir(dir) {
+        return false;
     }
     let lower = name.to_lowercase();
     match std::fs::read_dir(dir) {
@@ -164,12 +184,65 @@ pub fn exists_ci(dir: &Path, name: &str) -> bool {
     }
 }
 
+/// Per-op cache for repeated case-insensitive collision checks in one
+/// directory (keep-both / duplicate naming loops, batch validation): the
+/// directory is scanned at most once, and only on case-sensitive volumes.
+/// Exact names are always confirmed by `lstat`, so entries created by others
+/// after the scan are still seen; callers `insert` names they create.
+pub struct DirNames {
+    dir: PathBuf,
+    ci_volume: Option<bool>,
+    lower: Option<HashSet<String>>,
+}
+
+impl DirNames {
+    pub fn new(dir: &Path) -> Self {
+        DirNames { dir: dir.to_path_buf(), ci_volume: None, lower: None }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn contains(&mut self, name: &str) -> bool {
+        if self.dir.join(name).symlink_metadata().is_ok() {
+            return true;
+        }
+        let dir = &self.dir;
+        if *self.ci_volume.get_or_insert_with(|| case_insensitive_dir(dir)) {
+            return false;
+        }
+        let set = self.lower.get_or_insert_with(|| {
+            std::fs::read_dir(dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .map(|e| e.file_name().to_string_lossy().to_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        set.contains(&name.to_lowercase())
+    }
+
+    /// Record a name this op just created in the directory.
+    pub fn insert(&mut self, name: &str) {
+        if let Some(set) = &mut self.lower {
+            set.insert(name.to_lowercase());
+        }
+    }
+}
+
 /// "name.ext" → "name 2.ext", "name 3.ext", … first available (Keep Both).
 pub fn keep_both_name(dir: &Path, name: &str) -> String {
+    keep_both_name_in(&mut DirNames::new(dir), name)
+}
+
+/// [`keep_both_name`] over a reusable per-op name cache.
+pub fn keep_both_name_in(names: &mut DirNames, name: &str) -> String {
     let (stem, ext) = split_name(name);
     for n in 2..10_000 {
         let candidate = format!("{} {}{}", stem, n, ext);
-        if !exists_ci(dir, &candidate) {
+        if !names.contains(&candidate) {
             return candidate;
         }
     }
@@ -178,14 +251,19 @@ pub fn keep_both_name(dir: &Path, name: &str) -> String {
 
 /// "name.ext" → "name copy.ext", "name copy 2.ext", … (Duplicate).
 pub fn duplicate_name(dir: &Path, name: &str) -> String {
+    duplicate_name_in(&mut DirNames::new(dir), name)
+}
+
+/// [`duplicate_name`] over a reusable per-op name cache.
+pub fn duplicate_name_in(names: &mut DirNames, name: &str) -> String {
     let (stem, ext) = split_name(name);
     let first = format!("{} copy{}", stem, ext);
-    if !exists_ci(dir, &first) {
+    if !names.contains(&first) {
         return first;
     }
     for n in 2..10_000 {
         let candidate = format!("{} copy {}{}", stem, n, ext);
-        if !exists_ci(dir, &candidate) {
+        if !names.contains(&candidate) {
             return candidate;
         }
     }
@@ -194,12 +272,13 @@ pub fn duplicate_name(dir: &Path, name: &str) -> String {
 
 /// "untitled folder", "untitled folder 2", …
 pub fn new_folder_name(dir: &Path, base: &str) -> String {
-    if !exists_ci(dir, base) {
+    let mut names = DirNames::new(dir);
+    if !names.contains(base) {
         return base.to_string();
     }
     for n in 2..10_000 {
         let candidate = format!("{} {}", base, n);
-        if !exists_ci(dir, &candidate) {
+        if !names.contains(&candidate) {
             return candidate;
         }
     }
@@ -318,6 +397,51 @@ pub fn mtime_tolerance_ms(dst: &Path) -> i64 {
     }
 }
 
+/// Metadata spot-check sample target (every file when there are ≤ this many).
+const METADATA_SAMPLE: usize = 20;
+
+/// Deterministic, evenly strided sample over a stream of unknown length in
+/// O(target) memory: keeps every `stride`-th offered item; when the buffer
+/// reaches 2×target it drops every other kept item and doubles the stride.
+/// Streams shorter than 2×target are kept whole; longer ones end with
+/// target..2×target items spread evenly across the stream.
+pub struct StrideSample<T> {
+    target: usize,
+    stride: usize,
+    seen: usize,
+    kept: Vec<T>,
+}
+
+impl<T> StrideSample<T> {
+    pub fn new(target: usize) -> Self {
+        StrideSample { target: target.max(1), stride: 1, seen: 0, kept: Vec::new() }
+    }
+
+    /// Offer the next stream item; `make` runs only if it's kept.
+    pub fn offer(&mut self, make: impl FnOnce() -> T) {
+        if self.seen.is_multiple_of(self.stride) {
+            self.kept.push(make());
+            if self.kept.len() >= 2 * self.target {
+                let mut i = 0;
+                self.kept.retain(|_| {
+                    i += 1;
+                    i % 2 == 1
+                });
+                self.stride *= 2;
+            }
+        }
+        self.seen += 1;
+    }
+
+    pub fn items(&self) -> &[T] {
+        &self.kept
+    }
+
+    pub fn seen(&self) -> usize {
+        self.seen
+    }
+}
+
 pub struct VerifyReport {
     pub mismatches: Vec<String>,
     pub entries_checked: u64,
@@ -332,14 +456,15 @@ pub fn verify_tree(
     skipped: &HashSet<PathBuf>,
     tol_ms: i64,
 ) -> io::Result<VerifyReport> {
-    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut files = StrideSample::new(METADATA_SAMPLE);
     let mut mismatches = Vec::new();
     let mut entries = 0u64;
     collect_verify(src, dst, skipped, tol_ms, &mut files, &mut mismatches, &mut entries)?;
 
-    // Metadata spot-checks: all files if ≤ 20, else every ceil(n/20)-th.
-    let step = (files.len() / 20).max(1);
-    for (s, d) in files.iter().step_by(step) {
+    // Metadata spot-checks: all files if ≤ 20, else an evenly strided
+    // sample of 20..40 — chosen during the walk, so memory is O(sample)
+    // rather than one path pair per copied file.
+    for (s, d) in files.items() {
         verify_metadata(s, d, &mut mismatches);
     }
     Ok(VerifyReport { mismatches, entries_checked: entries })
@@ -350,7 +475,7 @@ fn collect_verify(
     dst: &Path,
     skipped: &HashSet<PathBuf>,
     tol_ms: i64,
-    files: &mut Vec<(PathBuf, PathBuf)>,
+    files: &mut StrideSample<(PathBuf, PathBuf)>,
     mismatches: &mut Vec<String>,
     entries: &mut u64,
 ) -> io::Result<()> {
@@ -403,7 +528,7 @@ fn collect_verify(
         if delta > tol_ms {
             mismatches.push(format!("{}: mtime drift {} ms", dst.display(), delta));
         }
-        files.push((src.to_path_buf(), dst.to_path_buf()));
+        files.offer(|| (src.to_path_buf(), dst.to_path_buf()));
     }
     Ok(())
 }
@@ -573,6 +698,9 @@ pub fn merge_into(
         existing.insert(n.to_lowercase(), n);
     }
 
+    // Keep-both naming cache for this dir (scanned at most once, lazily).
+    let mut dst_names: Option<DirNames> = None;
+
     let mut children: Vec<_> = std::fs::read_dir(src)?.flatten().collect();
     children.sort_by_key(|e| e.file_name());
 
@@ -646,11 +774,13 @@ pub fn merge_into(
                     Resolution::Skip => continue,
                     Resolution::Cancel => return Ok(Outcome::Cancelled),
                     Resolution::KeepBoth => {
-                        let kb = keep_both_name(dst, &name);
+                        let names = dst_names.get_or_insert_with(|| DirNames::new(dst));
+                        let kb = keep_both_name_in(names, &name);
                         let dpath = dst.join(&kb);
                         match transfer_entry(&spath, &dpath, ctx, sink)? {
                             Outcome::Cancelled => return Ok(Outcome::Cancelled),
                             Outcome::Done => {
+                                names.insert(&kb);
                                 existing.insert(kb.to_lowercase(), kb);
                             }
                         }
@@ -1227,6 +1357,67 @@ mod tests {
         // Case-insensitive collision detection.
         assert_eq!(keep_both_name(&d, "REPORT.PDF"), "REPORT 3.PDF");
         fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn dir_names_cache_scans_once_and_tracks_inserts() {
+        let d = tmp("dirnames");
+        fs::write(d.join("Photo.JPG"), b"1").unwrap();
+        fs::write(d.join("photo 2.jpg"), b"2").unwrap();
+
+        // Case-sensitive path (forced): the scan builds the lowercase set once.
+        let mut names = DirNames::new(&d);
+        names.ci_volume = Some(false);
+        assert!(!names.contains("absent.bin"));
+        assert!(names.lower.is_some(), "set built lazily on first miss");
+        assert!(names.contains("photo.jpg"), "case variant found");
+        // A file created by someone else after the scan: exact name still
+        // seen through lstat.
+        fs::write(d.join("late.txt"), b"x").unwrap();
+        assert!(names.contains("late.txt"));
+        // Names we create (case variants on a case-sensitive volume) are
+        // tracked without a rescan.
+        let kb = keep_both_name_in(&mut names, "photo.jpg");
+        assert_eq!(kb, "photo 3.jpg");
+        names.insert("PHOTO 3.JPG");
+        assert_eq!(keep_both_name_in(&mut names, "photo.jpg"), "photo 4.jpg");
+        assert!(!names.contains("absent.bin"));
+
+        // Case-insensitive volume path: lstat is authoritative, no scan.
+        let mut names = DirNames::new(&d);
+        names.ci_volume = Some(true);
+        assert!(!names.contains("nothing-here"));
+        assert!(names.lower.is_none(), "case-insensitive volume never scans");
+
+        // exists_ci agrees with the cache on the real volume either way.
+        assert!(exists_ci(&d, "PHOTO.jpg"));
+        assert!(!exists_ci(&d, "photo 9.jpg"));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn stride_sample_is_bounded_and_even() {
+        let mut s = StrideSample::new(20);
+        for i in 0..15 {
+            s.offer(|| i);
+        }
+        assert_eq!(s.items().len(), 15, "short streams are kept whole");
+        let mut s = StrideSample::new(20);
+        let mut made = 0;
+        for i in 0..100_000usize {
+            s.offer(|| {
+                made += 1;
+                i
+            });
+        }
+        let items = s.items();
+        assert!((20..40).contains(&items.len()), "{}", items.len());
+        assert_eq!(items[0], 0);
+        let stride = items[1] - items[0];
+        assert!(items.windows(2).all(|w| w[1] - w[0] == stride), "evenly spaced");
+        assert!(*items.last().unwrap() + 2 * stride >= 100_000, "covers the whole stream");
+        // O(target · log n) items ever materialized, not one per stream item.
+        assert!(made < 400, "only kept items are materialized ({made})");
     }
 
     fn assert_staging_free(root: &Path, op_id: &str) {

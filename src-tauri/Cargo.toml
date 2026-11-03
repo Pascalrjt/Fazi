@@ -48,3 +48,12 @@ base64 = "0.22"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
 
+
+# Shipping profile: whole-program LTO + a single codegen unit let rustc inline
+# across crates (nucleo-matcher's scoring loop, blake3, serde) — measured with
+# examples/perf_ops.rs and examples/fuzzy_bench.rs. Symbols are stripped from
+# the shipped binary; panics still unwind (Tauri commands rely on it).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

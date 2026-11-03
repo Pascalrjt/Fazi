@@ -56,8 +56,18 @@ fn persist_completed(index: &FuzzyIndex, snapshot: &Path) {
 /// guard dedupes concurrent refreshes per root; the swap is conditional on
 /// the map still holding the index the refresh started from, so a config
 /// change or drop mid-walk wins over the refresh.
+///
+/// Stale bookkeeping: the refresh CONSUMES the old index's stale mark when
+/// it starts (the walk it launches is what makes the index fresh again).
+/// Only a mark set *during* the walk — an op that landed mid-walk, which the
+/// fresh snapshot may miss — carries over to the fresh index. If the walk
+/// never swaps in (aborted, discarded, eject), the consumed mark is put
+/// back so the next warm retries. Without this, one op left the index stale
+/// forever and every later ⌘P re-walked the tree and rewrote the snapshot.
+///
+/// Returns true when a refresh walk was actually started.
 #[allow(clippy::too_many_arguments)] // one-shot spawn helper, not an API
-fn spawn_refresh(
+pub fn spawn_refresh(
     fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
     pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
     tokens: Arc<TokenTable>,
@@ -68,21 +78,28 @@ fn spawn_refresh(
     cap: u64,
     hash: u64,
     snapshot: PathBuf,
-) {
+) -> bool {
     let fresh = FuzzyIndex::new(root.clone(), hash, now_ms());
     if pending.insert(root.clone(), fresh.clone()).is_some() {
-        return; // a refresh for this root is already walking
+        return false; // a refresh for this root is already walking
     }
+    let was_stale = old.stale.swap(false, Ordering::SeqCst);
     std::thread::spawn(move || {
+        let restore_mark = |old: &FuzzyIndex| {
+            if was_stale {
+                old.stale.store(true, Ordering::SeqCst);
+            }
+        };
         // Registered for the walk's lifetime so an eject waits for it; the
         // eject aborts it by bumping `fresh`'s generation.
         let Some(_reader) = gate.track(&root) else {
+            restore_mark(&old);
             pending.remove(&root); // the volume is being ejected
             return;
         };
         build_index(fresh.clone(), Excludes::parse(&excludes), cap, now_ms());
+        let mut swapped = false;
         if !fresh.indexing.load(Ordering::SeqCst) {
-            let mut swapped = false;
             if let Some(mut entry) = fuzzy.get_mut(&root) {
                 if Arc::ptr_eq(entry.value(), &old) {
                     if old.stale.load(Ordering::SeqCst) {
@@ -94,23 +111,36 @@ fn spawn_refresh(
                     swapped = true;
                 }
             }
-            if swapped {
-                old.generation.fetch_add(1, Ordering::SeqCst);
-                for owner in old.take_owners() {
-                    tokens.drop_owner(&owner);
-                }
-                persist_completed(&fresh, &snapshot);
-                if trace_enabled() {
-                    eprintln!(
-                        "[fuzzy] refreshed {} ({} entries) and swapped in",
-                        root.display(),
-                        fresh.indexed.load(Ordering::SeqCst),
-                    );
-                }
+        }
+        if swapped {
+            old.generation.fetch_add(1, Ordering::SeqCst);
+            for owner in old.take_owners() {
+                tokens.drop_owner(&owner);
             }
+            // Unchanged tree (same entries as the snapshot already on disk):
+            // skip rewriting a file that can be hundreds of MB.
+            if old.persisted.load(Ordering::SeqCst)
+                && snapshot.exists()
+                && fresh.content_fingerprint() == old.content_fingerprint()
+            {
+                fresh.persisted.store(true, Ordering::SeqCst);
+                persist::touch(&snapshot);
+            } else {
+                persist_completed(&fresh, &snapshot);
+            }
+            if trace_enabled() {
+                eprintln!(
+                    "[fuzzy] refreshed {} ({} entries) and swapped in",
+                    root.display(),
+                    fresh.indexed.load(Ordering::SeqCst),
+                );
+            }
+        } else {
+            restore_mark(&old);
         }
         pending.remove(&root);
     });
+    true
 }
 
 fn touch_lru(state: &AppState, root: &PathBuf) {
@@ -171,7 +201,7 @@ pub fn fuzzy_warm(
 
     if let Some(existing) = state.fuzzy.get(&root).map(|e| e.clone()) {
         if existing.config_hash == hash {
-            if force == Some(true) || existing.stale.load(Ordering::Relaxed) {
+            if force == Some(true) || existing.stale.load(Ordering::SeqCst) {
                 spawn_refresh(
                     state.fuzzy.clone(),
                     state.fuzzy_pending.clone(),
@@ -406,11 +436,144 @@ mod tests {
         assert!(!Arc::ptr_eq(&now, &old), "map must hold the fresh index");
         assert!(now.indexed.load(Ordering::SeqCst) >= 2, "fresh walk saw the files");
         assert!(!now.indexing.load(Ordering::SeqCst));
-        assert!(now.stale.load(Ordering::SeqCst), "old stale mark must carry over");
+        // The refresh consumed the stale mark: nothing landed mid-walk, so
+        // the fresh index is clean (the old bug carried it over forever).
+        assert!(!now.stale.load(Ordering::SeqCst), "consumed stale mark must not carry over");
+        assert!(!old.stale.load(Ordering::SeqCst));
         assert_eq!(old.generation.load(Ordering::SeqCst), 1, "old scans must abort");
         assert!(tokens.resolve(&tok).is_none(), "old owners revoked at swap");
         assert!(snapshot.exists(), "completed refresh persists a snapshot");
+        assert!(now.persisted.load(Ordering::SeqCst));
         fs::remove_dir_all(&d).ok();
+    }
+
+    /// Mirrors `fuzzy_warm`'s same-config reuse decision.
+    fn warm_like(
+        fuzzy: &Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
+        pending: &Arc<DashMap<PathBuf, Arc<FuzzyIndex>>>,
+        root: &Path,
+        snapshot: &Path,
+    ) -> bool {
+        let existing = fuzzy.get(root).unwrap().clone();
+        if !existing.stale.load(Ordering::SeqCst) {
+            return false;
+        }
+        spawn_refresh(
+            fuzzy.clone(),
+            pending.clone(),
+            Arc::new(TokenTable::default()),
+            Arc::new(VolumeGate::default()),
+            existing,
+            root.to_path_buf(),
+            vec![],
+            u64::MAX,
+            config_hash(&[], u64::MAX),
+            snapshot.to_path_buf(),
+        )
+    }
+
+    #[test]
+    fn one_op_triggers_exactly_one_refresh_across_many_warms() {
+        // Regression: once stale, every later warm re-walked the whole tree
+        // and rewrote the snapshot.
+        let d = tmp("refresh-once");
+        fs::write(d.join("a.txt"), b"x").unwrap();
+        let hash = config_hash(&[], u64::MAX);
+        let idx = FuzzyIndex::restore(d.clone(), hash, vec![], false, 0);
+        let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+        fuzzy.insert(d.clone(), idx.clone());
+        let pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+        let snapshot = d.join("snap.fzidx");
+
+        crate::search::fuzzy::mark_stale_under(&fuzzy, &[d.join("a.txt")]);
+        let mut refreshes = 0;
+        for _ in 0..5 {
+            if warm_like(&fuzzy, &pending, &d, &snapshot) {
+                refreshes += 1;
+            }
+            wait_idle(&pending);
+        }
+        assert_eq!(refreshes, 1, "one op = one refresh");
+        assert!(!fuzzy.get(&d).unwrap().stale.load(Ordering::SeqCst));
+
+        // A second op re-arms exactly one more refresh.
+        crate::search::fuzzy::mark_stale_under(&fuzzy, &[d.join("a.txt")]);
+        for _ in 0..3 {
+            if warm_like(&fuzzy, &pending, &d, &snapshot) {
+                refreshes += 1;
+            }
+            wait_idle(&pending);
+        }
+        assert_eq!(refreshes, 2);
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn refresh_that_never_swaps_restores_the_stale_mark() {
+        // The volume is being ejected: the refresh can't walk, so the index
+        // must stay stale for the next warm.
+        let d = tmp("refresh-eject");
+        let hash = config_hash(&[], u64::MAX);
+        let old = FuzzyIndex::restore(d.clone(), hash, vec![], false, 0);
+        old.stale.store(true, Ordering::SeqCst);
+        let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+        fuzzy.insert(d.clone(), old.clone());
+        let pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+        let gate = Arc::new(VolumeGate::default());
+        let _eject = gate.begin_eject(&d).expect("eject guard");
+        assert!(spawn_refresh(
+            fuzzy.clone(),
+            pending.clone(),
+            Arc::new(TokenTable::default()),
+            gate,
+            old.clone(),
+            d.clone(),
+            vec![],
+            u64::MAX,
+            hash,
+            d.join("snap.fzidx"),
+        ));
+        wait_idle(&pending);
+        assert!(Arc::ptr_eq(&fuzzy.get(&d).unwrap(), &old));
+        assert!(old.stale.load(Ordering::SeqCst), "mark restored for a retry");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn unchanged_refresh_skips_the_snapshot_rewrite() {
+        let d = tmp("refresh-unchanged");
+        fs::write(d.join("a.txt"), b"x").unwrap();
+        fs::create_dir(d.join("sub")).unwrap();
+        let hash = config_hash(&[], u64::MAX);
+        let cache = tmp("refresh-unchanged-cache");
+        let snapshot = cache.join("snap.fzidx");
+        // A complete walk persisted to disk, then restored (as on relaunch).
+        let built = FuzzyIndex::new(d.clone(), hash, 0);
+        build_index(built.clone(), Excludes::parse(&[]), u64::MAX, 0);
+        persist::save(&built, &snapshot).unwrap();
+        let restored = persist::load(&snapshot, &d, hash).unwrap();
+        let before = fs::metadata(&snapshot).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let ino = before.ino();
+
+        let fuzzy: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+        fuzzy.insert(d.clone(), restored.clone());
+        let pending: Arc<DashMap<PathBuf, Arc<FuzzyIndex>>> = Arc::new(DashMap::new());
+        restored.stale.store(true, Ordering::SeqCst);
+        assert!(warm_like(&fuzzy, &pending, &d, &snapshot));
+        wait_idle(&pending);
+        assert!(!Arc::ptr_eq(&fuzzy.get(&d).unwrap(), &restored), "fresh swapped in");
+        // save() writes a temp file and renames it over: same inode = no rewrite.
+        assert_eq!(fs::metadata(&snapshot).unwrap().ino(), ino, "unchanged tree: no rewrite");
+
+        // A real change does rewrite.
+        fs::write(d.join("b.txt"), b"y").unwrap();
+        crate::search::fuzzy::mark_stale_under(&fuzzy, &[d.join("b.txt")]);
+        assert!(warm_like(&fuzzy, &pending, &d, &snapshot));
+        wait_idle(&pending);
+        assert_ne!(fs::metadata(&snapshot).unwrap().ino(), ino, "changed tree persisted");
+        fs::remove_dir_all(&d).ok();
+        fs::remove_dir_all(&cache).ok();
     }
 
     #[test]

@@ -23,7 +23,9 @@ impl OpEmitter for ChannelEmitter {
     }
 }
 
-#[tauri::command]
+/// Async: `dest.is_dir()` is a stat that can stall on a slow or sleeping
+/// volume — never on the AppKit main thread.
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)] // signature mirrors the invoke wire contract
 pub fn run_op(
     state: State<'_, AppState>,
@@ -56,7 +58,7 @@ pub fn run_op(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn duplicate_paths(
     state: State<'_, AppState>,
     op_id: String,
@@ -72,7 +74,7 @@ pub fn duplicate_paths(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn compress_paths(
     state: State<'_, AppState>,
     op_id: String,
@@ -94,7 +96,7 @@ pub fn compress_paths(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn extract_paths(
     state: State<'_, AppState>,
     op_id: String,
@@ -472,53 +474,50 @@ pub struct UndoDescription {
     pub kind: String,
 }
 
-#[tauri::command(async)]
-pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
-    let trasher = state.engine.trasher.clone();
-    let (outcome, touched) = {
-        let mut stack = state.engine.undo.lock().unwrap();
-        let touched = stack.undo_top().map(UndoOp::touched_paths).unwrap_or_default();
-        let outcome = stack
-            .undo(trasher.as_ref())
-            .map_err(|e| Error::msg(format!("Can't undo: {e}")))?;
-        (outcome, touched)
+/// Shared undo/redo tail. The inverse runs WITHOUT the undo-stack lock held
+/// (`undo_shared`/`redo_shared`): an EXDEV move-back copies + verifies whole
+/// trees, and stack-top reads / op pushes must not wait on that.
+fn finish_history(
+    state: &AppState,
+    result: std::io::Result<Option<(crate::core::undo::UndoOutcome, Vec<PathBuf>)>>,
+    verb: &str,
+) -> Result<Option<UndoResult>> {
+    let outcome = match result {
+        Ok(o) => o,
+        Err(e) => {
+            state.engine.notify_undo_changed();
+            return Err(Error::msg(format!("Can't {verb}: {e}")));
+        }
     };
-    if let Some(o) = &outcome {
-        let mut touched = touched;
+    if let Some((o, touched)) = &outcome {
+        let mut touched = touched.clone();
         touched.extend(o.restored.iter().cloned());
         (state.engine.invalidate_fuzzy)(&touched);
     }
     state.engine.notify_undo_changed();
-    Ok(outcome.map(|o| UndoResult {
+    Ok(outcome.map(|(o, _)| UndoResult {
         label: o.label,
         restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
     }))
+}
+
+#[tauri::command(async)]
+pub fn undo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
+    let trasher = state.engine.trasher.clone();
+    let result = crate::core::undo::undo_shared(&state.engine.undo, trasher.as_ref());
+    finish_history(&state, result, "undo")
 }
 
 #[tauri::command(async)]
 pub fn redo_last(state: State<'_, AppState>) -> Result<Option<UndoResult>> {
     let trasher = state.engine.trasher.clone();
-    let (outcome, touched) = {
-        let mut stack = state.engine.undo.lock().unwrap();
-        let touched = stack.redo_top().map(UndoOp::touched_paths).unwrap_or_default();
-        let outcome = stack
-            .redo(trasher.as_ref())
-            .map_err(|e| Error::msg(format!("Can't redo: {e}")))?;
-        (outcome, touched)
-    };
-    if let Some(o) = &outcome {
-        let mut touched = touched;
-        touched.extend(o.restored.iter().cloned());
-        (state.engine.invalidate_fuzzy)(&touched);
-    }
-    state.engine.notify_undo_changed();
-    Ok(outcome.map(|o| UndoResult {
-        label: o.label,
-        restored: o.restored.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
-    }))
+    let result = crate::core::undo::redo_shared(&state.engine.undo, trasher.as_ref());
+    finish_history(&state, result, "redo")
 }
 
-#[tauri::command]
+/// Async (off the AppKit main thread) — never makes the UI wait on the
+/// stack mutex.
+#[tauri::command(async)]
 pub fn undo_stack_top(state: State<'_, AppState>) -> Option<UndoDescription> {
     state.engine.undo.lock().unwrap().undo_top().map(|op| UndoDescription {
         label: op.label(),
@@ -526,7 +525,7 @@ pub fn undo_stack_top(state: State<'_, AppState>) -> Option<UndoDescription> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn redo_stack_top(state: State<'_, AppState>) -> Option<UndoDescription> {
     state.engine.undo.lock().unwrap().redo_top().map(|op| UndoDescription {
         label: op.label(),

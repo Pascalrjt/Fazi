@@ -81,7 +81,17 @@ pub fn save(index: &FuzzyIndex, file: &Path) -> std::io::Result<()> {
         }
         w.flush()?;
     }
-    std::fs::rename(&tmp, file)
+    std::fs::rename(&tmp, file)?;
+    index.persisted.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Refresh a snapshot's mtime without rewriting it (an unchanged refresh)
+/// so `prune`'s newest-first ordering still treats it as current.
+pub fn touch(file: &Path) {
+    if let Ok(f) = File::options().write(true).open(file) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
 }
 
 /// Load and validate a snapshot for exactly (root, config_hash).
@@ -151,7 +161,9 @@ pub fn load(file: &Path, root: &Path, config_hash: u64) -> Option<Arc<FuzzyIndex
     if r.read(&mut b1).ok()? != 0 {
         return None;
     }
-    Some(FuzzyIndex::restore(root.to_path_buf(), config_hash, blocks, capped, built_at_ms))
+    let index = FuzzyIndex::restore(root.to_path_buf(), config_hash, blocks, capped, built_at_ms);
+    index.persisted.store(true, Ordering::SeqCst);
+    Some(index)
 }
 
 #[cfg(test)]

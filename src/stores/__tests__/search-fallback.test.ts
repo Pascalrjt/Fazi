@@ -51,7 +51,10 @@ import { useApp } from "../app";
 import { useSettings } from "../settings";
 
 function hit(path: string): SearchEvent {
-  return { event: "hit", path, name: path.split("/").pop() ?? path, isDir: false, icon: "t" };
+  return {
+    event: "hits",
+    hits: [{ path, name: path.split("/").pop() ?? path, isDir: false, icon: "t" }],
+  };
 }
 
 async function tick(ms = 80): Promise<void> {
@@ -77,6 +80,22 @@ describe("global search plumbing", () => {
     expect(args.query).toBe("tax");
     expect(args.filters?.kind).toBe("pdf");
     expect(args.maxResults).toBe(500);
+  });
+
+  it("appends every hit of a multi-hit batch in order", async () => {
+    const app = useApp.getState();
+    app.openGlobalSearch("x", "folder");
+    app.runGlobalSearch("x", "/Users/me");
+    const { onEvent } = mocks.searchCalls[0];
+    const paths = Array.from({ length: 250 }, (_, i) => `/h${i}`);
+    onEvent({
+      event: "hits",
+      hits: paths.map((path) => ({ path, name: path.slice(1), isDir: false, icon: "t" })),
+    });
+    // ≥ the flush count lands without waiting for the timer.
+    expect(useApp.getState().globalSearch.hits.map((h) => h.path)).toEqual(paths);
+    onEvent({ event: "done", total: 250, capped: false, indexed: true });
+    expect(useApp.getState().globalSearch.status).toBe("done");
   });
 
   it("batches streamed hits and records the capped flag", async () => {
