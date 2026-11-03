@@ -20,6 +20,7 @@ vi.mock("../../lib/ipc", () => ({
 }));
 
 import { activeTabOf, applyWatchDelta, usePanes, type Tab } from "../panes";
+import { sortEntries, type SortSpec } from "../../lib/sort";
 
 function entry(id: number, name: string, extra: Partial<Entry> = {}): Entry {
   return {
@@ -146,5 +147,73 @@ describe("batched watcher apply", () => {
     expect(ns.slice(0, 2)).toEqual(["Docs", "b.txt"]);
     expect(ns.indexOf("n2")).toBeLessThan(ns.indexOf("n10"));
     expect(ns).toHaveLength(54);
+  });
+
+  it("a replacement that changes the sort key moves to its new slot", () => {
+    const spec: SortSpec = { key: "size", dir: "asc" };
+    const rows = Array.from({ length: 16 }, (_, i) => entry(i + 1, `f${i + 1}`, { size: i + 1 }));
+    const t: Tab = { ...tab(), sort: spec, sorting: false, entries: sortEntries(rows, spec), total: 16 };
+    const next = applyWatchDelta(t, [], [entry(500, "f1", { size: 100 }), entry(501, "half", { size: 8.5 })]);
+    const sizes = next.entries.map((e) => e.size);
+    expect(sizes).toEqual([...sizes].sort((a, b) => (a as number) - (b as number)));
+    expect(sizes[0]).toBe(2);
+    expect(sizes.at(-1)).toBe(100);
+    expect(next.entries.find((e) => e.name === "f1")?.id).toBe(1);
+    expect(next.total).toBe(17);
+    // No additions at all: the replacement alone still re-sorts.
+    const only = applyWatchDelta(t, [], [entry(502, "f16", { size: 0 })]);
+    expect(only.entries.map((e) => e.name).slice(0, 2)).toEqual(["f16", "f1"]);
+  });
+
+  it("randomized deltas always equal a full sort of the same rows", () => {
+    let seed = 12345;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)];
+    const exts = ["", ".txt", ".png", ".md", ".app"];
+    const specs: SortSpec[] = (["name", "size", "mtime", "kind"] as const).flatMap((key) =>
+      (["asc", "desc"] as const).map((dir) => ({ key, dir })),
+    );
+    let nextId = 1;
+    const make = (name: string, id = nextId++): Entry => {
+      const dir = rnd() < 0.2;
+      const ext = dir ? pick(["", ".app"]) : pick(exts);
+      return entry(id, name + ext, {
+        kind: dir ? "dir" : "file",
+        ext: ext.slice(1),
+        isPackage: dir && ext === ".app",
+        size: rnd() < 0.15 ? null : Math.floor(rnd() * 20),
+        mtime: rnd() < 0.15 ? null : Math.floor(rnd() * 20),
+      });
+    };
+    for (let round = 0; round < 300; round++) {
+      const spec = pick(specs);
+      const n = 1 + Math.floor(rnd() * 60);
+      const rows = Array.from({ length: n }, (_, i) => make(`r${round}x${i}`));
+      const t: Tab = {
+        ...tab(),
+        sort: spec,
+        sorting: false,
+        entries: sortEntries(rows, spec),
+        total: n,
+      };
+      const upserts: Entry[] = [];
+      const k = Math.floor(rnd() * 8);
+      for (let j = 0; j < k; j++) {
+        if (rnd() < 0.6) {
+          // Replace an existing row (maybe re-cased), with fresh metadata.
+          const old = pick(rows);
+          const name = rnd() < 0.3 ? old.name.toUpperCase() : old.name;
+          upserts.push({ ...make("tmp", 9_000_000 + nextId++), name, ext: old.ext });
+        } else {
+          upserts.push(make(`new${round}x${j}`));
+        }
+      }
+      const next = applyWatchDelta(t, [], upserts);
+      expect(next.entries.map((e) => e.id)).toEqual(sortEntries(next.entries, spec).map((e) => e.id));
+      expect(next.entries.length).toBe(next.total);
+    }
   });
 });

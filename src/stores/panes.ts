@@ -13,7 +13,7 @@ import * as ipc from "../lib/ipc";
 import { dropHydrator, initHydrator } from "../lib/hydration";
 import { useDirSizes } from "./dirSizes";
 import { safeIpc } from "../lib/safeIpc";
-import { mergeSorted, sortEntries, type SortDir, type SortKey, type SortSpec } from "../lib/sort";
+import { mergeSorted, samePosition, sortEntries, type SortDir, type SortKey, type SortSpec } from "../lib/sort";
 import { noteEntriesPatched, visibleView, type VisibleView } from "../lib/visibleView";
 import {
   emptySelection,
@@ -392,6 +392,9 @@ export function applyWatchDelta(
       if (!byFolded.has(folded)) byFolded.set(folded, i); // first match wins
     }
     let patched: Entry[] | null = null;
+    // Replaced rows whose sort inputs changed (size, mtime, kind, name…):
+    // pulled out and merged back with the additions so order holds.
+    const displaced = new Set<number>();
     const additions: Entry[] = [];
     const addedAt = new Map<string, number>();
     const foldedUpserts = new Set<string>();
@@ -402,7 +405,10 @@ export function applyWatchDelta(
       if (idx != null) {
         patched ??= entries.slice();
         // keep the row's id stable so selection survives the update
-        patched[idx] = { ...entry, id: patched[idx].id };
+        const next = { ...entry, id: patched[idx].id };
+        if (!samePosition(entries[idx], next, tab.sort)) displaced.add(idx);
+        else displaced.delete(idx);
+        patched[idx] = next;
         continue;
       }
       const at = addedAt.get(folded);
@@ -413,13 +419,25 @@ export function applyWatchDelta(
         additions.push(entry);
       }
     }
-    if (patched) entries = patched;
+    const added = additions.length;
+    if (patched) {
+      entries = patched;
+      if (displaced.size > 0) {
+        const kept: Entry[] = [];
+        for (let i = 0; i < patched.length; i++) {
+          if (displaced.has(i)) additions.push(patched[i]);
+          else kept.push(patched[i]);
+        }
+        // `kept` is a subsequence of the sorted rows, so still sorted.
+        entries = kept;
+      }
+    }
     if (additions.length > 0) {
       entries =
         tab.sorting || additions.length > entries.length * MERGE_MAX_FRACTION
           ? sortEntries([...entries, ...additions], tab.sort)
           : mergeSorted(entries, additions, tab.sort);
-      if (total != null) total += additions.length;
+      if (total != null) total += added;
     }
     if (ghosts.some((g) => foldedUpserts.has(g.name.toLocaleLowerCase()))) {
       ghosts = ghosts.filter((g) => !foldedUpserts.has(g.name.toLocaleLowerCase()));

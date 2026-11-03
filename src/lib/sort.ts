@@ -282,6 +282,15 @@ export function sortedInsertIndex(
 }
 
 /**
+ * True when `a` and `b` occupy the same slot in `spec`'s total order (every
+ * comparator input equal, id included) — a row replaced by such an update
+ * stays sorted in place.
+ */
+export function samePosition(a: Entry, b: Entry, spec: SortSpec, dirsFirst = true): boolean {
+  return decoratedComparator(spec, dirsFirst)(decorate(a, spec.key), decorate(b, spec.key)) === 0;
+}
+
+/**
  * Merge `additions` into an already-sorted array in one O(n + k log n) pass
  * (instead of push + full re-sort). Returns a NEW array.
  */
