@@ -10,7 +10,8 @@ import { isPlainFolder } from "../../lib/folderTint";
 import * as ipc from "../../lib/ipc";
 import { safeIpc } from "../../lib/safeIpc";
 import { useApp } from "../../stores/app";
-import { usePanes, activeTabOf, visibleEntries } from "../../stores/panes";
+import { usePanes, activeTabOf } from "../../stores/panes";
+import { visibleSelection } from "../../lib/paneSummary";
 import { entryKindLabel } from "../../lib/sort";
 import { formatBytes, formatDateFull, pluralize } from "../../lib/format";
 import { FINDER_TAG_COLORS } from "../../lib/tags";
@@ -216,17 +217,25 @@ function MultiInfo({ entries }: { entries: Entry[] }) {
 
 export function GetInfoPanel() {
   const open = useApp((s) => s.getInfoOpen);
+  // Always mounted (PaneArea): subscribe to the listing only while open.
+  return open ? <OpenInfoPanel /> : null;
+}
+
+function OpenInfoPanel() {
   const setOpen = useApp((s) => s.setGetInfoOpen);
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  const tab = usePanes((s) => {
+    const pane = s.panes.find((p) => p.id === activePaneId) ?? s.panes[0];
+    return pane ? activeTabOf(pane) : null;
+  });
 
-  const selected = useMemo(() => {
-    if (!tab) return [];
-    return visibleEntries(tab).filter((e) => tab.selection.selected.has(e.id));
-  }, [tab]);
+  const selected = useMemo(
+    () => (tab ? visibleSelection(tab) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tab?.entries, tab?.filter, tab?.showHidden, tab?.selection],
+  );
 
-  if (!open || !tab) return null;
+  if (!tab) return null;
 
   return (
     <div className="anim-slide-left flex w-[270px] shrink-0 flex-col overflow-y-auto rounded-[10px] bg-pane py-3 shadow-[var(--shadow-card)]">

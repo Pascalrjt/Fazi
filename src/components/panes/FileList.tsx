@@ -10,7 +10,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
 import { iconUrl } from "../../types/ipc";
 import { isPlainFolder } from "../../lib/folderTint";
-import { usePanes, visibleEntries, type GhostEntry, type Tab } from "../../stores/panes";
+import { usePanes, tabView, type GhostEntry, type Tab } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
 import { showMenu } from "../../stores/menu";
 import { entryMenuItems, emptyAreaMenuItems } from "../menus/entryMenu";
@@ -18,7 +18,7 @@ import {
   clickSelect,
   cmdToggle,
   dragRect,
-  marqueeSelect,
+  marqueeSelectRows,
   shiftRange,
   type Rect,
 } from "../../lib/selection";
@@ -51,6 +51,8 @@ interface ColWidths {
   tags: number;
   cleanup: number;
 }
+
+const EMPTY_ENTRIES: Entry[] = [];
 
 const DEFAULT_COLS: ColWidths = { kind: 110, size: 84, mtime: 148, tags: 64, cleanup: 96 };
 
@@ -183,6 +185,18 @@ export function EntryName({ entry }: { entry: Entry }) {
   );
 }
 
+/** One Set per clipboard paths array: every row's selector runs on each app
+ *  store change, so a per-row `includes` was O(rows × cut paths). */
+const cutSets = new WeakMap<readonly string[], Set<string>>();
+function cutPathSet(paths: readonly string[]): Set<string> {
+  let set = cutSets.get(paths);
+  if (!set) {
+    set = new Set(paths);
+    cutSets.set(paths, set);
+  }
+  return set;
+}
+
 const FileRow = memo(function FileRow({
   entry,
   paneId,
@@ -213,7 +227,7 @@ const FileRow = memo(function FileRow({
       s.renaming.entryId === entry.id,
   );
   const isCut = useApp(
-    (s) => s.clipboard?.mode === "cut" && s.clipboard.paths.includes(entry.path),
+    (s) => s.clipboard?.mode === "cut" && cutPathSet(s.clipboard.paths).has(entry.path),
   );
   const [dropping, setDropping] = useState(false);
 
@@ -435,13 +449,13 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const showCleanup = useCleanup((s) => tab != null && s.folders.has(tab.path));
   const ROW_H = rowHeight(density);
 
-  const visible = useMemo(
+  // Shared per-listing cache (lib/visibleView): cheap on hydration commits.
+  const view = useMemo(
     () =>
-      tab
-        ? visibleEntries({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden })
-        : [],
+      tab ? tabView({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden }) : null,
     [tab?.entries, tab?.filter, tab?.showHidden], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const visible = view?.entries ?? EMPTY_ENTRIES;
   const ghosts = tab?.ghosts ?? [];
   const rowCount = visible.length + ghosts.length;
 
@@ -478,8 +492,8 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   // keep the keyboard lead row in view
   const leadId = tab?.selection.lead ?? null;
   useEffect(() => {
-    if (leadId == null) return;
-    const idx = visible.findIndex((e) => e.id === leadId);
+    if (leadId == null || !view) return;
+    const idx = view.indexOf(leadId);
     if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "auto" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
@@ -517,7 +531,7 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         const state = usePanes.getState();
         const t = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
         if (!t) return null;
-        const vis = visibleEntries(t);
+        const vis = tabView(t).entries;
         const idx = Math.floor((y - rect.top + el.scrollTop) / ROW_H);
         const entry = vis[idx];
         if (entry && entry.kind === "dir" && !entry.isPackage) {
@@ -552,10 +566,10 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
       const state = usePanes.getState();
       const t = state.panes.find((p) => p.id === paneId)?.tabs.find((tt) => tt.id === tabId);
       if (!t) return;
-      const order = visibleEntries(t).map((en) => en.id);
       const sel = t.selection;
       if (e.shiftKey) {
-        setSelection(paneId, tabId, shiftRange(sel, order, entry.id));
+        const v = tabView(t);
+        setSelection(paneId, tabId, shiftRange(sel, v.ids, entry.id, v.indexById));
       } else if (e.metaKey) {
         setSelection(paneId, tabId, cmdToggle(sel, entry.id));
       } else if (!sel.selected.has(entry.id)) {
@@ -620,13 +634,13 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           lead: t0.selection.lead,
         }
       : { selected: new Set<number>(), anchor: null, lead: null };
-    const itemRects = visible.map((en, i) => ({
-      id: en.id,
-      rect: { x: 0, y: i * ROW_H, width: Math.max(el.scrollWidth, el.clientWidth), height: ROW_H },
-    }));
+    // Rows are fixed-height, full-width bands in content space: hits come
+    // from arithmetic over the visible ids, not one rect per row. They are
+    // stable while scrolling — only the pointer point needs recomputing,
+    // from its last client position.
+    const ids = view?.ids ?? [];
+    const rowWidth = Math.max(el.scrollWidth, el.clientWidth);
     let moved = false;
-    // itemRects are content-space and stable while scrolling — only the
-    // pointer point needs recomputing, from its last client position.
     const lastClient = { x: e.clientX, y: e.clientY };
 
     const recompute = () => {
@@ -639,7 +653,9 @@ export function FileList({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
       if (!moved && (rectSel.width > 3 || rectSel.height > 3)) moved = true;
       if (!moved) return;
       setMarquee(rectSel);
-      usePanes.getState().setSelection(paneId, tabId, marqueeSelect(rectSel, itemRects, base));
+      usePanes
+        .getState()
+        .setSelection(paneId, tabId, marqueeSelectRows(rectSel, ids, ROW_H, rowWidth, base));
     };
 
     // Edge auto-scroll: while the pointer is near/past the top or bottom

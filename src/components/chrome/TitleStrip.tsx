@@ -26,16 +26,23 @@ export const SIDEBAR_WIDTH = 236;
 
 function UpButton({ disabled }: { disabled?: boolean }) {
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  // Primitive selector: re-renders only when the button's state flips.
+  const atRoot = usePanes((s) => {
+    const pane = s.panes.find((p) => p.id === activePaneId) ?? s.panes[0];
+    return pane ? activeTabOf(pane).path === "/" : null;
+  });
   const up = usePanes((s) => s.up);
   const shortcut = getCommand("up")?.shortcut;
   return (
     <IconButton
       icon={ArrowUp}
       title={`Enclosing Folder${shortcut ? ` (${shortcutLabel(shortcut)})` : ""}`}
-      disabled={disabled || !tab || tab.path === "/"}
-      onClick={() => pane && tab && up(pane.id, tab.id)}
+      disabled={disabled || atRoot !== false}
+      onClick={() => {
+        const s = usePanes.getState();
+        const pane = s.panes.find((p) => p.id === activePaneId) ?? s.panes[0];
+        if (pane) up(pane.id, activeTabOf(pane).id);
+      }}
     />
   );
 }

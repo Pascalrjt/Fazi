@@ -7,13 +7,14 @@
  */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { enableMapSet } from "immer";
+import { enableMapSet, setAutoFreeze } from "immer";
 import type { Entry, ListErrorCode, ListEvent, WatchEvent } from "../types/ipc";
 import * as ipc from "../lib/ipc";
 import { dropHydrator, initHydrator } from "../lib/hydration";
 import { useDirSizes } from "./dirSizes";
 import { safeIpc } from "../lib/safeIpc";
-import { sortEntries, type SortDir, type SortKey, type SortSpec } from "../lib/sort";
+import { mergeSorted, sortEntries, type SortDir, type SortKey, type SortSpec } from "../lib/sort";
+import { noteEntriesPatched, visibleView, type VisibleView } from "../lib/visibleView";
 import {
   emptySelection,
   pruneSelection,
@@ -25,6 +26,11 @@ import { useApp, type PaneId } from "./app";
 import { ejectedByUser, useVolumes } from "./volumes";
 
 enableMapSet();
+// Listings (up to ~100k rows) are installed through the plain setState path
+// as fresh arrays; with auto-freeze on, the next produce() anywhere would
+// deep-freeze them — an O(n) walk over every entry object. Nothing relies on
+// frozen state: all updates go through set()/setState with new objects.
+setAutoFreeze(false);
 
 /** Above this many entries, pass-1 chunks render in arrival order until "listed". */
 const RESORT_THRESHOLD = 10_000;
@@ -177,7 +183,24 @@ const listingIngest = new Map<string, ListingIngest>();
 const listingIndexes = new Map<string, Map<number, number>>();
 
 function entryIndex(entries: readonly Entry[]): Map<number, number> {
-  return new Map(entries.map((entry, index) => [entry.id, index]));
+  const m = new Map<number, number>();
+  for (let i = 0; i < entries.length; i++) m.set(entries[i].id, i);
+  return m;
+}
+
+/** Entry positions changed: drop the id→index map; the next hydration
+ *  merge rebuilds it on demand instead of every edit paying O(n). */
+function invalidateIndex(listingId: string | undefined): void {
+  if (listingId) listingIndexes.delete(listingId);
+}
+
+/** Replace one tab (any listing) through the plain path; `update` returning
+ *  the same tab is a no-op. */
+function updateTabPlain(paneId: PaneId, tabId: string, update: (tab: Tab) => Tab): Tab | null {
+  const tab = findTab(usePanes.getState(), paneId, tabId);
+  if (!tab) return null;
+  const next = replaceTabPlain(paneId, tabId, tab.listingId, update);
+  return next === tab ? null : next;
 }
 
 /** Replace one tab through Zustand's plain-object path, bypassing Immer. */
@@ -195,6 +218,7 @@ function replaceTabPlain(
   if (tabIndex < 0 || pane.tabs[tabIndex].listingId !== listingId) return null;
 
   const nextTab = update(pane.tabs[tabIndex]);
+  if (nextTab === pane.tabs[tabIndex]) return nextTab; // unchanged
   const tabs = pane.tabs.slice();
   tabs[tabIndex] = nextTab;
   const panes = state.panes.slice();
@@ -299,14 +323,16 @@ function mergeHydrationPlain(
     listingIndexes.set(listingId, indexes);
   }
   const entries = tab.entries.slice();
-  let changed = false;
+  const patched: number[] = [];
   for (const patch of patches) {
     const index = indexes.get(patch.id);
     if (index == null || entries[index]?.id !== patch.id) continue;
     entries[index] = patch;
-    changed = true;
+    patched.push(index);
   }
-  if (!changed) return;
+  if (patched.length === 0) return;
+  // Same ids at the same positions: visible views derive incrementally.
+  noteEntriesPatched(tab.entries, entries, patched);
 
   const hydratedNames = new Set(patches.map((entry) => entry.name));
   replaceTabPlain(paneId, tabId, listingId, (current) => ({
@@ -320,6 +346,109 @@ function mergeHydrationPlain(
     // Done or when the client-side hydrator drains, never once per batch.
     sorting: current.listed ? true : current.sorting,
   }));
+}
+
+/** Above this share of new rows, one full sort beats merging. */
+const MERGE_MAX_FRACTION = 0.125;
+
+/**
+ * Apply one watcher delta to a PLAIN tab, returning a new tab (or the same
+ * tab when nothing changed). Removals match names exactly; upserts match
+ * case-insensitively (APFS) and replace in place keeping the row id, so
+ * selection survives; new names are merged into sort order in one pass.
+ * Exported for tests and benchmarks.
+ */
+export function applyWatchDelta(
+  tab: Tab,
+  removedNames: readonly string[],
+  upserts: readonly Entry[],
+): Tab {
+  let entries = tab.entries;
+  let ghosts = tab.ghosts;
+  let total = tab.total;
+  let selection = tab.selection;
+
+  if (removedNames.length > 0) {
+    const gone = new Set(removedNames);
+    const removedIds = new Set<number>();
+    const kept: Entry[] = [];
+    for (const e of entries) {
+      if (gone.has(e.name)) removedIds.add(e.id);
+      else kept.push(e);
+    }
+    if (ghosts.some((g) => gone.has(g.name))) ghosts = ghosts.filter((g) => !gone.has(g.name));
+    if (removedIds.size > 0) {
+      entries = kept;
+      if (total != null) total -= removedIds.size;
+      selection = pruneSelection(selection, { has: (id) => !removedIds.has(id) });
+    }
+  }
+
+  if (upserts.length > 0) {
+    // folded name → index, built once per batch
+    const byFolded = new Map<string, number>();
+    for (let i = 0; i < entries.length; i++) {
+      const folded = entries[i].name.toLocaleLowerCase();
+      if (!byFolded.has(folded)) byFolded.set(folded, i); // first match wins
+    }
+    let patched: Entry[] | null = null;
+    const additions: Entry[] = [];
+    const addedAt = new Map<string, number>();
+    const foldedUpserts = new Set<string>();
+    for (const entry of upserts) {
+      const folded = entry.name.toLocaleLowerCase();
+      foldedUpserts.add(folded);
+      const idx = byFolded.get(folded);
+      if (idx != null) {
+        patched ??= entries.slice();
+        // keep the row's id stable so selection survives the update
+        patched[idx] = { ...entry, id: patched[idx].id };
+        continue;
+      }
+      const at = addedAt.get(folded);
+      if (at != null) {
+        additions[at] = { ...entry, id: additions[at].id };
+      } else {
+        addedAt.set(folded, additions.length);
+        additions.push(entry);
+      }
+    }
+    if (patched) entries = patched;
+    if (additions.length > 0) {
+      entries =
+        tab.sorting || additions.length > entries.length * MERGE_MAX_FRACTION
+          ? sortEntries([...entries, ...additions], tab.sort)
+          : mergeSorted(entries, additions, tab.sort);
+      if (total != null) total += additions.length;
+    }
+    if (ghosts.some((g) => foldedUpserts.has(g.name.toLocaleLowerCase()))) {
+      ghosts = ghosts.filter((g) => !foldedUpserts.has(g.name.toLocaleLowerCase()));
+    }
+  }
+
+  if (
+    entries === tab.entries &&
+    ghosts === tab.ghosts &&
+    total === tab.total &&
+    selection === tab.selection
+  ) {
+    return tab;
+  }
+  return { ...tab, entries, ghosts, total, selection };
+}
+
+/** Commit a watcher delta for the listing it was observed on. */
+function applyWatchDeltaPlain(
+  paneId: PaneId,
+  tabId: string,
+  listingId: string,
+  removedNames: readonly string[],
+  upserts: readonly Entry[],
+): void {
+  const next = replaceTabPlain(paneId, tabId, listingId, (tab) =>
+    applyWatchDelta(tab, removedNames, upserts),
+  );
+  if (next) invalidateIndex(listingId);
 }
 
 function newTab(path: string): Tab {
@@ -380,8 +509,16 @@ export async function nearestExistingAncestor(
   return "/";
 }
 
-function snapshot(tab: Tab): HistorySnapshot {
-  const nameOf = new Map(tab.entries.map((e) => [e.id, e.name]));
+/** History snapshot of a PLAIN tab (never an Immer draft: walking a draft's
+ *  100k entries creates a proxy per row). Only selected/lead rows are mapped. */
+export function snapshot(tab: Tab): HistorySnapshot {
+  const { selected, lead } = tab.selection;
+  const nameOf = new Map<number, string>();
+  if (selected.size > 0 || lead != null) {
+    for (const e of tab.entries) {
+      if (selected.has(e.id) || e.id === lead) nameOf.set(e.id, e.name);
+    }
+  }
   return {
     path: tab.path,
     scrollTop: tab.scrollTop,
@@ -545,12 +682,14 @@ export const usePanes = create<PanesState>()(
     },
 
     navigate: (paneId, tabId, path, opts) => {
+      const plain = findTab(get(), paneId, tabId);
+      const snap = plain && (plain.path !== path || plain.error) ? snapshot(plain) : null;
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (!tab) return;
         stopListing(tab);
-        if (tab.path !== path || tab.error) {
-          tab.back.push(snapshot(tab));
+        if (snap) {
+          tab.back.push(snap);
           if (tab.back.length > 100) tab.back.shift();
           tab.forward = [];
         }
@@ -568,14 +707,16 @@ export const usePanes = create<PanesState>()(
     },
 
     refresh: (paneId, tabId) => {
+      const plain = findTab(get(), paneId, tabId);
+      const snap = plain ? snapshot(plain) : null;
       set((s) => {
         const tab = findTab(s, paneId, tabId);
-        if (!tab) return;
+        if (!tab || !snap) return;
         stopListing(tab);
         const keep: PendingRestore = {
           scrollTop: tab.scrollTop,
-          selectNames: snapshot(tab).selectedNames,
-          leadName: snapshot(tab).leadName ?? undefined,
+          selectNames: snap.selectedNames,
+          leadName: snap.leadName ?? undefined,
         };
         resetForNavigation(tab, tab.path);
         tab.pendingRestore = keep;
@@ -585,11 +726,14 @@ export const usePanes = create<PanesState>()(
 
     back: (paneId, tabId) => {
       let target: HistorySnapshot | undefined;
+      const plain = findTab(get(), paneId, tabId);
+      if (!plain || plain.back.length === 0) return;
+      const snap = snapshot(plain);
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (!tab || tab.back.length === 0) return;
         target = tab.back.pop();
-        tab.forward.push(snapshot(tab));
+        tab.forward.push(snap);
         if (!target) return;
         stopListing(tab);
         resetForNavigation(tab, target.path);
@@ -604,11 +748,14 @@ export const usePanes = create<PanesState>()(
 
     forward: (paneId, tabId) => {
       let target: HistorySnapshot | undefined;
+      const plain = findTab(get(), paneId, tabId);
+      if (!plain || plain.forward.length === 0) return;
+      const snap = snapshot(plain);
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (!tab || tab.forward.length === 0) return;
         target = tab.forward.pop();
-        tab.back.push(snapshot(tab));
+        tab.back.push(snap);
         if (!target) return;
         stopListing(tab);
         resetForNavigation(tab, target.path);
@@ -812,6 +959,12 @@ export const usePanes = create<PanesState>()(
         return;
       }
 
+      // Sort the plain array, never the draft (a draft walk proxies each row).
+      const plainTab = findTab(get(), paneId, tabId);
+      const settleSorted =
+        event.event === "done" && plainTab && plainTab.listingId === listingId && !plainTab.listed
+          ? sortEntries(plainTab.entries, plainTab.sort)
+          : null;
       set((s) => {
         const tab = findTab(s, paneId, tabId);
         if (!tab || tab.listingId !== listingId) return; // stale listing
@@ -820,8 +973,8 @@ export const usePanes = create<PanesState>()(
             tab.loading = false;
             if (!tab.listed) {
               tab.listed = true;
-              tab.total = tab.entries.length;
-              tab.entries = sortEntries(tab.entries, tab.sort);
+              tab.total = settleSorted?.length ?? tab.entries.length;
+              tab.entries = settleSorted ?? sortEntries(tab.entries, tab.sort);
               tab.sorting = false;
               applyRestore(tab);
             }
@@ -840,6 +993,7 @@ export const usePanes = create<PanesState>()(
       });
 
       // side effects outside the draft
+      if (settleSorted) invalidateIndex(listingId);
       if (event.event === "done") {
         let tab = findTab(get(), paneId, tabId);
         if (!tab || tab.listingId !== listingId || tab.error) return;
@@ -891,52 +1045,44 @@ export const usePanes = create<PanesState>()(
             state.refresh(paneId, tabId);
             return;
           }
-          if (event.removed.length > 0) {
-            set((s) => {
-              const t = findTab(s, paneId, tabId);
-              if (!t || t.watchId !== watchId) return;
-              const gone = new Set(event.removed);
-              const before = t.entries.length;
-              t.entries = t.entries.filter((e) => !gone.has(e.name));
-              t.ghosts = t.ghosts.filter((g) => !gone.has(g.name));
-              if (t.entries.length !== before) {
-                if (t.total != null) t.total -= before - t.entries.length;
-                t.selection = pruneSelection(
-                  t.selection,
-                  new Set(t.entries.map((e) => e.id)),
-                );
-              }
-            });
-            const updated = findTab(get(), paneId, tabId);
-            if (updated) listingIndexes.set(updated.listingId, entryIndex(updated.entries));
-          }
           const changed = [...event.upserted, ...event.removed].map((name) =>
             joinPath(tab.path, name),
           );
           if (changed.length > 0) useDirSizes.getState().invalidate(changed);
-          if (event.upserted.length > 0) {
-            // One bulk stat per batch — hot dirs no longer fan out one IPC
-            // call per changed name.
-            const paths = event.upserted.map((name) => joinPath(tab.path, name));
-            // Stats run on backend worker threads and may resolve out of
-            // order: request now, but apply in batch order so an older
-            // stat never overwrites a newer one.
-            const request = ipc.statPaths(tab.listingId, paths);
-            request.catch(() => {}); // handled in the chain; avoid an early unhandled rejection
-            const key = tab.listingId;
-            const applied = (watcherStats.get(key) ?? Promise.resolve())
-              .then(() => request)
-              .then((entries) => {
-                for (const entry of entries) {
-                  if (entry) get().upsertEntryNow(paneId, tabId, entry);
-                }
-              })
-              .catch(() => {});
-            watcherStats.set(key, applied);
-            void applied.then(() => {
-              if (watcherStats.get(key) === applied) watcherStats.delete(key);
-            });
+          const key = tab.listingId;
+          const removed = event.removed;
+          const apply = (upserts: readonly Entry[]) =>
+            applyWatchDeltaPlain(paneId, tabId, key, removed, upserts);
+          if (event.upserted.length === 0) {
+            if (removed.length === 0) return;
+            // Nothing ahead in the chain: remove now.
+            if (!watcherStats.has(key)) {
+              apply([]);
+              return;
+            }
           }
+          // Stats run on backend worker threads and may resolve out of
+          // order: request now (one bulk stat per batch), but apply each
+          // batch — removals and upserts together, as ONE plain update — in
+          // batch order, so an older stat never overwrites a newer one and a
+          // removal never lands before an earlier batch's upsert of the name.
+          let request: Promise<Array<Entry | null>> = Promise.resolve([]);
+          if (event.upserted.length > 0) {
+            const paths = event.upserted.map((name) => joinPath(tab.path, name));
+            request = ipc.statPaths(tab.listingId, paths);
+            request.catch(() => {}); // handled in the chain; avoid an early unhandled rejection
+          }
+          const applied = (watcherStats.get(key) ?? Promise.resolve())
+            .then(() => request)
+            .then(
+              (entries) => apply(entries.filter((e): e is Entry => e != null)),
+              () => apply([]), // stat failed: the removals still apply
+            )
+            .catch(() => {});
+          watcherStats.set(key, applied);
+          void applied.then(() => {
+            if (watcherStats.get(key) === applied) watcherStats.delete(key);
+          });
           break;
         }
         case "rootGone": {
@@ -961,17 +1107,14 @@ export const usePanes = create<PanesState>()(
     },
 
     setSort: (paneId, tabId, key, dir) => {
-      set((s) => {
-        const tab = findTab(s, paneId, tabId);
-        if (!tab) return;
+      const tab = updateTabPlain(paneId, tabId, (t) => {
         const nextDir: SortDir =
-          dir ?? (tab.sort.key === key ? (tab.sort.dir === "asc" ? "desc" : "asc") : "asc");
-        tab.sort = { key, dir: nextDir };
-        tab.entries = sortEntries(tab.entries, tab.sort);
+          dir ?? (t.sort.key === key ? (t.sort.dir === "asc" ? "desc" : "asc") : "asc");
+        const sort: SortSpec = { key, dir: nextDir };
+        return { ...t, sort, entries: sortEntries(t.entries, sort) };
       });
-      const tab = findTab(get(), paneId, tabId);
       if (tab) {
-        listingIndexes.set(tab.listingId, entryIndex(tab.entries));
+        invalidateIndex(tab.listingId);
         useSettings.getState().setDefaultSort(tab.sort.key, tab.sort.dir);
       }
     },
@@ -1005,42 +1148,42 @@ export const usePanes = create<PanesState>()(
     },
 
     selectByNames: (paneId, tabId, names) => {
+      // Scan the plain entries, then commit only the selection.
+      const plain = findTab(get(), paneId, tabId);
+      if (!plain) return;
+      const wanted = new Set(names);
+      const selected = new Set<number>();
+      let lead: number | null = null;
+      for (const e of plain.entries) {
+        if (wanted.has(e.name)) {
+          selected.add(e.id);
+          lead = e.id;
+        }
+      }
       set((s) => {
         const tab = findTab(s, paneId, tabId);
-        if (!tab) return;
-        const wanted = new Set(names);
-        const selected = new Set<number>();
-        let lead: number | null = null;
-        for (const e of tab.entries) {
-          if (wanted.has(e.name)) {
-            selected.add(e.id);
-            lead = e.id;
-          }
-        }
-        tab.selection = { selected, anchor: lead, lead };
+        if (tab) tab.selection = { selected, anchor: lead, lead };
       });
     },
 
     renameLocal: (paneId, tabId, entryId, newName, newPath) => {
-      set((s) => {
-        const tab = findTab(s, paneId, tabId);
-        if (!tab) return;
-        const idx = tab.entries.findIndex((e) => e.id === entryId);
-        if (idx === -1) return;
-        const old = tab.entries[idx];
+      const tab = updateTabPlain(paneId, tabId, (t) => {
+        const idx = t.entries.findIndex((e) => e.id === entryId);
+        if (idx === -1) return t;
+        const old = t.entries[idx];
         const dotIdx = newName.lastIndexOf(".");
         const ext = dotIdx > 0 ? newName.slice(dotIdx + 1).toLowerCase() : "";
-        tab.entries[idx] = {
+        const entries = t.entries.slice();
+        entries[idx] = {
           ...old,
           name: newName,
           path: newPath,
           ext,
           hidden: newName.startsWith("."),
         };
-        tab.entries = sortEntries(tab.entries, tab.sort);
+        return { ...t, entries: sortEntries(entries, t.sort) };
       });
-      const tab = findTab(get(), paneId, tabId);
-      if (tab) listingIndexes.set(tab.listingId, entryIndex(tab.entries));
+      if (tab) invalidateIndex(tab.listingId);
     },
 
     removeEntriesByPath: (paths) => {
@@ -1054,61 +1197,58 @@ export const usePanes = create<PanesState>()(
         }
         set0.add(basename(p));
       }
-      set((s) => {
-        for (const pane of s.panes) {
-          for (const tab of pane.tabs) {
-            const names = byDir.get(tab.path);
-            if (!names) continue;
-            const before = tab.entries.length;
-            tab.entries = tab.entries.filter((e) => !names.has(e.name));
-            tab.ghosts = tab.ghosts.filter((g) => !names.has(g.name));
-            if (tab.entries.length !== before) {
-              if (tab.total != null) tab.total -= before - tab.entries.length;
-              tab.selection = pruneSelection(
-                tab.selection,
-                new Set(tab.entries.map((e) => e.id)),
-              );
-            }
-          }
-        }
+      // Plain arrays, one commit: filtering draft entries proxies every row.
+      let touched = false;
+      const panes = get().panes.map((pane) => {
+        let tabsChanged = false;
+        const tabs = pane.tabs.map((tab) => {
+          const names = byDir.get(tab.path);
+          if (!names) return tab;
+          const next = applyWatchDelta(tab, [...names], []);
+          if (next !== tab) tabsChanged = true;
+          if (next.entries !== tab.entries) invalidateIndex(tab.listingId);
+          return next;
+        });
+        if (!tabsChanged) return pane;
+        touched = true;
+        return { ...pane, tabs };
       });
+      if (touched) usePanes.setState({ panes });
     },
 
     addGhosts: (destDir, paths, isDir = false) => {
+      // Name lookups against the plain entries; only the small ghost lists
+      // go through the draft.
+      const additions = new Map<string, GhostEntry[]>();
+      for (const pane of get().panes) {
+        for (const tab of pane.tabs) {
+          if (tab.path !== destDir) continue;
+          const existing = new Set<string>();
+          for (const e of tab.entries) existing.add(e.name);
+          const ghostNames = new Set(tab.ghosts.map((g) => g.name));
+          const add: GhostEntry[] = [];
+          for (const p of paths) {
+            const name = basename(p);
+            if (existing.has(name) || ghostNames.has(name)) continue;
+            add.push({ id: -(++ghostSeq), name, path: p, isDir });
+          }
+          if (add.length > 0) additions.set(`${pane.id}\0${tab.id}`, add);
+        }
+      }
+      if (additions.size === 0) return;
       set((s) => {
         for (const pane of s.panes) {
           for (const tab of pane.tabs) {
-            if (tab.path !== destDir) continue;
-            const existing = new Set(tab.entries.map((e) => e.name));
-            const ghostNames = new Set(tab.ghosts.map((g) => g.name));
-            for (const p of paths) {
-              const name = basename(p);
-              if (existing.has(name) || ghostNames.has(name)) continue;
-              tab.ghosts.push({ id: -(++ghostSeq), name, path: p, isDir });
-            }
+            const add = additions.get(`${pane.id}\0${tab.id}`);
+            if (add) tab.ghosts.push(...add);
           }
         }
       });
     },
 
     upsertEntryNow: (paneId, tabId, entry) => {
-      set((s) => {
-        const tab = findTab(s, paneId, tabId);
-        if (!tab) return;
-        const folded = entry.name.toLocaleLowerCase();
-        const idx = tab.entries.findIndex((e) => e.name.toLocaleLowerCase() === folded);
-        if (idx >= 0) {
-          // keep the row's id stable so selection survives the update
-          tab.entries[idx] = { ...entry, id: tab.entries[idx].id };
-        } else {
-          tab.entries.push(entry);
-          tab.entries = sortEntries(tab.entries, tab.sort);
-          if (tab.total != null) tab.total += 1;
-        }
-        tab.ghosts = tab.ghosts.filter((g) => g.name.toLocaleLowerCase() !== folded);
-      });
-      const tab = findTab(get(), paneId, tabId);
-      if (tab) listingIndexes.set(tab.listingId, entryIndex(tab.entries));
+      const next = updateTabPlain(paneId, tabId, (tab) => applyWatchDelta(tab, [], [entry]));
+      if (next) invalidateIndex(next.listingId);
     },
   })),
 );
@@ -1119,12 +1259,12 @@ export const usePanes = create<PanesState>()(
 
 /** The rows a tab actually displays: hidden filtered, name-filter applied, display order. */
 export function visibleEntries(tab: Pick<Tab, "entries" | "filter" | "showHidden">): Entry[] {
-  const q = tab.filter.trim().toLowerCase();
-  return tab.entries.filter((e) => {
-    if (!tab.showHidden && e.hidden) return false;
-    if (q !== "" && !e.name.toLowerCase().includes(q)) return false;
-    return true;
-  });
+  return visibleView(tab).entries;
+}
+
+/** Cached visible view (rows, ids, id→index, lowercased names); see lib/visibleView. */
+export function tabView(tab: Pick<Tab, "entries" | "filter" | "showHidden">): VisibleView {
+  return visibleView(tab);
 }
 
 export function activePaneTab(): { pane: Pane; tab: Tab } | null {

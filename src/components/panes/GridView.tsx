@@ -3,9 +3,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Entry } from "../../types/ipc";
-import { thumbUrl } from "../../types/ipc";
+import { iconUrl, thumbUrl } from "../../types/ipc";
 import { isPlainFolder } from "../../lib/folderTint";
-import { usePanes, visibleEntries } from "../../stores/panes";
+import { usePanes, tabView } from "../../stores/panes";
 import { useApp, type PaneId } from "../../stores/app";
 import { finishRename } from "../../lib/actions";
 import { RenameInput } from "./RenameInput";
@@ -24,6 +24,7 @@ const CELL_W = 112;
 const CELL_H = 112;
 /** Content inset of the grid's `p-2` scroll container — must track that class. */
 const GRID_PAD = 8;
+const EMPTY_ENTRIES: Entry[] = [];
 
 const GridCell = memo(function GridCell({
   entry,
@@ -111,7 +112,9 @@ const GridCell = memo(function GridCell({
     >
       <div className={clsx("rounded-md p-1", selected && "bg-accent-dim")}>
         <img
-          src={thumbUrl(entry.icon, 128)}
+          // Plain folders have no content preview: ask for the icon directly
+          // instead of a Quick Look thumbnail request that falls back to it.
+          src={isNavigableDir ? iconUrl(entry.icon, 128) : thumbUrl(entry.icon, 128)}
           alt=""
           className={clsx("h-14 w-14 object-contain", isPlainFolder(entry) && "folder-tint")}
           draggable={false}
@@ -152,13 +155,13 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(4);
 
-  const visible = useMemo(
+  // Shared per-listing cache (lib/visibleView): cheap on hydration commits.
+  const view = useMemo(
     () =>
-      tab
-        ? visibleEntries({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden })
-        : [],
+      tab ? tabView({ entries: tab.entries, filter: tab.filter, showHidden: tab.showHidden }) : null,
     [tab?.entries, tab?.filter, tab?.showHidden], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const visible = view?.entries ?? EMPTY_ENTRIES;
 
   // measure columns for keyboard navigation
   useEffect(() => {
@@ -198,8 +201,8 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
   // keep lead in view
   const leadId = tab?.selection.lead ?? null;
   useEffect(() => {
-    if (leadId == null) return;
-    const idx = visible.findIndex((e) => e.id === leadId);
+    if (leadId == null || !view) return;
+    const idx = view.indexOf(leadId);
     if (idx >= 0) virtualizer.scrollToIndex(Math.floor(idx / columns), { align: "auto" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
@@ -221,7 +224,7 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
           .panes.find((p) => p.id === paneId)
           ?.tabs.find((tt) => tt.id === tabId);
         if (!t) return null;
-        const vis = visibleEntries(t);
+        const vis = tabView(t).entries;
         const cols = Math.max(1, Math.floor(el.clientWidth / CELL_W));
         const col = Math.floor((x - r.left - GRID_PAD) / CELL_W);
         const row = Math.floor((y - r.top + el.scrollTop - GRID_PAD) / CELL_H);
@@ -260,10 +263,11 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
         .panes.find((p) => p.id === paneId)
         ?.tabs.find((tt) => tt.id === tabId);
       if (!t) return;
-      const order = visibleEntries(t).map((en) => en.id);
       const sel = t.selection;
-      if (e.shiftKey) setSelection(paneId, tabId, shiftRange(sel, order, entry.id));
-      else if (e.metaKey) setSelection(paneId, tabId, cmdToggle(sel, entry.id));
+      if (e.shiftKey) {
+        const v = tabView(t);
+        setSelection(paneId, tabId, shiftRange(sel, v.ids, entry.id, v.indexById));
+      } else if (e.metaKey) setSelection(paneId, tabId, cmdToggle(sel, entry.id));
       else if (!sel.selected.has(entry.id)) setSelection(paneId, tabId, clickSelect(entry.id));
     },
     [paneId, tabId, setSelection],
@@ -283,6 +287,12 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
       showMenu(e.clientX, e.clientY, entryMenuItems(paneId, tabId, entry));
     },
     [paneId, tabId, setSelection],
+  );
+
+  // Stable, so memoized GridCells skip re-rendering on unrelated updates.
+  const handleDoubleClick = useCallback(
+    (entry: Entry) => openEntry(paneId, tabId, entry),
+    [openEntry, paneId, tabId],
   );
 
   const handleRenameDone = useCallback(
@@ -353,7 +363,7 @@ export function GridView({ paneId, tabId }: { paneId: PaneId; tabId: string }) {
                   paneId={paneId}
                   tabId={tabId}
                   onMouseDown={handleMouseDown}
-                  onDoubleClick={(en) => openEntry(paneId, tabId, en)}
+                  onDoubleClick={handleDoubleClick}
                   onContextMenu={handleContextMenu}
                   onRenameDone={handleRenameDone}
                 />

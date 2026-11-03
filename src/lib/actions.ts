@@ -11,7 +11,7 @@ import { isExtractableArchive } from "./fileTypes";
 import { useApp, toast, type PaneId } from "../stores/app";
 import { clickSelect } from "./selection";
 import { useSettings } from "../stores/settings";
-import { activePaneTab, selectedEntries, usePanes, visibleEntries } from "../stores/panes";
+import { activePaneTab, selectedEntries, tabView, usePanes } from "../stores/panes";
 import { useOps } from "../stores/ops";
 import { markEjected, useVolumes } from "../stores/volumes";
 import { useDirSizes } from "../stores/dirSizes";
@@ -387,9 +387,8 @@ export function finishRename(
   const state = usePanes.getState();
   const tab = state.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.id === tabId);
   if (!tab) return;
-  const vis = visibleEntries(tab);
-  const idx = vis.findIndex((en) => en.id === entryId);
-  const next = vis[idx + 1];
+  const view = tabView(tab);
+  const next = view.entries[view.indexOf(entryId) + 1];
   if (!next) return;
   state.setSelection(paneId, tabId, clickSelect(next.id));
   app.startRename({ paneId, tabId, entryId: next.id });
@@ -693,7 +692,7 @@ export function selectAllVisible(): void {
   const at = activePaneTab();
   if (!at) return;
   const { pane, tab } = at;
-  const order = visibleEntries(tab).map((e) => e.id);
+  const order = tabView(tab).ids;
   usePanes.getState().setSelection(pane.id, tab.id, {
     selected: new Set(order),
     anchor: order[0] ?? null,

@@ -122,8 +122,18 @@ function SidebarRow({
   variant?: "row" | "tile";
 }) {
   const activePaneId = useApp((s) => s.activePaneId);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === activePaneId) ?? s.panes[0]);
-  const tab = pane ? activeTabOf(pane) : null;
+  // A primitive: rows re-render when "is this the current folder" flips,
+  // not on every listing/selection/scroll update of the active pane.
+  const showsRowPath = usePanes((s) => {
+    const pane = s.panes.find((p) => p.id === activePaneId) ?? s.panes[0];
+    return pane != null && activeTabOf(pane).path === row.path;
+  });
+  /** The active pane/tab at event time. */
+  const activeAt = () => {
+    const s = usePanes.getState();
+    const pane = s.panes.find((p) => p.id === activePaneId) ?? s.panes[0];
+    return pane ? { pane, tab: activeTabOf(pane) } : null;
+  };
   const navigate = usePanes((s) => s.navigate);
   const openTab = usePanes((s) => s.openTab);
   const removeFavorite = useSettings((s) => s.removeFavorite);
@@ -176,7 +186,7 @@ function SidebarRow({
   }, [row.trash, inFavSection, row.path]);
 
   const settingsActive = useApp((s) => s.settingsActive);
-  const isCurrent = !settingsActive && tab?.path === row.path;
+  const isCurrent = !settingsActive && showsRowPath;
   // Set when a pointer-reorder happened so the click that follows the
   // pointerup doesn't also navigate.
   const suppressClick = useRef(false);
@@ -247,7 +257,8 @@ function SidebarRow({
         }
         // A place always shows its folder, even from the Settings tab.
         useApp.getState().setSettingsActive(false);
-        if (pane && tab) navigate(pane.id, tab.id, row.path);
+        const at = activeAt();
+        if (at) navigate(at.pane.id, at.tab.id, row.path);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -256,7 +267,10 @@ function SidebarRow({
           {
             type: "item",
             label: "Open in New Tab",
-            action: () => pane && openTab(pane.id, row.path),
+            action: () => {
+              const at = activeAt();
+              if (at) openTab(at.pane.id, row.path);
+            },
           },
           ...(row.favorite
             ? [

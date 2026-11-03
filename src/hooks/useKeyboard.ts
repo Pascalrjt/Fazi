@@ -12,7 +12,7 @@ import { handleVimKey, resetVimTransient } from "../lib/vimAdapter";
 import { useApp } from "../stores/app";
 import { useMenu } from "../stores/menu";
 import { useSettings } from "../stores/settings";
-import { activePaneTab, usePanes, visibleEntries } from "../stores/panes";
+import { activePaneTab, tabView, usePanes } from "../stores/panes";
 
 let typeAhead: TypeAheadState = emptyTypeAhead();
 
@@ -24,15 +24,13 @@ function handleTypeAhead(e: KeyboardEvent): void {
   const at = activePaneTab();
   if (!at) return;
   const { pane, tab } = at;
-  const visible = visibleEntries(tab);
-  if (visible.length === 0) return;
+  const view = tabView(tab);
+  if (view.entries.length === 0) return;
   typeAhead = typeAheadPush(typeAhead, e.key, performance.now());
-  const idx = typeAheadTarget(
-    visible.map((v) => v.name),
-    typeAhead.buffer,
-  );
+  // Lowercased names are cached per listing view, not rebuilt per keystroke.
+  const idx = typeAheadTarget(view.lowerNames, typeAhead.buffer, true);
   if (idx === -1) return;
-  const id = visible[idx].id;
+  const id = view.entries[idx].id;
   usePanes.getState().setSelection(pane.id, tab.id, {
     selected: new Set([id]),
     anchor: id,

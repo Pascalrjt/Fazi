@@ -37,11 +37,18 @@ function Details({
   onClose(): void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const pane = usePanes((s) => s.panes.find((p) => p.id === paneId));
-  const tab = pane ? activeTabOf(pane) : null;
+  // Only the path drives rendering; handlers read the live tab.
+  const tabPath = usePanes((s) => {
+    const pane = s.panes.find((p) => p.id === paneId);
+    return pane ? activeTabOf(pane).path : null;
+  });
+  const liveTab = () => {
+    const pane = usePanes.getState().panes.find((p) => p.id === paneId);
+    return pane ? activeTabOf(pane) : null;
+  };
 
   const folders = [...new Map(items.map((i) => [i.folder, i.days])).entries()];
-  const here = tab != null && folders.some(([f]) => f === tab.path);
+  const here = tabPath != null && folders.some(([f]) => f === tabPath);
   const bytes = totalBytes(items);
   const sorted = [...items].sort((a, b) => (a.expires ?? 0) - (b.expires ?? 0) || a.name.localeCompare(b.name));
 
@@ -50,6 +57,7 @@ function Details({
   }, []);
 
   const selectThem = () => {
+    const tab = liveTab();
     if (!tab) return;
     const paths = new Set(items.filter((i) => i.folder === tab.path).map((i) => i.path));
     const ids = tab.entries.filter((e) => paths.has(e.path)).map((e) => e.id);
@@ -59,6 +67,7 @@ function Details({
     onClose();
   };
   const show = () => {
+    const tab = liveTab();
     if (tab) usePanes.getState().navigate(paneId, tab.id, folders[0][0]);
     onClose();
   };

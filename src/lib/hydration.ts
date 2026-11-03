@@ -22,15 +22,47 @@ interface Item {
   icon: string;
 }
 
+/** FIFO of ids with a head index: `shift()` on a ~100k array is O(n) per
+ *  call (and it was called per id). Consumed slots are compacted lazily. */
+export class IdQueue {
+  private items: number[];
+  private head = 0;
+
+  constructor(items: number[] = []) {
+    this.items = items;
+  }
+
+  get size(): number {
+    return this.items.length - this.head;
+  }
+
+  push(id: number): void {
+    this.items.push(id);
+  }
+
+  shift(): number | undefined {
+    if (this.head >= this.items.length) return undefined;
+    const id = this.items[this.head++];
+    if (this.head >= this.items.length) {
+      this.items = [];
+      this.head = 0;
+    } else if (this.head >= 4096 && this.head * 2 >= this.items.length) {
+      this.items = this.items.slice(this.head);
+      this.head = 0;
+    }
+    return id;
+  }
+}
+
 interface HydratorState {
   paneId: PaneId;
   tabId: string;
   listingId: string;
   /** Rows still awaiting hydration (the scheduler's dedupe lives here). */
   itemsById: Map<number, Item>;
-  viewportQueue: number[];
+  viewportQueue: IdQueue;
   viewportQueued: Set<number>;
-  backgroundQueue: number[];
+  backgroundQueue: IdQueue;
   viewportInFlight: boolean;
   backgroundInFlight: boolean;
   backgroundReady: boolean;
@@ -38,6 +70,8 @@ interface HydratorState {
   pumpTimer: ReturnType<typeof setTimeout> | null;
   pendingPatches: Entry[];
   patchTimer: ReturnType<typeof setTimeout> | null;
+  /** Pending once-per-frame flush for viewport patches. */
+  frameHandle: number | null;
 }
 
 const BATCH = 128;
@@ -66,9 +100,9 @@ export function initHydrator(
     itemsById: new Map(
       unhydrated.map((e) => [e.id, { id: e.id, path: e.path, icon: e.icon }]),
     ),
-    viewportQueue: [],
+    viewportQueue: new IdQueue(),
     viewportQueued: new Set(),
-    backgroundQueue: unhydrated.map((e) => e.id),
+    backgroundQueue: new IdQueue(unhydrated.map((e) => e.id)),
     viewportInFlight: false,
     backgroundInFlight: false,
     backgroundReady: false,
@@ -76,6 +110,7 @@ export function initHydrator(
     pumpTimer: null,
     pendingPatches: [],
     patchTimer: null,
+    frameHandle: null,
   };
   // Re-init replaces any previous scheduler for this listing; its in-flight
   // responses become no-ops via the identity checks in run().
@@ -123,9 +158,9 @@ export function hydratorPending(listingId?: string): number {
   return n;
 }
 
-function takeBatch(c: HydratorState, queue: number[]): Item[] {
+function takeBatch(c: HydratorState, queue: IdQueue): Item[] {
   const items: Item[] = [];
-  while (items.length < BATCH && queue.length > 0) {
+  while (items.length < BATCH && queue.size > 0) {
     const id = queue.shift() as number;
     const item = c.itemsById.get(id);
     if (item) items.push(item);
@@ -138,15 +173,21 @@ function cleanupScheduler(c: HydratorState | undefined): void {
   if (c.backgroundTimer != null) clearTimeout(c.backgroundTimer);
   if (c.pumpTimer != null) clearTimeout(c.pumpTimer);
   if (c.patchTimer != null) clearTimeout(c.patchTimer);
+  if (c.frameHandle != null) cancelFrame(c.frameHandle);
   c.backgroundTimer = null;
   c.pumpTimer = null;
   c.patchTimer = null;
+  c.frameHandle = null;
 }
 
 function flushPatches(c: HydratorState): void {
   if (c.patchTimer != null) {
     clearTimeout(c.patchTimer);
     c.patchTimer = null;
+  }
+  if (c.frameHandle != null) {
+    cancelFrame(c.frameHandle);
+    c.frameHandle = null;
   }
   if (c.pendingPatches.length === 0 || schedulers.get(c.listingId) !== c) return;
   const patches = c.pendingPatches.splice(0);
@@ -155,15 +196,30 @@ function flushPatches(c: HydratorState): void {
     .applyListEvent(c.paneId, c.tabId, c.listingId, { event: "hydrate", entries: patches });
 }
 
+const requestFrame: (cb: () => void) => number =
+  typeof requestAnimationFrame === "function"
+    ? (cb) => requestAnimationFrame(cb)
+    : (cb) => setTimeout(cb, 16) as unknown as number;
+const cancelFrame: (h: number) => void =
+  typeof cancelAnimationFrame === "function"
+    ? (h) => cancelAnimationFrame(h)
+    : (h) => clearTimeout(h as unknown as ReturnType<typeof setTimeout>);
+
 function queuePatches(c: HydratorState, patches: Entry[], lane: "viewport" | "background"): void {
   if (patches.length === 0) return;
+  c.pendingPatches.push(...patches);
   if (lane === "viewport") {
-    usePanes
-      .getState()
-      .applyListEvent(c.paneId, c.tabId, c.listingId, { event: "hydrate", entries: patches });
+    // Every commit copies the listing array and invalidates the views'
+    // memos: coalesce viewport responses (plus any pending background
+    // patches) into one commit per frame — still before the next paint.
+    if (c.frameHandle == null) {
+      c.frameHandle = requestFrame(() => {
+        c.frameHandle = null;
+        flushPatches(c);
+      });
+    }
     return;
   }
-  c.pendingPatches.push(...patches);
   if (c.patchTimer == null) {
     c.patchTimer = setTimeout(() => flushPatches(c), PATCH_COMMIT_MS);
   }
@@ -178,7 +234,7 @@ function schedulePump(c: HydratorState): void {
 }
 
 function pump(c: HydratorState): void {
-  if (!c.viewportInFlight && c.viewportQueue.length > 0) {
+  if (!c.viewportInFlight && c.viewportQueue.size > 0) {
     const batch = takeBatch(c, c.viewportQueue);
     for (const b of batch) c.viewportQueued.delete(b.id);
     if (batch.length > 0) {
@@ -191,8 +247,8 @@ function pump(c: HydratorState): void {
     c.backgroundReady &&
     !c.backgroundInFlight &&
     !c.viewportInFlight &&
-    c.viewportQueue.length === 0 &&
-    c.backgroundQueue.length > 0
+    c.viewportQueue.size === 0 &&
+    c.backgroundQueue.size > 0
   ) {
     const batch = takeBatch(c, c.backgroundQueue);
     if (batch.length > 0) {
