@@ -28,8 +28,23 @@ pub fn search(
     }
     let tokens = state.tokens.clone();
     let owner = search_id.clone();
+    // Runs on the mdfind reader thread: classify each distinct parent's
+    // volume there (statfs), never while holding a lock.
+    let seen: std::sync::Mutex<std::collections::HashMap<PathBuf, bool>> = Default::default();
     let icon_token: Arc<dyn Fn(&std::path::Path) -> String + Send + Sync> =
-        Arc::new(move |p| tokens.register(&owner, p));
+        Arc::new(move |p| {
+            let parent = p.parent().unwrap_or(p);
+            let cached = seen.lock().unwrap().get(parent).copied();
+            let local = match cached {
+                Some(l) => l,
+                None => {
+                    let l = crate::state::statfs_local(parent).unwrap_or(false);
+                    seen.lock().unwrap().insert(parent.to_path_buf(), l);
+                    l
+                }
+            };
+            tokens.register_local(&owner, p, local)
+        });
 
     let handle = mdfind::spawn_search(
         query,

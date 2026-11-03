@@ -69,6 +69,11 @@ pub fn pass1_scan(
     mut emit: impl FnMut(Vec<Entry>) -> bool,
 ) -> Pass1 {
     let dir = Path::new(dir_path);
+    // Classify the volume once, here on the listing thread and outside any
+    // lock: children share the directory's volume (statfs follows symlinks),
+    // except mount points listed in the kernel's cached mount table.
+    tokens.set_owner_locality(listing_id, crate::state::statfs_local(dir));
+    let mounts = crate::state::child_mounts(dir);
     // Joined once per entry into a right-sized String (path == dir.join(name)).
     let prefix = if dir_path.ends_with('/') {
         dir_path.to_string()
@@ -97,7 +102,10 @@ pub fn pass1_scan(
                 let mut path = String::with_capacity(prefix.len() + name.len());
                 path.push_str(&prefix);
                 path.push_str(&name);
-                let token = tokens.register(listing_id, Path::new(&path));
+                let token = match mounts.get(std::ffi::OsStr::new(&name)) {
+                    Some(&local) => tokens.register_local(listing_id, Path::new(&path), local),
+                    None => tokens.register(listing_id, Path::new(&path)),
+                };
                 (name, path, token, None)
             }
             Err(os) => {
@@ -106,7 +114,10 @@ pub fn pass1_scan(
                 let real = dir.join(&os);
                 let name = os.to_string_lossy().into_owned();
                 let path = dir.join(&name).to_string_lossy().into_owned();
-                let token = tokens.register(listing_id, &real);
+                let token = match mounts.get(os.as_os_str()) {
+                    Some(&local) => tokens.register_local(listing_id, &real, local),
+                    None => tokens.register(listing_id, &real),
+                };
                 (name, path, token, Some(real))
             }
         };
@@ -565,6 +576,9 @@ mod tests {
             }
         }
         assert_eq!(tokens.len(), 10, "1000 upserts must not grow the token table");
+        // Locality was classified once for the listed (local) directory and
+        // inherited by pass-1 tokens and later upserts alike.
+        assert!(first.iter().all(|e| tokens.is_local(&e.icon) == Some(true)));
         assert_eq!(
             tokens.resolve(&first[0].icon).as_deref(),
             Some(Path::new(&first[0].path))

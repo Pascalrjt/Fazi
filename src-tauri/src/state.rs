@@ -33,18 +33,12 @@ pub struct TokenTable {
     next: AtomicU64,
     tokens: DashMap<u64, Minted>,
     owners: DashMap<String, OwnerScope>,
-    /// Classifies a directory's volume (statfs; follows symlinks/firmlinks).
-    locality: fn(&Path) -> Option<bool>,
-    /// dir → (local, classified at): search/fuzzy owners mint across many
-    /// directories; repeats within the TTL skip the statfs.
-    dir_locality: DashMap<PathBuf, (bool, std::time::Instant)>,
 }
 
-const DIR_LOCALITY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// A token's target plus whether it lives on a local volume — decided at
-/// mint time (listing/search threads, off-main), so protocol dispatch can
-/// route remote items to their own pool without touching the filesystem.
+/// A token's target plus whether it lives on a local volume. Locality is
+/// classified by the CALLER before minting (listing/search/fuzzy threads,
+/// outside any lock) — the table itself never touches the filesystem — so
+/// protocol dispatch routes remote items to their own pool in memory.
 struct Minted {
     path: Arc<Path>,
     local: bool,
@@ -54,14 +48,39 @@ struct Minted {
 #[derive(Default)]
 pub struct OwnerScope {
     by_path: HashMap<Arc<Path>, u64>,
-    /// Last parent dir classified for this owner: a listing mints every
-    /// token from one directory, so this is one statfs per listing.
-    last_parent: Option<(PathBuf, bool)>,
+    /// Locality for tokens minted without an explicit one (a listing's
+    /// directory, a fuzzy index's root). None → remote (conservative).
+    local: Option<bool>,
 }
 
 /// `statfs(dir)` → MNT_LOCAL. statfs resolves symlinks and firmlinks, so
 /// `~/share → /Volumes/SMB` is classified by the SMB volume. None when the
 /// call fails.
+/// Mount points directly inside `dir` with their MNT_LOCAL flag, from the
+/// kernel's cached table (`getmntinfo(MNT_NOWAIT)`: never blocks on a
+/// mount). A listing of /Volumes uses this so each mounted child is
+/// classified by its own volume, not the parent's.
+pub fn child_mounts(dir: &Path) -> HashMap<std::ffi::OsString, bool> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut out = HashMap::new();
+    let mut buf: *mut libc::statfs = std::ptr::null_mut();
+    // SAFETY: getmntinfo hands back a libc-owned array of `n` entries.
+    let n = unsafe { libc::getmntinfo(&mut buf, libc::MNT_NOWAIT) };
+    if n <= 0 || buf.is_null() {
+        return out;
+    }
+    for m in unsafe { std::slice::from_raw_parts(buf, n as usize) } {
+        let bytes: Vec<u8> = m.f_mntonname.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
+        let point = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+        if point.parent() == Some(dir) {
+            if let Some(name) = point.file_name() {
+                out.insert(name.to_os_string(), m.f_flags & libc::MNT_LOCAL as u32 != 0);
+            }
+        }
+    }
+    out
+}
+
 pub fn statfs_local(dir: &Path) -> Option<bool> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
@@ -90,8 +109,6 @@ impl Default for TokenTable {
             next: AtomicU64::new(1),
             tokens: DashMap::new(),
             owners: DashMap::new(),
-            locality: statfs_local,
-            dir_locality: DashMap::new(),
         }
     }
 }
@@ -131,46 +148,11 @@ impl TokenTable {
         (mac == self.mac(id)).then_some(id)
     }
 
-    /// Test constructor with an injected volume classifier.
-    #[cfg(test)]
-    pub fn with_locality(locality: fn(&Path) -> Option<bool>) -> Self {
-        TokenTable { locality, ..TokenTable::default() }
-    }
-
-    fn local_for(&self, scope: &mut OwnerScope, path: &Path) -> bool {
-        let parent = path.parent().unwrap_or(path);
-        if let Some((p, local)) = &scope.last_parent {
-            // Byte compare: Path's == walks components (hot listing loop).
-            if p.as_os_str() == parent.as_os_str() {
-                return *local;
-            }
-        }
-        let cached = self
-            .dir_locality
-            .get(parent)
-            .filter(|e| e.1.elapsed() < DIR_LOCALITY_TTL)
-            .map(|e| e.0);
-        let local = match cached {
-            Some(l) => l,
-            None => {
-                // Unknown (statfs failed) → remote: the conservative routing.
-                let l = (self.locality)(parent).unwrap_or(false);
-                if self.dir_locality.len() > 4096 {
-                    self.dir_locality.clear();
-                }
-                self.dir_locality.insert(parent.to_path_buf(), (l, std::time::Instant::now()));
-                l
-            }
-        };
-        scope.last_parent = Some((parent.to_path_buf(), local));
-        local
-    }
-
-    fn register_in(&self, scope: &mut OwnerScope, path: &Path) -> u64 {
+    fn register_in(&self, scope: &mut OwnerScope, path: &Path, local: Option<bool>) -> u64 {
         if let Some(&id) = scope.by_path.get(path) {
             return id;
         }
-        let local = self.local_for(scope, path);
+        let local = local.or(scope.local).unwrap_or(false);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let shared: Arc<Path> = Arc::from(path);
         self.tokens.insert(id, Minted { path: shared.clone(), local });
@@ -178,18 +160,34 @@ impl TokenTable {
         id
     }
 
-    /// Mint (or reuse) the token for `path`, scoped to `owner` (listing id /
-    /// search id / op id / fuzzy-index generation).
-    pub fn register(&self, owner: &str, path: &Path) -> String {
+    fn register_with(&self, owner: &str, path: &Path, local: Option<bool>) -> String {
         // Look up first so the hot path never allocates the owner String.
         let id = match self.owners.get_mut(owner) {
-            Some(mut scope) => self.register_in(&mut scope, path),
+            Some(mut scope) => self.register_in(&mut scope, path, local),
             None => {
                 let mut scope = self.owners.entry(owner.to_string()).or_default();
-                self.register_in(&mut scope, path)
+                self.register_in(&mut scope, path, local)
             }
         };
         self.encode(id)
+    }
+
+    /// Default locality for `owner`'s future tokens — classify (statfs)
+    /// BEFORE calling, never under a lock.
+    pub fn set_owner_locality(&self, owner: &str, local: Option<bool>) {
+        self.owners.entry(owner.to_string()).or_default().local = local;
+    }
+
+    /// [`register`](Self::register) with the item's locality known.
+    pub fn register_local(&self, owner: &str, path: &Path, local: bool) -> String {
+        self.register_with(owner, path, Some(local))
+    }
+
+    /// Mint (or reuse) the token for `path`, scoped to `owner` (listing id /
+    /// search id / op id / fuzzy-index generation).
+    /// The owner's default locality applies (unset → remote).
+    pub fn register(&self, owner: &str, path: &Path) -> String {
+        self.register_with(owner, path, None)
     }
 
     /// Unknown token → None → the protocol handler 404s.
@@ -292,24 +290,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_carry_the_locality_of_their_directory() {
-        fn fake(dir: &Path) -> Option<bool> {
-            if dir.starts_with("/Users/me/share") {
-                Some(false) // what statfs says behind the symlink
-            } else if dir.starts_with("/gone") {
-                None
-            } else {
-                Some(true)
-            }
-        }
-        let t = TokenTable::with_locality(fake);
-        let local = t.register("l1", Path::new("/Users/me/a.txt"));
-        let remote = t.register("l2", Path::new("/Users/me/share/b.txt"));
-        let unknown = t.register("l3", Path::new("/gone/c.txt"));
-        assert_eq!(t.is_local(&local), Some(true));
-        assert_eq!(t.is_local(&remote), Some(false));
+    fn tokens_carry_caller_supplied_locality_and_default_to_remote() {
+        let t = TokenTable::default();
+        t.set_owner_locality("listing", Some(true));
+        let child = t.register("listing", Path::new("/Users/me/a.txt"));
+        let mount = t.register_local("listing", Path::new("/Users/me/smb"), false);
+        let unknown = t.register("search", Path::new("/x/y"));
+        assert_eq!(t.is_local(&child), Some(true));
+        assert_eq!(t.is_local(&mount), Some(false), "explicit wins over the owner default");
         assert_eq!(t.is_local(&unknown), Some(false), "unknown is treated as remote");
         assert_eq!(t.is_local("nope"), None);
+    }
+
+    #[test]
+    fn child_mounts_lists_volumes_under_their_parent() {
+        // The root volume is mounted at "/", whose parent is None: never a
+        // child; /Volumes children (if any) are reported by name.
+        assert!(child_mounts(Path::new("/nonexistent-dir")).is_empty());
+        for (name, _) in child_mounts(Path::new("/Volumes")) {
+            assert!(Path::new("/Volumes").join(name).exists());
+        }
     }
 
     #[test]

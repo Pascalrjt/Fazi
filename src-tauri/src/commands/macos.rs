@@ -33,25 +33,35 @@ pub fn open_with(app: AppHandle, paths: Vec<String>, app_path: String) {
     on_main(&app, move || workspace::open_with(&paths, &target));
 }
 
+/// Async + spawn_blocking: off the main thread, so classifying each app's
+/// volume (statfs, a network-mounted app can stall) never blocks the UI.
 #[tauri::command]
-pub fn open_with_apps(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Vec<workspace::AppCandidate> {
-    let p = PathBuf::from(&path);
-    let (candidates, default) = on_main(&app, move || workspace::apps_for_path(&p));
-    candidates
-        .into_iter()
-        .map(|app_path| workspace::AppCandidate {
-            name: workspace::display_name(&app_path)
-                .trim_end_matches(".app")
-                .to_string(),
-            icon: state.tokens.register("openwith", &app_path),
-            is_default: Some(&app_path) == default.as_ref(),
-            path: app_path.to_string_lossy().into_owned(),
-        })
-        .collect()
+pub async fn open_with_apps(app: AppHandle, path: String) -> Vec<workspace::AppCandidate> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = PathBuf::from(&path);
+        let (candidates, default) = on_main(&app, move || workspace::apps_for_path(&p));
+        let tokens = app.state::<AppState>().tokens.clone();
+        candidates
+            .into_iter()
+            .map(|app_path| {
+                // Classified before minting, outside any lock.
+                let local = app_path
+                    .parent()
+                    .and_then(crate::state::statfs_local)
+                    .unwrap_or(false);
+                workspace::AppCandidate {
+                    name: workspace::display_name(&app_path)
+                        .trim_end_matches(".app")
+                        .to_string(),
+                    icon: tokens.register_local("openwith", &app_path, local),
+                    is_default: Some(&app_path) == default.as_ref(),
+                    path: app_path.to_string_lossy().into_owned(),
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[derive(Serialize)]

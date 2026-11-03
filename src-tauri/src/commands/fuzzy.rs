@@ -85,6 +85,9 @@ pub fn spawn_refresh(
     }
     let was_stale = old.stale.swap(false, Ordering::SeqCst);
     std::thread::spawn(move || {
+        // The old index keeps serving meanwhile (e.g. restored from a
+        // snapshot): give its results a classified root too.
+        old.classify_root();
         let restore_mark = |old: &FuzzyIndex| {
             if was_stale {
                 old.stale.store(true, Ordering::SeqCst);
@@ -303,7 +306,12 @@ pub fn fuzzy_query(
     let seq = index.next_query_seq();
 
     let tokens = state.tokens.clone();
-    let icon_token: IconTokenFn = Arc::new(move |owner, p| tokens.register(owner, p));
+    // Locality was classified off-main at build/refresh; read atomically.
+    let root_local = index.root_local();
+    let icon_token: IconTokenFn = Arc::new(move |owner, p| match root_local {
+        Some(local) => tokens.register_local(owner, p, local),
+        None => tokens.register(owner, p),
+    });
     let tokens = state.tokens.clone();
     let icon_revoke: RevokeTokenFn = Arc::new(move |owner, t| tokens.revoke(owner, t));
     let send_channel = channel.clone();

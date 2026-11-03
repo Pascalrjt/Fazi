@@ -272,6 +272,10 @@ pub struct FuzzyIndex {
     pub owners: Mutex<Vec<String>>,
     /// Lazy stable icon tokens for results served from this index.
     icon_tokens: Mutex<TokenLru>,
+    /// Root volume locality for icon routing: 0 unknown, 1 local, 2 remote.
+    /// Classified on walk/refresh threads (never under a lock, never on the
+    /// main thread); results inherit it.
+    root_local: std::sync::atomic::AtomicU8,
 }
 
 impl FuzzyIndex {
@@ -292,7 +296,29 @@ impl FuzzyIndex {
             active: Mutex::new(None),
             owners: Mutex::new(Vec::new()),
             icon_tokens: Mutex::new(TokenLru::new(ICON_TOKEN_CACHE_CAP)),
+            root_local: std::sync::atomic::AtomicU8::new(0),
         })
+    }
+
+    /// statfs the root (once) — call from a background thread, no locks held.
+    pub fn classify_root(&self) {
+        if self.root_local.load(Ordering::Relaxed) == 0 {
+            let v = match crate::state::statfs_local(&self.root) {
+                Some(true) => 1,
+                Some(false) => 2,
+                None => 0,
+            };
+            self.root_local.store(v, Ordering::Relaxed);
+        }
+    }
+
+    /// Root locality if classified (unknown → None → routed as remote).
+    pub fn root_local(&self) -> Option<bool> {
+        match self.root_local.load(Ordering::Relaxed) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
     }
 
     /// Reconstruct a COMPLETE index from persisted entries (indexing = false
@@ -529,6 +555,7 @@ pub fn build_index(
     max_entries: u64,
     now_ms: u64,
 ) {
+    index.classify_root();
     let generation = index.generation.load(Ordering::SeqCst);
     index.built_at_ms.store(now_ms, Ordering::SeqCst);
     let root = index.root.clone();
@@ -1190,6 +1217,17 @@ mod tests {
         let idx = FuzzyIndex::new(root.to_path_buf(), config_hash(excludes, cap), 0);
         build_index(idx.clone(), Excludes::parse(excludes), cap, 0);
         idx
+    }
+
+    #[test]
+    fn index_root_is_classified_off_main_at_build() {
+        let d = tmp("root-local");
+        make_tree(&d);
+        let fresh = FuzzyIndex::new(d.clone(), 0, 0);
+        assert_eq!(fresh.root_local(), None, "unknown until a build/refresh thread classifies");
+        let idx = warm_sync(&d, &[], 1_000);
+        assert_eq!(idx.root_local(), Some(true));
+        std::fs::remove_dir_all(&d).ok();
     }
 
     fn query_paths(idx: &FuzzyIndex, q: &str, k: usize) -> Vec<String> {
