@@ -2,8 +2,8 @@
  * Natural sorting for directory entries. Pure — unit-tested.
  *
  * Performance: a 100k-entry sort makes ~1.7M comparisons. Going through
- * `Intl.Collator.compare` for each one dominates, so names are encoded ONCE
- * into a sort key whose plain code-unit order equals the collator's order
+ * `Intl.Collator.compare` for each one dominates, so names are encoded once
+ * per sort into a key whose plain code-unit order equals the collator's order
  * (decorate–sort–undecorate). The encoding covers printable-ASCII names and
  * is derived from (and checked against) the live collator; anything else
  * falls back to `naturalCollator.compare`.
@@ -129,17 +129,8 @@ export function asciiSortKey(s: string): string | null {
   return out;
 }
 
-const nameKeys = new WeakMap<Entry, string | null>();
-
-/** Cached per Entry object: entries survive re-sorts, so keys do too. */
-function nameKeyOf(e: Entry): string | null {
-  let k = nameKeys.get(e);
-  if (k === undefined) {
-    k = asciiSortKey(e.name);
-    nameKeys.set(e, k);
-  }
-  return k;
-}
+// Keys are recomputed per sort on purpose: caching them per Entry in a
+// WeakMap costs more (WeakMap.set on 100k objects) than encoding again.
 
 const labelKeys = new Map<string, string | null>();
 function labelKeyOf(label: string): string | null {
@@ -195,7 +186,7 @@ function decorate(e: Entry, key: SortKey): Decorated {
   return {
     e,
     dir: isDirLike(e),
-    name: nameKeyOf(e),
+    name: asciiSortKey(e.name),
     label,
     labelKey: key === "kind" ? labelKeyOf(label) : null,
   };
@@ -207,13 +198,26 @@ function decoratedComparator(
 ): (a: Decorated, b: Decorated) => number {
   const sign = spec.dir === "asc" ? 1 : -1;
   const key = spec.key;
+  if (key === "name") {
+    // Hot path (default sort): specialised, no per-call switch.
+    return (a, b) => {
+      if (dirsFirst && a.dir !== b.dir) return a.dir ? -1 : 1;
+      const ka = a.name;
+      const kb = b.name;
+      if (ka !== null && kb !== null) {
+        if (ka < kb) return -sign;
+        if (ka > kb) return sign;
+      } else {
+        const p = naturalCollator.compare(a.e.name, b.e.name);
+        if (p !== 0) return sign * p;
+      }
+      return a.e.id - b.e.id;
+    };
+  }
   return (a, b) => {
     if (dirsFirst && a.dir !== b.dir) return a.dir ? -1 : 1;
     let primary: number;
     switch (key) {
-      case "name":
-        primary = compareKeyed(a.name, b.name, a.e.name, b.e.name);
-        break;
       case "size":
         // Unhydrated / dirs (null) sort after real sizes ascending.
         primary = compareNullableNumber(a.e.size, b.e.size);
@@ -226,21 +230,11 @@ function decoratedComparator(
         break;
     }
     if (primary !== 0) return sign * primary;
-    if (key !== "name") {
-      const byName = compareKeyed(a.name, b.name, a.e.name, b.e.name);
-      if (byName !== 0) return byName;
-    }
+    // name is the (unsigned) tiebreaker
+    const byName = compareKeyed(a.name, b.name, a.e.name, b.e.name);
+    if (byName !== 0) return byName;
     return a.e.id - b.e.id; // stable, deterministic
   };
-}
-
-/** The total order `sortEntries` produces, as a plain comparator. */
-export function entryComparator(
-  spec: SortSpec,
-  dirsFirst = true,
-): (a: Entry, b: Entry) => number {
-  const cmp = decoratedComparator(spec, dirsFirst);
-  return (a, b) => cmp(decorate(a, spec.key), decorate(b, spec.key));
 }
 
 /**
