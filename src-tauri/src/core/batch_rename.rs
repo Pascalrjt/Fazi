@@ -13,7 +13,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::core::walker::exists_ci;
+use crate::core::walker::DirNames;
 
 /// Injectable rename — production passes `std::fs::rename`.
 pub type RenameSeam<'a> = &'a dyn Fn(&Path, &Path) -> io::Result<()>;
@@ -54,6 +54,9 @@ pub fn validate_batch(parent: &Path, pairs: &[(String, String)]) -> io::Result<(
     let source_lower: std::collections::HashSet<String> =
         pairs.iter().map(|(f, _)| f.to_lowercase()).collect();
     let mut target_lower: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // One cached name set for the whole batch — never a directory scan per
+    // target (2k renames in a 20k-entry folder was 40M name compares).
+    let mut existing = DirNames::new(parent);
     for (from, to) in pairs {
         validate_name(to)?;
         if parent.join(from).symlink_metadata().is_err() {
@@ -71,7 +74,7 @@ pub fn validate_batch(parent: &Path, pairs: &[(String, String)]) -> io::Result<(
         }
         // Collision with an existing item — batch sources excluded (their
         // names are being vacated; case-only mass renames stay legal).
-        if !source_lower.contains(&to.to_lowercase()) && exists_ci(parent, to) {
+        if !source_lower.contains(&to.to_lowercase()) && existing.contains(to) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!("\"{to}\" already exists"),

@@ -278,6 +278,33 @@ fn journal_write_fail_fast(
     true
 }
 
+/// Where a multi-item compress should materialize its contents dir: beside
+/// the first source when every source lives on one volume that differs from
+/// the destination's, so staging is per-entry clones instead of a full byte
+/// copy onto the destination volume. None = stage on the destination.
+fn source_side_staging_dir(sources: &[PathBuf], dest_dir: &Path) -> Option<PathBuf> {
+    let dev = copier::device_of(sources.first()?)?;
+    if copier::device_of(dest_dir) == Some(dev) {
+        return None; // already same-volume: the destination clones too
+    }
+    if !sources.iter().skip(1).all(|s| copier::device_of(s) == Some(dev)) {
+        return None;
+    }
+    let parent = sources[0].parent()?;
+    // A mount-point source has its parent on another volume; a parent inside
+    // a selected folder would make the staging dir copy itself.
+    if copier::device_of(parent) != Some(dev) || sources.iter().any(|s| parent.starts_with(s)) {
+        return None;
+    }
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(parent.as_os_str().as_bytes()).ok()?;
+    // SAFETY: valid NUL-terminated path.
+    if unsafe { libc::access(c.as_ptr(), libc::W_OK) } != 0 {
+        return None;
+    }
+    Some(parent.to_path_buf())
+}
+
 fn pop_staging(journal_entry: &mut OpJournalEntry, stage: &Path) {
     let s = stage.to_string_lossy();
     journal_entry.staging.retain(|p| p != s.as_ref());
@@ -421,8 +448,19 @@ fn run_compress_thread(
     };
     let stage_zip = dest_dir.join(staging_name(&zip_name, &op_id));
     let multi = sources.len() > 1;
-    let stage_contents =
-        dest_dir.join(staging_name(&format!("{}.contents", zip_name), &op_id));
+    let contents_name = staging_name(&format!("{}.contents", zip_name), &op_id);
+    let dest_side_contents = dest_dir.join(&contents_name);
+    // Multi-item staging is a materializing copy: on the sources' volume
+    // it's per-entry clones (free); on another destination volume it's a
+    // full byte copy before ditto even starts. Falls back to the
+    // destination when the sources span volumes or the spot isn't usable.
+    let mut stage_contents = if multi {
+        source_side_staging_dir(&sources, &dest_dir)
+            .map(|dir| dir.join(&contents_name))
+            .unwrap_or_else(|| dest_side_contents.clone())
+    } else {
+        dest_side_contents.clone()
+    };
     walker::remove_tree_best_effort(&stage_zip);
     if multi {
         walker::remove_tree_best_effort(&stage_contents);
@@ -466,6 +504,30 @@ fn run_compress_thread(
         });
     }
 
+    // Create the contents dir. If the source-side spot refuses (read-only
+    // folder, race), journal the destination-side spot FIRST, then use it.
+    let mut contents_error: Option<io::Error> = None;
+    if multi {
+        if let Err(e) = std::fs::create_dir(&stage_contents) {
+            if stage_contents != dest_side_contents {
+                pop_staging(&mut journal_entry, &stage_contents);
+                journal_entry.staging.push(dest_side_contents.to_string_lossy().into_owned());
+                if !journal_write_fail_fast(&engine, &journal_entry, &op_id, &emitter) {
+                    engine.journal.remove(&op_id);
+                    return;
+                }
+                stage_contents = dest_side_contents.clone();
+                walker::remove_tree_best_effort(&stage_contents);
+                if let Err(e) = std::fs::create_dir(&stage_contents) {
+                    contents_error = Some(e);
+                }
+            } else {
+                contents_error = Some(e);
+            }
+        }
+    }
+    let stage_contents = stage_contents;
+
     let ratchet = Arc::new(AtomicU64::new(0));
     let mut sink = ArchiveSink::new(emitter.clone(), handle.clone(), ratchet.clone());
 
@@ -484,10 +546,12 @@ fn run_compress_thread(
     let mut cancelled = false;
     let mut staging_failed = false;
     if multi {
-        if let Err(e) = std::fs::create_dir(&stage_contents) {
+        if let Some(e) = contents_error {
             sink.item_error(&stage_contents, &e);
             staging_failed = true;
         } else {
+            // Inside-archive keep-both naming: one cached name set.
+            let mut staged_names = walker::DirNames::new(&stage_contents);
             for source in &sources {
                 if handle.cancel.load(Ordering::SeqCst) {
                     cancelled = true;
@@ -504,11 +568,12 @@ fn run_compress_thread(
                 let name = name_os.to_string_lossy().into_owned();
                 // Duplicate top-level basenames from different parents get
                 // keep-both names inside the archive (Finder behavior).
-                let target_name = if walker::exists_ci(&stage_contents, &name) {
-                    keep_both_name(&stage_contents, &name)
+                let target_name = if staged_names.contains(&name) {
+                    walker::keep_both_name_in(&mut staged_names, &name)
                 } else {
                     name
                 };
+                staged_names.insert(&target_name);
                 // All-or-nothing backstop: `copy_fresh` records child failures
                 // via the sink but still returns Done for a directory with
                 // failed children — snapshot the error count around each copy.
@@ -766,18 +831,20 @@ pub fn validate_staging(staging_dir: &Path) -> Result<(), String> {
                     }
                 }
             }
-            let meta = entry
-                .path()
-                .symlink_metadata()
+            // The dirent type (lstat semantics, never follows links) — no
+            // extra lstat per extracted entry. std falls back to lstat
+            // itself when the filesystem reports DT_UNKNOWN.
+            let ft = entry
+                .file_type()
                 .map_err(|e| format!("couldn't inspect extracted content: {}", e))?;
-            if meta.file_type().is_symlink() {
+            if ft.is_symlink() {
                 if symlink_escapes(root, &path) {
                     return Err(format!(
                         "unsafe link in archive: {}",
                         rel.to_string_lossy()
                     ));
                 }
-            } else if meta.file_type().is_dir() {
+            } else if ft.is_dir() {
                 walk(root, &path, payload_seen)?;
             }
             // Payload classification: root-level .DS_Store and the __MACOSX

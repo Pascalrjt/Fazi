@@ -131,6 +131,10 @@ pub fn empty_trash_dirs(
     let total = items.len() as u64;
     let mut outcome = EmptyTrashOutcome { deleted: Vec::new(), errors: Vec::new() };
     on_progress(0, total);
+    // Same 80 ms gate as op progress: a Trash of 50k small items must not
+    // flood the channel with 50k events. The final count always lands.
+    let mut last_emit = std::time::Instant::now();
+    let mut emitted = 0u64;
     for item in items {
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
             break;
@@ -143,10 +147,18 @@ pub fn empty_trash_dirs(
         match result {
             Ok(()) => {
                 outcome.deleted.push(item);
-                on_progress(outcome.deleted.len() as u64, total);
+                if last_emit.elapsed() >= std::time::Duration::from_millis(80) {
+                    last_emit = std::time::Instant::now();
+                    emitted = outcome.deleted.len() as u64;
+                    on_progress(emitted, total);
+                }
             }
             Err(e) => outcome.errors.push((item, e)),
         }
+    }
+    let deleted = outcome.deleted.len() as u64;
+    if deleted != emitted {
+        on_progress(deleted, total);
     }
     outcome
 }

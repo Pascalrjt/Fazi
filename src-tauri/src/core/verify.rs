@@ -11,6 +11,12 @@
 //! hashing — structure, names, and metadata are already covered by the
 //! mandatory verify pass. A relative path present on one side only, a type
 //! mismatch, or a hash/target mismatch fails that item.
+//!
+//! Cost control: equal-size files whose every extent maps to the same
+//! physical blocks (APFS clones — the same-volume copy path) are identical by
+//! construction and skip hashing (see `shares_all_extents`); a size mismatch
+//! fails without hashing; files ≥ 1 MiB hash both sides concurrently; the
+//! two 4 MiB chunk buffers are allocated once per compare, not per file.
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -52,22 +58,186 @@ fn kind_of(path: &Path) -> Kind {
     }
 }
 
-fn hash_file(path: &Path, cancelled: &dyn Fn() -> bool) -> io::Result<Option<blake3::Hash>> {
-    let mut file = std::fs::File::open(path)?;
+/// Files at least this large hash source and destination concurrently.
+const PARALLEL_MIN: u64 = 1 << 20;
+
+/// Two chunk buffers allocated once per `checksum_compare` (lazily, on the
+/// first hashed file) and reused for every file in the tree.
+#[derive(Default)]
+struct Bufs {
+    a: Vec<u8>,
+    b: Vec<u8>,
+}
+
+impl Bufs {
+    fn get(&mut self) -> (&mut [u8], &mut [u8]) {
+        if self.a.is_empty() {
+            self.a = vec![0u8; CHUNK];
+            self.b = vec![0u8; CHUNK];
+        }
+        (&mut self.a, &mut self.b)
+    }
+}
+
+fn hash_reader(
+    file: &mut std::fs::File,
+    buf: &mut [u8],
+    stop: &dyn Fn() -> bool,
+) -> io::Result<Option<blake3::Hash>> {
     let mut hasher = blake3::Hasher::new();
-    let mut buf = vec![0u8; CHUNK];
     loop {
         // Cancel checked per 4 MiB chunk within large files.
-        if cancelled() {
+        if stop() {
             return Ok(None);
         }
-        let n = file.read(&mut buf)?;
+        let n = match file.read(buf) {
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
     }
     Ok(Some(hasher.finalize()))
+}
+
+/// One logical→physical lookup (`fcntl(F_LOG2PHYS_EXT)`):
+/// (device offset, contiguous bytes from there).
+fn log2phys(file: &std::fs::File, offset: u64, want: u64) -> Option<(i64, i64)> {
+    use std::os::unix::io::AsRawFd;
+    let mut l = libc::log2phys {
+        l2p_flags: 0,
+        l2p_contigbytes: i64::try_from(want).ok()?,
+        l2p_devoffset: i64::try_from(offset).ok()?,
+    };
+    // SAFETY: valid fd; `l` is the documented in/out struct for this fcntl.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_LOG2PHYS_EXT, &mut l) };
+    if rc == -1 {
+        return None;
+    }
+    let (dev_off, contig) = (l.l2p_devoffset, l.l2p_contigbytes);
+    Some((dev_off, contig))
+}
+
+/// True when every byte of `a` and `b` (same device, same length) maps to
+/// the SAME physical blocks — an APFS clone (`clonefile`) sharing its
+/// source's extents. Hashing such a pair would read the same blocks twice
+/// and can never find a difference (any corruption is shared too), so the
+/// content check is skipped for it. Any lookup failure (compressed files,
+/// filesystems without the fcntl, delayed allocation) means "not proven
+/// shared" and the files are hashed as usual. A clone whose source changed
+/// after the clone no longer shares those extents, so it is still hashed.
+fn shares_all_extents(a: &std::fs::File, b: &std::fs::File, len: u64) -> bool {
+    if len == 0 {
+        return false;
+    }
+    let mut off = 0u64;
+    // Bounded: a pathological extent map just falls back to hashing.
+    for _ in 0..65_536 {
+        if off >= len {
+            return true;
+        }
+        let Some((pa, ca)) = log2phys(a, off, len - off) else { return false };
+        let Some((pb, cb)) = log2phys(b, off, len - off) else { return false };
+        if pa != pb || pa < 0 {
+            return false;
+        }
+        let step = ca.min(cb);
+        if step <= 0 {
+            return false;
+        }
+        off = off.saturating_add(step as u64);
+    }
+    false
+}
+
+enum FileVerdict {
+    Same,
+    Differ,
+    Cancelled,
+    Error(io::Error),
+}
+
+/// Content-compare two regular files: size short-circuit, clone-extent
+/// short-circuit, else BLAKE3 of both sides — concurrently (scoped thread)
+/// for files ≥ 1 MiB, reusing the per-compare buffers.
+fn compare_files(
+    src: &Path,
+    dst: &Path,
+    cancelled: &dyn Fn() -> bool,
+    bufs: &mut Bufs,
+) -> FileVerdict {
+    use std::os::unix::fs::MetadataExt;
+    let open = |p: &Path| std::fs::File::open(p).and_then(|f| f.metadata().map(|m| (f, m)));
+    let (mut fs, ms) = match open(src) {
+        Ok(v) => v,
+        Err(e) => return FileVerdict::Error(e),
+    };
+    let (mut fd, md) = match open(dst) {
+        Ok(v) => v,
+        Err(e) => return FileVerdict::Error(e),
+    };
+    if ms.len() != md.len() {
+        return FileVerdict::Differ;
+    }
+    if ms.dev() == md.dev() && shares_all_extents(&fs, &fd, ms.len()) {
+        return FileVerdict::Same;
+    }
+    let (buf_a, buf_b) = bufs.get();
+    let (ra, rb) = if ms.len() >= PARALLEL_MIN {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let halt = || stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::thread::scope(|scope| {
+            let dst_side = scope.spawn(|| {
+                hash_reader(&mut fd, buf_b, &|| stop.load(std::sync::atomic::Ordering::Relaxed))
+            });
+            // `cancelled` stays on this thread (it needn't be Sync); the
+            // destination side follows via `stop`.
+            let ra = hash_reader(&mut fs, buf_a, &|| {
+                let c = cancelled();
+                if c {
+                    halt();
+                }
+                c
+            });
+            if !matches!(ra, Ok(Some(_))) {
+                halt();
+            }
+            while !dst_side.is_finished() {
+                if cancelled() {
+                    halt();
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let rb = dst_side
+                .join()
+                .unwrap_or_else(|_| Err(io::Error::other("hash thread panicked")));
+            (ra, rb)
+        })
+    } else {
+        let ra = hash_reader(&mut fs, buf_a, cancelled);
+        let rb = match ra {
+            Ok(Some(_)) => hash_reader(&mut fd, buf_b, cancelled),
+            _ => Ok(None),
+        };
+        (ra, rb)
+    };
+    match (ra, rb) {
+        (Err(e), _) => FileVerdict::Error(e),
+        (Ok(None), _) => FileVerdict::Cancelled,
+        (Ok(Some(_)), Err(e)) => FileVerdict::Error(e),
+        (Ok(Some(_)), Ok(None)) => FileVerdict::Cancelled,
+        (Ok(Some(a)), Ok(Some(b))) => {
+            if a == b {
+                FileVerdict::Same
+            } else {
+                FileVerdict::Differ
+            }
+        }
+    }
 }
 
 /// Compare `src` and `dst` (file, dir, or symlink) by content checksum.
@@ -77,7 +247,8 @@ pub fn checksum_compare(
     cancelled: &dyn Fn() -> bool,
 ) -> ChecksumReport {
     let mut report = ChecksumReport { mismatches: Vec::new(), cancelled: false };
-    compare_entry(src, dst, cancelled, &mut report);
+    let mut bufs = Bufs::default();
+    compare_entry(src, dst, cancelled, &mut report, &mut bufs);
     report
 }
 
@@ -86,6 +257,7 @@ fn compare_entry(
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     report: &mut ChecksumReport,
+    bufs: &mut Bufs,
 ) {
     if report.cancelled {
         return;
@@ -105,14 +277,13 @@ fn compare_entry(
             .mismatches
             .push(format!("{}: present only at destination", dst.display())),
         (Kind::File, Kind::File) => {
-            match (hash_file(src, cancelled), hash_file(dst, cancelled)) {
-                (Ok(Some(a)), Ok(Some(b))) => {
-                    if a != b {
-                        report.mismatches.push(format!("{}: checksum mismatch", dst.display()));
-                    }
+            match compare_files(src, dst, cancelled, bufs) {
+                FileVerdict::Same => {}
+                FileVerdict::Differ => {
+                    report.mismatches.push(format!("{}: checksum mismatch", dst.display()))
                 }
-                (Ok(None), _) | (_, Ok(None)) => report.cancelled = true,
-                (Err(e), _) | (_, Err(e)) => report
+                FileVerdict::Cancelled => report.cancelled = true,
+                FileVerdict::Error(e) => report
                     .mismatches
                     .push(format!("{}: couldn't hash ({})", dst.display(), e)),
             }
@@ -127,7 +298,7 @@ fn compare_entry(
                     .push(format!("{}: symlink target differs", dst.display()));
             }
         }
-        (Kind::Dir, Kind::Dir) => compare_dir(src, dst, cancelled, report),
+        (Kind::Dir, Kind::Dir) => compare_dir(src, dst, cancelled, report, bufs),
         // Specials are excluded from hashing; matching special kinds pass.
         (Kind::Special, Kind::Special) => {}
         _ => report.mismatches.push(format!("{}: type differs", dst.display())),
@@ -139,6 +310,7 @@ fn compare_dir(
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     report: &mut ChecksumReport,
+    bufs: &mut Bufs,
 ) {
     let read_names = |dir: &Path| -> Vec<std::ffi::OsString> {
         let mut names: Vec<_> = std::fs::read_dir(dir)
@@ -159,7 +331,7 @@ fn compare_dir(
         }
         match (src_names.get(i), dst_names.get(j)) {
             (Some(a), Some(b)) if a == b => {
-                compare_entry(&src.join(a), &dst.join(a), cancelled, report);
+                compare_entry(&src.join(a), &dst.join(a), cancelled, report, bufs);
                 i += 1;
                 j += 1;
             }
@@ -281,6 +453,55 @@ mod tests {
             count.get() > 5
         };
         let r = checksum_compare(&d.join("a"), &d.join("b"), &cancelled);
+        assert!(r.cancelled);
+        fs::remove_dir_all(&d).ok();
+    }
+
+    fn byte_copy(from: &Path, to: &Path) {
+        // Explicit read/write: std::fs::copy would clone on APFS.
+        fs::write(to, fs::read(from).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn clones_are_proven_identical_without_hashing_byte_copies_are_not() {
+        let d = tmp("clone");
+        let src = d.join("src.bin");
+        fs::write(&src, (0..3_000_000u32).map(|i| (i % 251) as u8).collect::<Vec<_>>()).unwrap();
+        let byte = d.join("byte.bin");
+        byte_copy(&src, &byte);
+        let open = |p: &Path| fs::File::open(p).unwrap();
+        let len = fs::metadata(&src).unwrap().len();
+        assert!(!shares_all_extents(&open(&src), &open(&byte), len), "byte copy owns its blocks");
+
+        let clone = d.join("clone.bin");
+        if crate::core::copier::clone_entry(&src, &clone).is_ok() {
+            // APFS clone: same physical extents end to end.
+            assert!(shares_all_extents(&open(&src), &open(&clone), len));
+            let r = checksum_compare(&src, &clone, &never());
+            assert!(r.mismatches.is_empty(), "{:?}", r.mismatches);
+        }
+        let r = checksum_compare(&src, &byte, &never());
+        assert!(r.mismatches.is_empty(), "{:?}", r.mismatches);
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn large_files_hash_concurrently_and_still_catch_a_late_flip() {
+        let d = tmp("bigflip");
+        let mut data = vec![9u8; 3 * 1024 * 1024 + 17];
+        fs::write(d.join("a.bin"), &data).unwrap();
+        *data.last_mut().unwrap() = 8; // same size, last byte differs
+        fs::write(d.join("b.bin"), &data).unwrap();
+        let r = checksum_compare(&d.join("a.bin"), &d.join("b.bin"), &never());
+        assert_eq!(r.mismatches.len(), 1, "{:?}", r.mismatches);
+        assert!(r.mismatches[0].contains("checksum mismatch"));
+        // Size mismatch short-circuits to the same verdict.
+        fs::write(d.join("c.bin"), &data[..10]).unwrap();
+        let r = checksum_compare(&d.join("a.bin"), &d.join("c.bin"), &never());
+        assert!(r.mismatches[0].contains("checksum mismatch"));
+        // Cancellation reaches the concurrent path too.
+        byte_copy(&d.join("a.bin"), &d.join("e.bin"));
+        let r = checksum_compare(&d.join("a.bin"), &d.join("e.bin"), &|| true);
         assert!(r.cancelled);
         fs::remove_dir_all(&d).ok();
     }

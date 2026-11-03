@@ -23,8 +23,8 @@ use crate::core::journal::{Journal, OpJournalEntry};
 use crate::core::undo::{UndoOp, UndoStack};
 use crate::core::verify::ChecksumReport;
 use crate::core::walker::{
-    self, keep_both_name, staging_name, ConflictKind, MergeCtx, Outcome, ReplaceOutcome,
-    Resolution, Trasher, WalkSink, WarnSeverity,
+    self, keep_both_name_in, staging_name, ConflictKind, DirNames, MergeCtx, Outcome,
+    ReplaceOutcome, Resolution, Trasher, WalkSink, WarnSeverity,
 };
 
 // ---------------------------------------------------------------------------
@@ -266,6 +266,11 @@ struct OpSink {
     bytes: u64,
     entries: u64,
     last_emit: Instant,
+    /// (bytes, entries) carried by the last emitted Progress — lets the
+    /// final flush skip a duplicate event.
+    last_emitted: (u64, u64),
+    /// Path of the most recent progress tick (reused buffer).
+    last_path: PathBuf,
     any_clone: bool,
     errors: Vec<OpError>,
     warnings: Vec<OpWarning>,
@@ -294,6 +299,8 @@ impl OpSink {
             bytes: 0,
             entries: 0,
             last_emit: Instant::now(),
+            last_emitted: (0, 0),
+            last_path: PathBuf::new(),
             any_clone: false,
             errors: Vec::new(),
             warnings: Vec::new(),
@@ -308,6 +315,7 @@ impl OpSink {
 
     fn emit_phase(&mut self, current: &Path, phase: &'static str) {
         self.last_emit = Instant::now();
+        self.last_emitted = (self.bytes, self.entries);
         self.emitter.emit(OpEvent::Progress {
             bytes_done: self.bytes,
             entries_done: self.entries,
@@ -317,16 +325,35 @@ impl OpSink {
         });
     }
 
-    fn emit_progress(&mut self, current: &Path, force: bool) {
-        if force || self.last_emit.elapsed() >= Duration::from_millis(80) {
-            self.last_emit = Instant::now();
-            self.emitter.emit(OpEvent::Progress {
-                bytes_done: self.bytes,
-                entries_done: self.entries,
-                current_path: current.to_string_lossy().into_owned(),
-                cloned: self.any_clone,
-                phase: None,
-            });
+    /// Progress through the 80 ms gate. Skipped ticks remember their path so
+    /// `flush_progress` can always deliver the final counts.
+    fn emit_progress(&mut self, current: &Path) {
+        if self.last_emit.elapsed() >= Duration::from_millis(80) {
+            self.emit_now(current);
+        } else {
+            self.last_path.clear();
+            self.last_path.push(current);
+        }
+    }
+
+    fn emit_now(&mut self, current: &Path) {
+        self.last_emit = Instant::now();
+        self.last_emitted = (self.bytes, self.entries);
+        self.emitter.emit(OpEvent::Progress {
+            bytes_done: self.bytes,
+            entries_done: self.entries,
+            current_path: current.to_string_lossy().into_owned(),
+            cloned: self.any_clone,
+            phase: None,
+        });
+    }
+
+    /// Final progress before Done: emitted only if the last gated event
+    /// doesn't already carry the final counts.
+    fn flush_progress(&mut self) {
+        if self.last_emitted != (self.bytes, self.entries) {
+            let path = std::mem::take(&mut self.last_path);
+            self.emit_now(&path);
         }
     }
 
@@ -381,7 +408,7 @@ impl WalkSink for OpSink {
         if cloned {
             self.any_clone = true;
         }
-        self.emit_progress(current, false);
+        self.emit_progress(current);
     }
 
     fn item_error(&mut self, path: &Path, err: &io::Error) {
@@ -599,6 +626,8 @@ fn run_op_thread(
     }
 
     let tol_ms = walker::mtime_tolerance_ms(&args.dest_dir);
+    // Keep-both naming cache for the destination (scanned at most once).
+    let mut dest_ci = DirNames::new(&args.dest_dir);
     let mut produced: Vec<PathBuf> = Vec::new();
     let mut move_pairs: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut any_replace = false;
@@ -665,7 +694,7 @@ fn run_op_thread(
                 }
                 Resolution::Skip => continue,
                 Resolution::KeepBoth => {
-                    final_name = keep_both_name(&args.dest_dir, &name);
+                    final_name = keep_both_name_in(&mut dest_ci, &name);
                     resolution = None; // proceeds as a fresh transfer
                 }
                 Resolution::Replace | Resolution::Merge => resolution = Some(r),
@@ -740,6 +769,7 @@ fn run_op_thread(
 
         if let Ok(Some(dest_path)) = item_result {
             dest_names.insert(final_name.to_lowercase(), final_name.clone());
+            dest_ci.insert(&final_name);
             journal_entry.completed.push(dest_path.to_string_lossy().into_owned());
             let _ = engine.journal.write(&journal_entry);
             produced.push(dest_path.clone());
@@ -782,10 +812,11 @@ fn run_op_thread(
     } else {
         "partial"
     };
+    sink.flush_progress();
     emitter.emit(OpEvent::Done {
         status,
-        errors: sink.errors.clone(),
-        warnings: sink.warnings.clone(),
+        errors: std::mem::take(&mut sink.errors),
+        warnings: std::mem::take(&mut sink.warnings),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         skipped: (sink.skipped > 0).then_some(sink.skipped),
         undoable,
@@ -807,8 +838,10 @@ fn transfer_toplevel(
         // Rung 1: atomic rename. Genuinely instant — the headline win.
         match copier::rename(source, dest) {
             Ok(()) => {
+                // Gated like every other tick: a 10k-item same-volume move
+                // must not send 10k Progress events (the final count is
+                // flushed before Done).
                 sink.progress(0, 1, source, true);
-                sink.emit_progress(source, true);
                 return Ok(true);
             }
             Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
@@ -992,7 +1025,9 @@ fn replace_item(
             let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
             let rescue = walker::rescue_leftover(&leftover, &args.op_id, &name);
             pop_staging(journal_entry, &stage);
-            let _ = engine.journal.write(journal_entry);
+            // Durable either way: if the rescue failed, the stage path still
+            // holds the old original and must not be deleted by recovery.
+            let _ = engine.journal.write_sync(journal_entry);
             if args.kind == OpKind::Move {
                 walker::remove_tree_best_effort(source);
             }
@@ -1097,6 +1132,9 @@ fn run_duplicate_thread(
         paths.len(),
     );
 
+    // Per-parent naming caches: duplicating 2k items in one folder must not
+    // rescan it per candidate name.
+    let mut dup_names: HashMap<PathBuf, DirNames> = HashMap::new();
     let mut produced = Vec::new();
     let mut cancelled = false;
     for source in &paths {
@@ -1110,7 +1148,10 @@ fn run_duplicate_thread(
         let Some(name) = source.file_name() else {
             continue;
         };
-        let dup = walker::duplicate_name(parent, &name.to_string_lossy());
+        let names = dup_names
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| DirNames::new(parent));
+        let dup = walker::duplicate_name_in(names, &name.to_string_lossy());
         let dest = parent.join(&dup);
         let stage = parent.join(staging_name(&dup, &op_id));
         walker::remove_tree_best_effort(&stage);
@@ -1134,6 +1175,9 @@ fn run_duplicate_thread(
                     pop_staging(&mut journal_entry, &stage);
                     journal_entry.completed.push(dest.to_string_lossy().into_owned());
                     let _ = engine.journal.write(&journal_entry);
+                    if let Some(names) = dup_names.get_mut(parent) {
+                        names.insert(&dup);
+                    }
                     produced.push(dest);
                 }
                 Err(e) => {
@@ -1174,10 +1218,11 @@ fn run_duplicate_thread(
     } else {
         "partial"
     };
+    sink.flush_progress();
     emitter.emit(OpEvent::Done {
         status,
-        errors: sink.errors.clone(),
-        warnings: sink.warnings.clone(),
+        errors: std::mem::take(&mut sink.errors),
+        warnings: std::mem::take(&mut sink.warnings),
         produced: produced.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         skipped: (sink.skipped > 0).then_some(sink.skipped),
         undoable: !produced.is_empty(),
