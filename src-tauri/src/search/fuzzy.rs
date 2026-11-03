@@ -255,6 +255,9 @@ pub struct FuzzyIndex {
     /// An engine op / direct command touched a path under this root since the
     /// build — `fuzzy_warm` rebuilds instead of reusing.
     pub stale: AtomicBool,
+    /// This exact content is what the snapshot file on disk holds (restored
+    /// from it, or saved to it) — lets an unchanged refresh skip a rewrite.
+    pub persisted: AtomicBool,
     pub config_hash: u64,
     pub built_at_ms: AtomicU64,
     /// Live-query install order; assigned on the IPC thread so it follows
@@ -282,6 +285,7 @@ impl FuzzyIndex {
             indexed: AtomicU64::new(0),
             capped: AtomicBool::new(false),
             stale: AtomicBool::new(false),
+            persisted: AtomicBool::new(false),
             config_hash,
             built_at_ms: AtomicU64::new(now_ms),
             query_seq: AtomicU64::new(0),
@@ -318,6 +322,28 @@ impl FuzzyIndex {
 
     pub fn snapshot(&self) -> Vec<Arc<Block>> {
         self.blocks.read().unwrap().clone()
+    }
+
+    /// Order-independent digest of the indexed set (entry count, capped
+    /// flag, and a wrapping sum of per-entry SipHashes of (rel, is_dir)).
+    /// The parallel walk emits entries in nondeterministic order, so an
+    /// unchanged tree must compare equal regardless of order.
+    pub fn content_fingerprint(&self) -> (u64, bool, u64) {
+        let blocks = self.snapshot();
+        let (count, sum) = blocks
+            .par_iter()
+            .map(|block| {
+                let mut sum = 0u64;
+                for item in block.iter() {
+                    let mut h = DefaultHasher::new();
+                    item.rel.hash(&mut h);
+                    item.is_dir.hash(&mut h);
+                    sum = sum.wrapping_add(h.finish());
+                }
+                (block.len() as u64, sum)
+            })
+            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1.wrapping_add(b.1)));
+        (count, self.capped.load(Ordering::SeqCst), sum)
     }
 
     pub fn status(&self) -> FuzzyIndexStatus {
@@ -449,9 +475,35 @@ impl Excludes {
         Excludes { prefixes, components }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.prefixes.is_empty() && self.components.is_empty()
+    }
+
+    /// Whether any exclude needs the root-relative path (not just the name).
+    pub fn has_prefixes(&self) -> bool {
+        !self.prefixes.is_empty()
+    }
+
+    /// Component-exclude check alone.
+    pub fn excluded_name(&self, name: &str) -> bool {
+        self.components.iter().any(|c| c == name)
+    }
+
+    /// Names of `rel_dir`'s direct children that a prefix exclude names
+    /// exactly (`rel_dir` = "Library" → "Caches" for "Library/Caches").
+    pub fn prefix_children_of(&self, rel_dir: &str) -> Vec<&str> {
+        self.prefixes
+            .iter()
+            .filter_map(|p| {
+                let rest = p.strip_prefix(rel_dir)?.strip_prefix('/')?;
+                (!rest.is_empty() && !rest.contains('/')).then_some(rest)
+            })
+            .collect()
+    }
+
     /// `rel` is the candidate's root-relative path, `name` its final component.
     pub fn excluded(&self, rel: &str, name: &str) -> bool {
-        if self.components.iter().any(|c| c == name) {
+        if self.excluded_name(name) {
             return true;
         }
         self.prefixes.iter().any(|p| {
@@ -491,17 +543,28 @@ pub fn build_index(
         .parallelism(jwalk::Parallelism::RayonNewPool(walk_threads()))
         .process_read_dir(move |_depth, dir_path, _state, children| {
             // Prune excluded subtrees here, not post-hoc.
-            let rel_dir = dir_path.strip_prefix(&root_for_hook).ok();
+            if excludes_for_hook.is_empty() {
+                return;
+            }
+            // A prefix exclude can only match a DIRECT child here: one naming
+            // this dir or an ancestor pruned it before it was ever read. So
+            // resolve prefixes to child names once per dir and never build a
+            // rel-path String per child.
+            let rel_dir = dir_path
+                .strip_prefix(&root_for_hook)
+                .ok()
+                .map(|d| d.to_string_lossy());
+            let prefix_names = match rel_dir.as_deref() {
+                Some(d) if !d.is_empty() && excludes_for_hook.has_prefixes() => {
+                    excludes_for_hook.prefix_children_of(d)
+                }
+                _ => Vec::new(),
+            };
             children.retain(|entry| {
                 let Ok(entry) = entry else { return true };
                 let name = entry.file_name().to_string_lossy();
-                let rel = match rel_dir {
-                    Some(d) if !d.as_os_str().is_empty() => {
-                        format!("{}/{}", d.to_string_lossy(), name)
-                    }
-                    _ => name.to_string(),
-                };
-                !excludes_for_hook.excluded(&rel, &name)
+                !(excludes_for_hook.excluded_name(&name)
+                    || prefix_names.iter().any(|n| *n == name))
             });
         });
 
@@ -790,6 +853,13 @@ fn scan_blocks(
                         cancelled.store(true, Ordering::Relaxed);
                         return Vec::new();
                     }
+                    // Kind is a free check on the indexed item — reject before
+                    // paying for the fuzzy score.
+                    if let Some(kind) = &filters.kind {
+                        if !kind_matches(kind, item) {
+                            continue;
+                        }
+                    }
                     let score = match pattern {
                         Some(p) => {
                             let hay = Utf32Str::new(&item.rel, &mut buf);
@@ -801,7 +871,7 @@ fn scan_blocks(
                         // Empty query: rank shallow/short paths first.
                         None => u32::MAX - item.rel.len().min(65_535) as u32,
                     };
-                    if !filter_matches(index, item, filters, &stat_budget, filters_capped) {
+                    if !stat_filters_match(index, item, filters, &stat_budget, filters_capped) {
                         continue;
                     }
                     local.push((score, i as u32));
@@ -1021,33 +1091,29 @@ fn kind_matches(kind: &str, item: &IndexedPath) -> bool {
     if item.is_dir {
         return false;
     }
-    let ext = ext_of(item.name()).to_ascii_lowercase();
+    // ASCII case-insensitive compares: no per-item lowercase allocation.
+    let ext = ext_of(item.name());
+    let any = |exts: &[&str]| exts.iter().any(|e| e.eq_ignore_ascii_case(ext));
     match kind {
-        "image" => IMAGE_EXTS.contains(&ext.as_str()),
-        "video" => VIDEO_EXTS.contains(&ext.as_str()),
-        "audio" => AUDIO_EXTS.contains(&ext.as_str()),
-        "pdf" => ext == "pdf",
-        "doc" => DOC_EXTS.contains(&ext.as_str()),
-        "archive" => ARCHIVE_EXTS.contains(&ext.as_str()),
+        "image" => any(IMAGE_EXTS),
+        "video" => any(VIDEO_EXTS),
+        "audio" => any(AUDIO_EXTS),
+        "pdf" => ext.eq_ignore_ascii_case("pdf"),
+        "doc" => any(DOC_EXTS),
+        "archive" => any(ARCHIVE_EXTS),
         _ => true,
     }
 }
 
-fn filter_matches(
+/// The date/size filters (the kind filter runs before scoring, in
+/// `scan_blocks`).
+fn stat_filters_match(
     index: &FuzzyIndex,
     item: &IndexedPath,
     filters: &FuzzyFilters,
     stat_budget: &AtomicUsize,
     filters_capped: &AtomicBool,
 ) -> bool {
-    if filters.is_empty() {
-        return true;
-    }
-    if let Some(kind) = &filters.kind {
-        if !kind_matches(kind, item) {
-            return false;
-        }
-    }
     if !filters.needs_stat() {
         return true;
     }
@@ -1332,6 +1398,25 @@ mod tests {
         assert!(!ex.excluded("LibraryX/Caches", "Caches"), "prefix must stop at a component boundary");
         assert!(!ex.excluded("src/git", "git"));
         assert!(ex.excluded("a/.git", ".git"));
+        // The walk hook's per-dir resolution of prefixes to child names.
+        assert_eq!(ex.prefix_children_of("Library"), vec!["Caches"]);
+        assert!(ex.prefix_children_of("LibraryX").is_empty());
+        assert!(ex.prefix_children_of("Library/Caches").is_empty());
+        assert!(ex.prefix_children_of("Lib").is_empty());
+    }
+
+    #[test]
+    fn kind_match_is_ascii_case_insensitive() {
+        let item = |rel: &str, is_dir: bool| IndexedPath {
+            rel: rel.into(),
+            name_len: rel.rsplit('/').next().unwrap().len() as u16,
+            is_dir,
+        };
+        assert!(kind_matches("image", &item("a/Photo.JPG", false)));
+        assert!(kind_matches("pdf", &item("Tax.PdF", false)));
+        assert!(!kind_matches("pdf", &item("pdf", false)), "no extension");
+        assert!(!kind_matches("image", &item("x.png", true)), "dirs never match file kinds");
+        assert!(kind_matches("folder", &item("x.png", true)));
     }
 
     #[test]
