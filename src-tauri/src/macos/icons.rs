@@ -20,6 +20,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
+use crate::concurrency::SingleFlight;
 use crate::core::entry::{ext_of, has_custom_icon, is_package_ext};
 
 pub type IconCache = DashMap<(String, u32), Arc<Vec<u8>>>;
@@ -82,13 +83,45 @@ fn cached_key(path: &Path) -> String {
 
 /// Render the icon PNG. MUST run on the main thread.
 pub fn icon_png_main_thread(path: &Path, size: u32) -> Option<Vec<u8>> {
-    let ws = unsafe { NSWorkspace::sharedWorkspace() };
-    let image = unsafe { ws.iconForFile(&NSString::from_str(&path.to_string_lossy())) };
-    render_image_png(&image, size)
+    encode_png(&icon_bitmap_main_thread(path, size)?.0)
+}
+
+/// A rasterized bitmap handed from the main thread to a worker for PNG
+/// encoding. The main thread keeps no reference once drawing finished, so
+/// the worker has exclusive use of it (the Quick Look path already encodes
+/// NSBitmapImageReps off-main the same way).
+pub struct DrawnBitmap(Retained<NSBitmapImageRep>);
+// SAFETY: exclusively owned after the main-thread draw; only read (encoded)
+// on the receiving thread; refcounting is atomic.
+unsafe impl Send for DrawnBitmap {}
+
+/// `iconForFile:` + draw into a bitmap — the only part that needs the main
+/// thread. MUST run on the main thread.
+pub fn icon_bitmap_main_thread(path: &Path, size: u32) -> Option<DrawnBitmap> {
+    objc2::rc::autoreleasepool(|_| {
+        let ws = unsafe { NSWorkspace::sharedWorkspace() };
+        let image = unsafe { ws.iconForFile(&NSString::from_str(&path.to_string_lossy())) };
+        draw_bitmap(&image, size).map(DrawnBitmap)
+    })
+}
+
+/// PNG-encode a drawn bitmap (any thread, exclusive access).
+pub fn encode_png(rep: &NSBitmapImageRep) -> Option<Vec<u8>> {
+    let props = NSDictionary::new();
+    let data = unsafe {
+        rep.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &props)
+    }?;
+    Some(data.to_vec())
 }
 
 /// Rasterize an NSImage to a square PNG. MUST run on the main thread.
 pub fn render_image_png(image: &NSImage, size: u32) -> Option<Vec<u8>> {
+    let rep = draw_bitmap(image, size)?;
+    encode_png(&rep)
+}
+
+/// Draw an NSImage into a fresh square bitmap. MUST run on the main thread.
+fn draw_bitmap(image: &NSImage, size: u32) -> Option<Retained<NSBitmapImageRep>> {
     unsafe {
         let rep = NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
             NSBitmapImageRep::alloc(),
@@ -114,17 +147,52 @@ pub fn render_image_png(image: &NSImage, size: u32) -> Option<Vec<u8>> {
         );
         ctx.flushGraphics();
         NSGraphicsContext::restoreGraphicsState_class();
-
-        let props = NSDictionary::new();
-        let data = rep.representationUsingType_properties(
-            objc2_app_kit::NSBitmapImageFileType::PNG,
-            &props,
-        )?;
-        Some(data.to_vec())
+        Some(rep)
     }
 }
 
-/// Cached icon lookup; renders on the main thread on miss.
+pub type IconFlights = SingleFlight<(String, u32), Arc<Vec<u8>>>;
+
+fn flights() -> &'static IconFlights {
+    static FLIGHTS: OnceLock<IconFlights> = OnceLock::new();
+    FLIGHTS.get_or_init(IconFlights::default)
+}
+
+/// Cache → single-flight → render. Concurrent misses for the same key (a
+/// screenful of `.txt` rows) wait for ONE render instead of queueing one
+/// main-thread trip each. Renderer-agnostic so it can be tested headless.
+pub fn cached_or_render(
+    cache: &IconCache,
+    flights: &IconFlights,
+    key: (String, u32),
+    render: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<Arc<Vec<u8>>> {
+    if let Some(hit) = cache.get(&key) {
+        return Some(hit.clone());
+    }
+    flights.run(key.clone(), || {
+        // A flight that finished just before ours started already filled it.
+        if let Some(hit) = cache.get(&key) {
+            return Some(hit.clone());
+        }
+        let arc = Arc::new(render()?);
+        // Bound the cache: icons are small, 4096 entries ≈ a few MB. Evict a
+        // quarter (arbitrary victims) instead of clearing — a full clear made
+        // every visible icon re-rasterize on the main thread at once.
+        if cache.len() > 4096 {
+            let victims: Vec<(String, u32)> =
+                cache.iter().take(1024).map(|e| e.key().clone()).collect();
+            for k in victims {
+                cache.remove(&k);
+            }
+        }
+        cache.insert(key, arc.clone());
+        Some(arc)
+    })
+}
+
+/// Cached icon lookup; on miss draws on the main thread and PNG-encodes on
+/// the calling (worker) thread.
 pub fn icon_png<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     cache: &IconCache,
@@ -133,24 +201,12 @@ pub fn icon_png<R: tauri::Runtime>(
 ) -> Option<Arc<Vec<u8>>> {
     let size = size.clamp(8, 1024);
     let key = (cached_key(path), size);
-    if let Some(hit) = cache.get(&key) {
-        return Some(hit.clone());
-    }
-    let p = path.to_path_buf();
-    let png = crate::macos::main_thread::on_main(app, move || icon_png_main_thread(&p, size))?;
-    let arc = Arc::new(png);
-    // Bound the cache: icons are small, 4096 entries ≈ a few MB. Evict a
-    // quarter (arbitrary victims) instead of clearing — a full clear made
-    // every visible icon re-rasterize on the main thread at once.
-    if cache.len() > 4096 {
-        let victims: Vec<(String, u32)> =
-            cache.iter().take(1024).map(|e| e.key().clone()).collect();
-        for k in victims {
-            cache.remove(&k);
-        }
-    }
-    cache.insert(key, arc.clone());
-    Some(arc)
+    cached_or_render(cache, flights(), key, || {
+        let p = path.to_path_buf();
+        let bitmap =
+            crate::macos::main_thread::on_main(app, move || icon_bitmap_main_thread(&p, size))?;
+        encode_png(&bitmap.0)
+    })
 }
 
 /// Extensions whose type icons ⌘P result bursts most commonly need.
@@ -200,4 +256,52 @@ pub fn prewarm_common<R: tauri::Runtime>(app: &tauri::AppHandle<R>, cache: &Icon
 #[allow(dead_code)]
 fn _retain_hint(i: Retained<NSImage>) -> Retained<NSImage> {
     i
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn concurrent_misses_for_one_key_render_once() {
+        let cache: Arc<IconCache> = Arc::new(DashMap::new());
+        let flights: Arc<IconFlights> = Arc::new(IconFlights::default());
+        let renders = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(24));
+        let handles: Vec<_> = (0..24)
+            .map(|i| {
+                let (cache, flights, renders, barrier) =
+                    (cache.clone(), flights.clone(), renders.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    // Two distinct keys, 12 requesters each.
+                    let key = (if i % 2 == 0 { "ext:txt" } else { "ext:pdf" }.to_string(), 32);
+                    cached_or_render(&cache, &flights, key, || {
+                        renders.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        Some(vec![1, 2, 3])
+                    })
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().as_deref(), Some(&vec![1, 2, 3]));
+        }
+        assert_eq!(renders.load(Ordering::SeqCst), 2, "one render per key");
+        // Later requests are plain cache hits.
+        let hit = cached_or_render(&cache, &flights, ("ext:txt".into(), 32), || {
+            unreachable!("cached")
+        });
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn failed_render_is_not_cached() {
+        let cache = IconCache::new();
+        let flights = IconFlights::default();
+        assert!(cached_or_render(&cache, &flights, ("k".into(), 16), || None).is_none());
+        assert!(cache.is_empty());
+        assert!(cached_or_render(&cache, &flights, ("k".into(), 16), || Some(vec![9])).is_some());
+    }
 }

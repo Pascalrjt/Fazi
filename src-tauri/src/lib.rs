@@ -3,6 +3,7 @@
 //! presentation, selection, and input.
 
 pub mod commands;
+pub mod concurrency;
 pub mod core;
 pub mod error;
 pub mod macos;
@@ -137,19 +138,19 @@ pub fn run() {
         })
         .register_asynchronous_uri_scheme_protocol("icon", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
+            protocols::icon_pool().execute(move || {
                 responder.respond(protocols::handle_icon(&app, request));
             });
         })
         .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
+            protocols::thumb_pool().execute(move || {
                 responder.respond(protocols::handle_thumb(&app, request));
             });
         })
         .register_asynchronous_uri_scheme_protocol("preview", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
+            protocols::preview_pool().execute(move || {
                 responder.respond(protocols::handle_preview(&app, request));
             });
         })

@@ -10,9 +10,11 @@ use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager};
 
+use crate::commands::blocking;
 use crate::core::cleanup::{self, CleanupOptions, FolderReport};
+use crate::error::Result;
 use crate::core::undo::{move_back, validate_absent, validate_exists};
 use crate::macos::trash::trash_path;
 use crate::state::AppState;
@@ -69,13 +71,19 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-#[tauri::command(async)]
-pub fn cleanup_scan(opts: CleanupOptions) -> Vec<FolderReport> {
-    cleanup::scan(&opts)
+// Async + blocking pool: scans and trash moves are disk work, and a sync
+// `(async)` command would run them on the shared async workers.
+#[tauri::command]
+pub async fn cleanup_scan(opts: CleanupOptions) -> Result<Vec<FolderReport>> {
+    blocking(move || cleanup::scan(&opts)).await
 }
 
-#[tauri::command(async)]
-pub fn cleanup_sweep(state: State<'_, AppState>, opts: CleanupOptions) -> SweepResult {
+#[tauri::command]
+pub async fn cleanup_sweep(app: AppHandle, opts: CleanupOptions) -> Result<SweepResult> {
+    blocking(move || sweep(&app.state::<AppState>(), opts)).await
+}
+
+fn sweep(state: &AppState, opts: CleanupOptions) -> SweepResult {
     let reports = cleanup::scan(&opts);
     let mut swept = Vec::new();
     let mut errors = Vec::new();
@@ -110,8 +118,12 @@ pub fn cleanup_sweep(state: State<'_, AppState>, opts: CleanupOptions) -> SweepR
 
 /// Put swept items back where they were. Each item restores independently;
 /// one whose name was reused meanwhile stays in the Trash and is reported.
-#[tauri::command(async)]
-pub fn cleanup_restore(state: State<'_, AppState>, pairs: Vec<RestorePair>) -> RestoreResult {
+#[tauri::command]
+pub async fn cleanup_restore(app: AppHandle, pairs: Vec<RestorePair>) -> Result<RestoreResult> {
+    blocking(move || restore(&app.state::<AppState>(), pairs)).await
+}
+
+fn restore(state: &AppState, pairs: Vec<RestorePair>) -> RestoreResult {
     let mut restored = Vec::new();
     let mut errors = Vec::new();
     for pair in pairs {

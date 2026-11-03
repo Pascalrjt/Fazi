@@ -36,6 +36,19 @@ pub fn read_tags(path: &Path) -> Vec<FinderTag> {
     parse_tags(&raw)
 }
 
+/// `read_tags` for the hydration hot path: one raw `getxattr` into a stack
+/// buffer (the common no-tags case is a single failing syscall), falling back
+/// to the allocating read only for unusually large tag lists.
+pub fn read_tags_c(cpath: &std::ffi::CStr, path: &Path) -> Vec<FinderTag> {
+    const NAME: &std::ffi::CStr = c"com.apple.metadata:_kMDItemUserTags";
+    let mut buf = [0u8; 1024];
+    match crate::core::entry::getxattr_into(cpath, NAME, &mut buf) {
+        Ok(n) => parse_tags(&buf[..n]),
+        Err(e) if e == libc::ERANGE => read_tags(path),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub fn parse_tags(raw: &[u8]) -> Vec<FinderTag> {
     let Ok(items) = plist::from_reader::<_, Vec<String>>(Cursor::new(raw)) else {
         return Vec::new();
@@ -97,6 +110,26 @@ mod tests {
         assert_eq!(read_tags(&f), Vec::new());
         assert!(xattr::get(&f, TAGS_XATTR).unwrap().is_none());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn raw_read_matches_and_falls_back_for_large_lists() {
+        let dir = std::env::temp_dir().join(format!("fazi-tags-raw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("many.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let c = std::ffi::CString::new(f.to_string_lossy().as_bytes()).unwrap();
+        assert!(read_tags_c(&c, &f).is_empty());
+        // > 1 KiB of plist: exercises the ERANGE fallback.
+        let tags: Vec<FinderTag> = (0..120)
+            .map(|i| FinderTag { name: format!("Project tag number {i}"), color: (i % 8) as u8 })
+            .collect();
+        write_tags(&f, &tags).unwrap();
+        assert!(xattr::get(&f, TAGS_XATTR).unwrap().unwrap().len() > 1024);
+        assert_eq!(read_tags_c(&c, &f), tags);
+        write_tags(&f, &tags[..2]).unwrap();
+        assert_eq!(read_tags_c(&c, &f), tags[..2].to_vec());
         std::fs::remove_dir_all(&dir).ok();
     }
 

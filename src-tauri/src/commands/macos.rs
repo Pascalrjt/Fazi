@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
+use crate::commands::blocking;
 use crate::core::tags::{read_tags, write_tags, FinderTag};
 use crate::error::{Error, Result};
 use crate::macos::main_thread::on_main;
@@ -156,14 +157,19 @@ pub fn quicklook_panel(paths: Vec<String>) -> Result<()> {
 // Tags & Get Info
 // ---------------------------------------------------------------------------
 
-#[tauri::command(async)]
-pub fn get_tags(path: String) -> Vec<FinderTag> {
-    read_tags(Path::new(&path))
+// Disk-touching commands below are async fns whose bodies run on the
+// blocking pool: `#[tauri::command(async)]` on a sync fn runs the body
+// directly on a shared async worker, where an xattr read or statfs on a
+// stalled mount blocks every other async command.
+
+#[tauri::command]
+pub async fn get_tags(path: String) -> Result<Vec<FinderTag>> {
+    blocking(move || read_tags(Path::new(&path))).await
 }
 
-#[tauri::command(async)]
-pub fn set_tags(path: String, tags: Vec<FinderTag>) -> Result<()> {
-    write_tags(Path::new(&path), &tags).map_err(Error::Io)
+#[tauri::command]
+pub async fn set_tags(path: String, tags: Vec<FinderTag>) -> Result<()> {
+    blocking(move || write_tags(Path::new(&path), &tags).map_err(Error::Io)).await?
 }
 
 #[derive(Serialize)]
@@ -198,16 +204,33 @@ fn group_name(gid: u32) -> String {
     }
 }
 
-#[tauri::command(async)]
-pub fn get_info(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<GetInfoResult> {
+/// Get Info icon tokens rotate through a few owner generations: each call
+/// mints under a fresh "info:N" and drops "info:N-KEEP", so the table stays
+/// bounded over a long session while recently opened panels keep their icon.
+const INFO_KEEP: u64 = 4;
+
+fn info_owner(state: &AppState) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static GEN: AtomicU64 = AtomicU64::new(0);
+    let gen = GEN.fetch_add(1, Ordering::Relaxed);
+    if gen >= INFO_KEEP {
+        state.tokens.drop_owner(&format!("info:{}", gen - INFO_KEEP));
+    }
+    format!("info:{gen}")
+}
+
+#[tauri::command]
+pub async fn get_info(app: AppHandle, path: String) -> Result<GetInfoResult> {
+    blocking(move || get_info_blocking(&app, &path)).await?
+}
+
+fn get_info_blocking(app: &AppHandle, path: &str) -> Result<GetInfoResult> {
     use std::os::unix::fs::MetadataExt;
-    let p = PathBuf::from(&path);
+    let state = app.state::<AppState>();
+    let p = PathBuf::from(path);
     let meta = p.symlink_metadata().map_err(Error::Io)?;
-    let entry = crate::commands::listing::build_entry(&app, &state, &p, "info")
+    let owner = info_owner(&state);
+    let entry = crate::commands::listing::build_entry_with_meta(app, &state, &p, &meta, &owner)
         .ok_or_else(|| Error::msg("item no longer exists"))?;
 
     let where_from: Option<Vec<String>> =
@@ -289,9 +312,9 @@ pub fn dir_size(state: State<'_, AppState>, path: String, channel: Channel<DirSi
 
 /// Worker thread, not main: reading each volume's capacity is a statfs that
 /// can block for a long time on an unresponsive network mount.
-#[tauri::command(async)]
-pub fn list_volumes() -> Vec<volumes::Volume> {
-    volumes::list_volumes()
+#[tauri::command]
+pub async fn list_volumes() -> Result<Vec<volumes::Volume>> {
+    blocking(volumes::list_volumes).await
 }
 
 /// Upper bound on waiting for Fazi's own readers on the volume to stop.
@@ -305,13 +328,17 @@ const EJECT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// ⌘P index walks, refuse new readers, wait for in-flight ones to finish),
 /// then hands off to `diskutil`, which names the process when the system
 /// refuses.
-#[tauri::command(async)]
-pub fn eject(state: State<'_, AppState>, path: String) -> Result<()> {
-    let root = PathBuf::from(&path);
+#[tauri::command]
+pub async fn eject(app: AppHandle, path: String) -> Result<()> {
+    blocking(move || eject_blocking(&app.state::<AppState>(), &path)).await?
+}
+
+fn eject_blocking(state: &AppState, path: &str) -> Result<()> {
+    let root = PathBuf::from(path);
     let Some(_closed) = state.volume_gate.begin_eject(&root) else {
         return Err(Error::msg("it's already being ejected"));
     };
-    crate::commands::fuzzy::release_volume(&state, &root);
+    crate::commands::fuzzy::release_volume(state, &root);
     // Best effort: a reader still draining shows up as Fazi dissenting,
     // which the eject retries once.
     state.volume_gate.wait_drained(&root, EJECT_DRAIN_TIMEOUT);
@@ -352,9 +379,9 @@ pub fn default_folders() -> DefaultFolders {
 // Full Disk Access
 // ---------------------------------------------------------------------------
 
-#[tauri::command(async)]
-pub fn check_full_disk_access() -> bool {
-    workspace::probe_full_disk_access()
+#[tauri::command]
+pub async fn check_full_disk_access() -> Result<bool> {
+    blocking(workspace::probe_full_disk_access).await
 }
 
 #[tauri::command]
@@ -463,10 +490,14 @@ pub struct TextPreview {
     pub total_bytes: u64,
 }
 
-#[tauri::command(async)]
-pub fn read_text_head(path: String, max_bytes: u64) -> Result<TextPreview> {
+#[tauri::command]
+pub async fn read_text_head(path: String, max_bytes: u64) -> Result<TextPreview> {
+    blocking(move || read_text_head_blocking(&path, max_bytes)).await?
+}
+
+fn read_text_head_blocking(path: &str, max_bytes: u64) -> Result<TextPreview> {
     let max = max_bytes.clamp(1, 4 * 1024 * 1024) as usize;
-    let mut file = std::fs::File::open(&path).map_err(Error::Io)?;
+    let mut file = std::fs::File::open(path).map_err(Error::Io)?;
     let total = file.metadata().map_err(Error::Io)?.len();
     let mut buf = vec![0u8; max.min(total as usize)];
     file.read_exact(&mut buf).map_err(Error::Io)?;

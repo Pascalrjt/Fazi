@@ -8,11 +8,32 @@
 use std::borrow::Cow;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::concurrency::WorkerPool;
 use crate::state::AppState;
+
+/// Bounded worker pools for the protocol handlers (a thread per request
+/// spawned hundreds of threads on a fast scroll). Icon misses mostly wait on
+/// the main thread; thumbnails have more workers than Quick Look permits so
+/// disk-cache hits and icon fallbacks keep flowing while QL renders.
+pub fn icon_pool() -> &'static WorkerPool {
+    static POOL: OnceLock<WorkerPool> = OnceLock::new();
+    POOL.get_or_init(|| WorkerPool::new("fazi-icon", 4))
+}
+
+pub fn thumb_pool() -> &'static WorkerPool {
+    static POOL: OnceLock<WorkerPool> = OnceLock::new();
+    POOL.get_or_init(|| WorkerPool::new("fazi-thumb", 6))
+}
+
+pub fn preview_pool() -> &'static WorkerPool {
+    static POOL: OnceLock<WorkerPool> = OnceLock::new();
+    POOL.get_or_init(|| WorkerPool::new("fazi-preview", 3))
+}
 
 fn not_found() -> Response<Vec<u8>> {
     Response::builder()
