@@ -60,46 +60,79 @@ fn cache_key(path: &Path) -> String {
     format!("ext:{}", ext)
 }
 
-/// Per-path keys (custom icons, apps, packages, special folders) render
-/// from the item itself, so they carry the content revision: an edited item
-/// misses instead of serving the PNG drawn before the change. Extension- and
-/// generic-shared keys don't depend on any one file's content.
-fn revisioned_key(key: String, rev: &str) -> String {
-    let per_path = key.starts_with("path:") || (key.starts_with("dir:") && key != "dir:generic");
-    if per_path && !rev.is_empty() {
-        format!("{key}@{rev}")
-    } else {
-        key
+/// What an item looked like on disk when it was classified: one lstat.
+/// Writing FinderInfo (a custom icon flag) or `Icon\r` bumps ctime/mtime,
+/// replacing the item changes the inode — so any change that can alter its
+/// icon changes this identity, whichever token or listing asks.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Identity {
+    ino: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+fn identity_of(path: &Path) -> Option<Identity> {
+    use std::os::unix::fs::MetadataExt;
+    let m = path.symlink_metadata().ok()?;
+    Some(Identity {
+        ino: m.ino(),
+        size: m.size(),
+        mtime: (m.mtime(), m.mtime_nsec()),
+        ctime: (m.ctime(), m.ctime_nsec()),
+    })
+}
+
+/// Per-path keys (custom icons, apps, packages) render from the item
+/// itself, so they carry its identity: a changed item misses instead of
+/// serving the PNG drawn before the change. Extension-, generic- and
+/// special-folder keys don't depend on the item's content.
+fn identity_key(key: String, id: Option<Identity>) -> String {
+    match id {
+        Some(id) if key.starts_with("path:") => {
+            use std::hash::{BuildHasher, BuildHasherDefault};
+            let h = BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default()
+                .hash_one(id);
+            format!("{key}@{h:016x}")
+        }
+        _ => key,
     }
 }
 
-type KeyMemo = DashMap<PathBuf, (String, String)>;
+type KeyMemo = DashMap<PathBuf, (Option<Identity>, String)>;
 
 /// Path → classification memo: `cache_key` costs a stat + FinderInfo xattr
 /// per request, and result bursts repeat the same paths (refine ticks,
-/// scrolling). Entries remember the content revision they were classified
-/// at (`rev`, from the URL's `v=`), so a changed item — e.g. one that just
-/// gained a custom icon — is re-classified and re-rendered.
-fn cached_key_in(keys: &KeyMemo, path: &Path, rev: &str, classify: impl FnOnce(&Path) -> String) -> String {
+/// scrolling). Entries are validated against the item's current identity
+/// (one lstat), so an item that changed — e.g. just gained a custom icon —
+/// is re-classified and re-rendered, independent of URL revisions or token
+/// generations.
+fn cached_key_in(
+    keys: &KeyMemo,
+    path: &Path,
+    identity: impl FnOnce(&Path) -> Option<Identity>,
+    classify: impl FnOnce(&Path) -> String,
+) -> String {
+    let id = identity(path);
     if let Some(k) = keys.get(path) {
-        if k.0 == rev {
+        if id.is_some() && k.0 == id {
             return k.1.clone();
         }
     }
-    let key = revisioned_key(classify(path), rev);
+    let key = identity_key(classify(path), id);
     if keys.len() > 16_384 {
         let victims: Vec<PathBuf> = keys.iter().take(4096).map(|e| e.key().clone()).collect();
         for v in victims {
             keys.remove(&v);
         }
     }
-    keys.insert(path.to_path_buf(), (rev.to_string(), key.clone()));
+    keys.insert(path.to_path_buf(), (id, key.clone()));
     key
 }
 
-fn cached_key(path: &Path, rev: &str) -> String {
+fn cached_key(path: &Path) -> String {
     static KEYS: OnceLock<KeyMemo> = OnceLock::new();
-    cached_key_in(KEYS.get_or_init(DashMap::new), path, rev, cache_key)
+    cached_key_in(KEYS.get_or_init(DashMap::new), path, identity_of, cache_key)
 }
 
 /// Render the icon PNG. MUST run on the main thread.
@@ -219,10 +252,9 @@ pub fn icon_png<R: tauri::Runtime>(
     cache: &IconCache,
     path: &Path,
     size: u32,
-    rev: &str,
 ) -> Option<Arc<Vec<u8>>> {
     let size = size.clamp(8, 1024);
-    let key = (cached_key(path, rev), size);
+    let key = (cached_key(path), size);
     cached_or_render(cache, flights(), key, || {
         let p = path.to_path_buf();
         let bitmap =
@@ -267,7 +299,7 @@ pub fn prewarm_common<R: tauri::Runtime>(app: &tauri::AppHandle<R>, cache: &Icon
     }
     for &size in PREWARM_SIZES {
         for p in &paths {
-            let _ = icon_png(app, cache, p, size, "");
+            let _ = icon_png(app, cache, p, size);
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
@@ -328,27 +360,58 @@ mod tests {
     }
 
     #[test]
-    fn per_path_keys_follow_the_content_revision() {
+    fn per_path_keys_follow_the_items_identity_across_token_generations() {
+        let d = std::env::temp_dir().join(format!("fazi-icon-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("doc.txt");
+        std::fs::write(&f, b"x").unwrap();
         let memo = KeyMemo::new();
-        let p = Path::new("/Applications/Foo.app");
         let classified = std::cell::Cell::new(0);
-        let classify = |_: &Path| {
+        let classify = |p: &Path| {
             classified.set(classified.get() + 1);
-            "path:/Applications/Foo.app".to_string()
+            cache_key(p)
         };
-        let a = cached_key_in(&memo, p, "100-1", classify);
-        assert_eq!(cached_key_in(&memo, p, "100-1", classify), a);
-        assert_eq!(classified.get(), 1, "same revision is a memo hit");
-        let b = cached_key_in(&memo, p, "200-1", classify);
-        assert_ne!(a, b, "an edited item gets a fresh PNG cache key");
-        assert_eq!(classified.get(), 2, "and is re-classified (custom icon may have changed)");
+        // First listing: shared ext icon; repeat requests are memo hits.
+        assert_eq!(cached_key_in(&memo, &f, identity_of, classify), "ext:txt");
+        assert_eq!(cached_key_in(&memo, &f, identity_of, classify), "ext:txt");
+        assert_eq!(classified.get(), 1);
 
-        // Shared keys stay shared across revisions.
-        let txt = Path::new("/x/a.txt");
-        let ext = |_: &Path| "ext:txt".to_string();
-        assert_eq!(cached_key_in(&memo, txt, "1-1", ext), "ext:txt");
-        assert_eq!(cached_key_in(&memo, txt, "2-2", ext), "ext:txt");
-        assert_eq!(revisioned_key("dir:generic".into(), "9"), "dir:generic");
-        assert_eq!(revisioned_key("dir:/Users/me".into(), "9"), "dir:/Users/me@9");
+        // While away: the file gains a custom icon (FinderInfo flag).
+        let mut info = [0u8; 32];
+        info[8] = 0x04; // kHasCustomIcon
+        set_finder_info(&f, &info);
+        // Reopen (new owner, new token, no URL revision): the backend still
+        // notices because the item's identity changed.
+        let custom = cached_key_in(&memo, &f, identity_of, classify);
+        assert!(custom.starts_with("path:") && custom.contains('@'), "{custom}");
+        assert_eq!(classified.get(), 2);
+
+        // Editing a custom-icon item gives it a fresh PNG cache key.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&f, b"edited").unwrap();
+        let edited = cached_key_in(&memo, &f, identity_of, classify);
+        assert!(edited.starts_with("path:"));
+        assert_ne!(edited, custom);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    fn set_finder_info(path: &Path, info: &[u8; 32]) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let name = std::ffi::CString::new("com.apple.FinderInfo").unwrap();
+        let rc = unsafe {
+            libc::setxattr(c.as_ptr(), name.as_ptr(), info.as_ptr().cast(), info.len(), 0, 0)
+        };
+        assert_eq!(rc, 0, "setxattr");
+    }
+
+    #[test]
+    fn shared_keys_ignore_identity() {
+        let id = identity_of(Path::new("/")).unwrap();
+        assert_eq!(identity_key("ext:txt".into(), Some(id)), "ext:txt");
+        assert_eq!(identity_key("dir:generic".into(), Some(id)), "dir:generic");
+        assert_eq!(identity_key("dir:/Users/me".into(), Some(id)), "dir:/Users/me");
+        assert!(identity_key("path:/A.app".into(), Some(id)).starts_with("path:/A.app@"));
     }
 }

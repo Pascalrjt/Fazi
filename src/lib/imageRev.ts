@@ -1,37 +1,18 @@
 import { iconUrl, thumbUrl, type Entry } from "../types/ipc";
 
 /**
- * Content revisions for icon:// / thumb:// URLs.
+ * Content revision for icon:// / thumb:// URLs.
  *
- * Icon tokens are reused per (owner, path), and the protocol responses are
- * cacheable, so a file edited in place would keep its stale image. The URL
- * therefore carries `v=<mtimeMs>-<size>` once the content differs from what
- * the token was first seen with. The first hydrated revision per token is the
- * baseline and adds no param: rows render before hydration (mtime null), and
- * flipping every row's URL at hydration would fetch each image twice.
+ * Icon tokens are reused per (owner, path) and protocol responses are
+ * cacheable, so a file edited in place must get a different URL to re-fetch.
+ * Once an entry is hydrated its URL carries `v=<mtimeMs>-<size>`; rows that
+ * render before hydration load once more when it lands (extension-shared
+ * icons are cheap backend cache hits). Backend caches validate against the
+ * file itself and ignore this param.
  */
-const baselines = new Map<string, string>();
-const CAP = 100_000;
-
-function revKey(mtime: number, size: number | null): string {
-  return `${Math.trunc(mtime)}-${size ?? 0}`;
-}
-
-/** URL revision for `entry`'s images ("" = the token's baseline content). */
-export function imageRev(entry: Pick<Entry, "icon" | "mtime" | "size">): string {
+export function imageRev(entry: Pick<Entry, "mtime" | "size">): string {
   if (entry.mtime == null) return "";
-  const key = revKey(entry.mtime, entry.size);
-  const base = baselines.get(entry.icon);
-  if (base === undefined) {
-    if (baselines.size >= CAP) {
-      // Oldest-first (Map keeps insertion order).
-      const drop = baselines.keys().next().value;
-      if (drop !== undefined) baselines.delete(drop);
-    }
-    baselines.set(entry.icon, key);
-    return "";
-  }
-  return base === key ? "" : key;
+  return `${Math.trunc(entry.mtime)}-${entry.size ?? 0}`;
 }
 
 export function entryIconUrl(entry: Entry, size: number): string {
@@ -40,9 +21,4 @@ export function entryIconUrl(entry: Entry, size: number): string {
 
 export function entryThumbUrl(entry: Entry, size: number): string {
   return thumbUrl(entry.icon, size, imageRev(entry));
-}
-
-/** Tests only. */
-export function _resetImageRevs(): void {
-  baselines.clear();
 }
